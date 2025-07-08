@@ -11,16 +11,16 @@ import os
 import logging
 import time
 from typing import Optional
-import pandas as pd
+import polars as pl
 
 try:
     import snowflake.connector
-    from snowflake.connector.pandas_tools import write_pandas
+    from snowflake.connector.polars_tools import write_polars
     SNOWFLAKE_AVAILABLE = True
 except ImportError:
     SNOWFLAKE_AVAILABLE = False
     snowflake = None  # type: ignore
-    write_pandas = None  # type: ignore
+    write_polars = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +199,7 @@ class SnowflakeHandler:
         # Default to password authentication
         return "password"
     
-    def upload_data(self, df: pd.DataFrame, table_name: str, if_exists: str = 'replace') -> bool:
+    def upload_data(self, df: pl.DataFrame, table_name: str, if_exists: str = 'replace') -> bool:
         """
         Upload DataFrame to Snowflake table.
         
@@ -218,10 +218,10 @@ class SnowflakeHandler:
         try:
             logger.info(f"Uploading {len(df)} rows to Snowflake table: {table_name}")
             
-            # Try pandas_tools first (faster for large datasets)
-            if write_pandas is not None:
+            # Try polars_tools first (faster for large datasets)
+            if write_polars is not None:
                 try:
-                    success, nchunks, nrows, _ = write_pandas(
+                    success, nchunks, nrows, _ = write_polars(
                         self.conn, 
                         df, 
                         table_name.upper(),
@@ -233,10 +233,10 @@ class SnowflakeHandler:
                         logger.info(f"✅ Uploaded {nrows} rows in {nchunks} chunks")
                         return True
                     else:
-                        logger.warning("pandas_tools upload failed, trying cursor method")
+                        logger.warning("polars_tools upload failed, trying cursor method")
                         
                 except Exception as e:
-                    logger.warning(f"pandas_tools upload failed: {e}, trying cursor method")
+                    logger.warning(f"polars_tools upload failed: {e}, trying cursor method")
             
             # Fallback to cursor method
             return self._upload_via_cursor(df, table_name, if_exists)
@@ -245,7 +245,7 @@ class SnowflakeHandler:
             logger.error(f"Failed to upload data to Snowflake: {e}")
             return False
     
-    def _upload_via_cursor(self, df: pd.DataFrame, table_name: str, if_exists: str = 'replace') -> bool:
+    def _upload_via_cursor(self, df: pl.DataFrame, table_name: str, if_exists: str = 'replace') -> bool:
         """
         Upload DataFrame using cursor method (fallback).
         
@@ -272,7 +272,7 @@ class SnowflakeHandler:
                 logger.info(f"Created table: {table_name}")
             
             # Prepare data for insertion
-            df_clean = df.fillna('NULL')
+            df_clean = df.fill_null('NULL')
             columns = list(df_clean.columns)
             placeholders = ', '.join(['%s'] * len(columns))
             
@@ -281,8 +281,8 @@ class SnowflakeHandler:
             total_rows = len(df_clean)
             
             for i in range(0, total_rows, batch_size):
-                batch = df_clean.iloc[i:i + batch_size]
-                values = [tuple(row) for row in batch.values]
+                batch = df_clean.slice(i, batch_size)
+                values = [tuple(row) for row in batch.iter_rows()]
                 
                 insert_sql = f"INSERT INTO {table_name.upper()} ({', '.join(columns)}) VALUES ({placeholders})"
                 cursor.executemany(insert_sql, values)
@@ -297,7 +297,7 @@ class SnowflakeHandler:
             logger.error(f"Cursor upload failed: {e}")
             return False
     
-    def _generate_create_table_sql(self, df: pd.DataFrame, table_name: str) -> str:
+    def _generate_create_table_sql(self, df: pl.DataFrame, table_name: str) -> str:
         """
         Generate CREATE TABLE SQL based on DataFrame schema.
         
@@ -310,15 +310,15 @@ class SnowflakeHandler:
         """
         columns = []
         
-        for col_name, dtype in df.dtypes.items():
-            # Map pandas dtypes to Snowflake types
-            if pd.api.types.is_integer_dtype(dtype):
+        for col_name, dtype in df.schema.items():
+            # Map polars dtypes to Snowflake types
+            if dtype in [pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64]:
                 sf_type = "INTEGER"
-            elif pd.api.types.is_float_dtype(dtype):
+            elif dtype in [pl.Float32, pl.Float64]:
                 sf_type = "FLOAT"
-            elif pd.api.types.is_bool_dtype(dtype):
+            elif dtype == pl.Boolean:
                 sf_type = "BOOLEAN"
-            elif pd.api.types.is_datetime64_any_dtype(dtype):
+            elif dtype in [pl.Datetime, pl.Datetime('ms'), pl.Datetime('us'), pl.Datetime('ns')]:
                 sf_type = "TIMESTAMP"
             else:
                 sf_type = "VARCHAR(16777216)"  # Snowflake max varchar size

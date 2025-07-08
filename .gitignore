@@ -27,6 +27,14 @@ venv/
 ENV/
 env/
 
+# Environment variables
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+.env.*
+
 # Node.js cache
 node_modules/
 npm-debug.log*

@@ -1,7 +1,7 @@
 # Additional requirements for Snowflake integration
 # Install with: pip install -r requirements-snowflake.txt
 
-snowflake-connector-python[pandas]>=3.0.0
+snowflake-connector-python[polars]>=3.0.0
 python-dotenv>=1.0.0
 cryptography>=3.4.8
-pandas>=2.0.0 
+polars>=0.20.0 

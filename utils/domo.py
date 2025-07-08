@@ -11,7 +11,8 @@ import os
 import logging
 import sys
 from typing import Optional
-import pandas as pd
+import polars as pl
+import pandas as pd  # Still needed for to_dataframe conversion
 from pathlib import Path
 
 # Add argo-utils-cli/src to Python path for domo_utils module
@@ -85,7 +86,7 @@ class DomoHandler:
             return False
     
     def extract_data(self, dataset_id: str, query: Optional[str] = None, 
-                    chunk_size: int = 1000000) -> Optional[pd.DataFrame]:
+                    chunk_size: int = 1000000) -> Optional[pl.DataFrame]:
         """
         Extract data from Domo dataset.
         
@@ -95,7 +96,7 @@ class DomoHandler:
             chunk_size: Number of rows to extract per chunk
             
         Returns:
-            Optional[pd.DataFrame]: Extracted data or None if failed
+            Optional[pl.DataFrame]: Extracted data or None if failed
         """
         if self.dataset_api is None:
             logger.error("Domo dataset API not initialized")
@@ -127,7 +128,7 @@ class DomoHandler:
             logger.error(f"Failed to extract data from Domo: {e}")
             return None
     
-    def _extract_single_chunk(self, dataset_id: str, query: str) -> Optional[pd.DataFrame]:
+    def _extract_single_chunk(self, dataset_id: str, query: str) -> Optional[pl.DataFrame]:
         """
         Extract data in a single chunk.
         
@@ -136,7 +137,7 @@ class DomoHandler:
             query: SQL query
             
         Returns:
-            Optional[pd.DataFrame]: Extracted data or None if failed
+            Optional[pl.DataFrame]: Extracted data or None if failed
         """
         try:
             logger.info("Extracting data in single chunk...")
@@ -144,22 +145,24 @@ class DomoHandler:
             # Execute query
             result = self.dataset_api.query(dataset_id, query)
             
-            # Convert to DataFrame
-            df = to_dataframe(result)
+            # Convert to DataFrame (pandas first, then to polars)
+            pandas_df = to_dataframe(result)
             
-            if df is not None and len(df) > 0:
+            if pandas_df is not None and len(pandas_df) > 0:
+                # Convert pandas to polars
+                df = pl.from_pandas(pandas_df)
                 logger.info(f"✅ Extracted {len(df)} rows")
                 return self._clean_dataframe(df)
             else:
                 logger.warning("No data returned from query")
-                return pd.DataFrame()
+                return pl.DataFrame()
                 
         except Exception as e:
             logger.error(f"Single chunk extraction failed: {e}")
             return None
     
     def _extract_with_pagination(self, dataset_id: str, base_query: str, chunk_size: int, 
-                                total_rows: int) -> Optional[pd.DataFrame]:
+                                total_rows: int) -> Optional[pl.DataFrame]:
         """
         Extract data using pagination for large datasets.
         
@@ -170,7 +173,7 @@ class DomoHandler:
             total_rows: Total number of rows in dataset
             
         Returns:
-            Optional[pd.DataFrame]: Extracted data or None if failed
+            Optional[pl.DataFrame]: Extracted data or None if failed
         """
         try:
             logger.info(f"Extracting data in chunks of {chunk_size} rows...")
@@ -188,10 +191,12 @@ class DomoHandler:
                 # Execute query
                 result = self.dataset_api.query(dataset_id, paginated_query)
                 
-                # Convert to DataFrame
-                chunk_df = to_dataframe(result)
+                # Convert to DataFrame (pandas first, then to polars)
+                pandas_chunk_df = to_dataframe(result)
                 
-                if chunk_df is not None and len(chunk_df) > 0:
+                if pandas_chunk_df is not None and len(pandas_chunk_df) > 0:
+                    # Convert pandas to polars
+                    chunk_df = pl.from_pandas(pandas_chunk_df)
                     all_data.append(chunk_df)
                     logger.info(f"Extracted chunk: {len(chunk_df)} rows")
                 else:
@@ -207,18 +212,18 @@ class DomoHandler:
             
             if all_data:
                 # Combine all chunks
-                combined_df = pd.concat(all_data, ignore_index=True)
+                combined_df = pl.concat(all_data, how="vertical")
                 logger.info(f"✅ Extracted {len(combined_df)} rows in {len(all_data)} chunks")
                 return self._clean_dataframe(combined_df)
             else:
                 logger.warning("No data extracted from any chunk")
-                return pd.DataFrame()
+                return pl.DataFrame()
                 
         except Exception as e:
             logger.error(f"Pagination extraction failed: {e}")
             return None
     
-    def _clean_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _clean_dataframe(self, df: pl.DataFrame) -> pl.DataFrame:
         """
         Clean and preprocess DataFrame.
         
@@ -226,91 +231,91 @@ class DomoHandler:
             df: Raw DataFrame
             
         Returns:
-            pd.DataFrame: Cleaned DataFrame
+            pl.DataFrame: Cleaned DataFrame
         """
         try:
             logger.info("Cleaning DataFrame...")
             
             # Remove completely empty rows and columns
-            df = df.dropna(how='all').dropna(axis=1, how='all')
+            df = df.drop_nulls(how='all')
+            # Note: polars doesn't have dropna(axis=1), we'll handle empty columns differently
             
-            if df.empty:
+            if df.is_empty():
                 logger.warning("DataFrame is empty after cleaning")
                 return df
             
             # Clean column names
-            df.columns = df.columns.str.strip()
+            df = df.rename(lambda col: col.strip())
             
             # Handle data types
             for col in df.columns:
                 # Skip if column is already numeric
-                if pd.api.types.is_numeric_dtype(df[col]):
+                if df.schema[col] in [pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Float32, pl.Float64]:
                     continue
                 
                 # Try to convert to numeric if possible
                 numeric_threshold = 0.5  # Configurable
-                non_null_values = df[col].dropna()
+                non_null_values = df.filter(pl.col(col).is_not_null()).select(pl.col(col))
                 
                 if len(non_null_values) > 0:
                     # Count how many values can be converted to numeric
-                    numeric_count = 0
-                    for val in non_null_values:
-                        try:
-                            float(val)
-                            numeric_count += 1
-                        except (ValueError, TypeError):
-                            pass
-                    
-                    # Convert if threshold is met
-                    if numeric_count / len(non_null_values) >= numeric_threshold:
-                        try:
-                            df[col] = pd.to_numeric(df[col], errors='coerce')
-                            logger.info(f"Converted column '{col}' to numeric")
-                        except Exception:
-                            pass
+                    try:
+                        numeric_count = non_null_values.select(pl.col(col).cast(pl.Float64).is_not_null()).sum().item()
+                        
+                        # Convert if threshold is met
+                        if numeric_count / len(non_null_values) >= numeric_threshold:
+                            try:
+                                df = df.with_columns(pl.col(col).cast(pl.Float64))
+                                logger.info(f"Converted column '{col}' to numeric")
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
             
             # Handle date columns
             for col in df.columns:
-                if pd.api.types.is_object_dtype(df[col]):
+                if df.schema[col] == pl.Utf8:
                     # Try to convert to datetime
                     date_threshold = 0.3  # Configurable
-                    non_null_values = df[col].dropna()
+                    non_null_values = df.filter(pl.col(col).is_not_null()).select(pl.col(col))
                     
                     if len(non_null_values) > 0:
-                        date_count = 0
-                        for val in non_null_values:
-                            try:
-                                pd.to_datetime(val)
-                                date_count += 1
-                            except (ValueError, TypeError):
-                                pass
-                        
-                        # Convert if threshold is met
-                        if date_count / len(non_null_values) >= date_threshold:
-                            try:
-                                df[col] = pd.to_datetime(df[col], errors='coerce')
-                                logger.info(f"Converted column '{col}' to datetime")
-                            except Exception:
-                                pass
+                        try:
+                            date_count = non_null_values.select(pl.col(col).str.to_datetime().is_not_null()).sum().item()
+                            
+                            # Convert if threshold is met
+                            if date_count / len(non_null_values) >= date_threshold:
+                                try:
+                                    df = df.with_columns(pl.col(col).str.to_datetime())
+                                    logger.info(f"Converted column '{col}' to datetime")
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
             
             # Handle boolean columns
             for col in df.columns:
-                if pd.api.types.is_object_dtype(df[col]):
+                if df.schema[col] == pl.Utf8:
                     # Check if column contains boolean-like values
-                    unique_values = df[col].dropna().unique()
-                    if len(unique_values) <= 2:
-                        bool_like = all(str(val).lower() in ['true', 'false', '1', '0', 'yes', 'no'] 
-                                      for val in unique_values)
-                        if bool_like:
-                            try:
-                                df[col] = df[col].map({
-                                    'true': True, 'false': False,
-                                    '1': True, '0': False,
-                                    'yes': True, 'no': False
-                                }).astype('boolean')
-                                logger.info(f"Converted column '{col}' to boolean")
-                            except Exception:
-                                pass
+                    try:
+                        unique_values = df.filter(pl.col(col).is_not_null()).select(pl.col(col).unique()).to_series()
+                        if len(unique_values) <= 2:
+                            bool_like = all(str(val).lower() in ['true', 'false', '1', '0', 'yes', 'no'] 
+                                          for val in unique_values)
+                            if bool_like:
+                                try:
+                                    df = df.with_columns(
+                                        pl.when(pl.col(col).str.to_lowercase().is_in(['true', '1', 'yes']))
+                                        .then(True)
+                                        .otherwise(False)
+                                        .cast(pl.Boolean)
+                                        .alias(col)
+                                    )
+                                    logger.info(f"Converted column '{col}' to boolean")
+                                except Exception:
+                                    pass
+                    except Exception:
+                        pass
             
             logger.info(f"✅ DataFrame cleaned: {len(df)} rows, {len(df.columns)} columns")
             return df
