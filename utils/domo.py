@@ -149,10 +149,25 @@ class DomoHandler:
             pandas_df = to_dataframe(result)
             
             if pandas_df is not None and len(pandas_df) > 0:
-                # Convert pandas to polars
-                df = pl.from_pandas(pandas_df)
-                logger.info(f"✅ Extracted {len(df)} rows")
-                return self._clean_dataframe(df)
+                # Convert pandas to polars with safe conversion
+                try:
+                    df = self._safe_pandas_to_polars(pandas_df)
+                    if df is not None:
+                        logger.info(f"✅ Extracted {len(df)} rows")
+                        return self._clean_dataframe(df)
+                    else:
+                        logger.error("Failed to convert single chunk")
+                        return None
+                except Exception as conversion_error:
+                    logger.error(f"Failed to convert pandas to polars: {conversion_error}")
+                    # Try fallback method
+                    df = self._fallback_pandas_to_polars(pandas_df)
+                    if df is not None:
+                        logger.info(f"✅ Extracted {len(df)} rows (fallback method)")
+                        return self._clean_dataframe(df)
+                    else:
+                        logger.error("Fallback conversion also failed")
+                        return None
             else:
                 logger.warning("No data returned from query")
                 return pl.DataFrame()
@@ -195,10 +210,25 @@ class DomoHandler:
                 pandas_chunk_df = to_dataframe(result)
                 
                 if pandas_chunk_df is not None and len(pandas_chunk_df) > 0:
-                    # Convert pandas to polars
-                    chunk_df = pl.from_pandas(pandas_chunk_df)
-                    all_data.append(chunk_df)
-                    logger.info(f"Extracted chunk: {len(chunk_df)} rows")
+                    # Convert pandas to polars with proper error handling
+                    try:
+                        chunk_df = self._safe_pandas_to_polars(pandas_chunk_df)
+                        if chunk_df is not None:
+                            all_data.append(chunk_df)
+                            logger.info(f"Extracted chunk: {len(chunk_df)} rows")
+                        else:
+                            logger.error(f"Failed to convert chunk at offset {offset}")
+                            break
+                    except Exception as conversion_error:
+                        logger.error(f"Failed to convert pandas to polars at offset {offset}: {conversion_error}")
+                        # Try a fallback approach
+                        chunk_df = self._fallback_pandas_to_polars(pandas_chunk_df)
+                        if chunk_df is not None:
+                            all_data.append(chunk_df)
+                            logger.info(f"Extracted chunk (fallback method): {len(chunk_df)} rows")
+                        else:
+                            logger.error(f"Fallback conversion also failed at offset {offset}")
+                            break
                 else:
                     logger.warning(f"No data in chunk at offset {offset}")
                     break
@@ -322,4 +352,88 @@ class DomoHandler:
             
         except Exception as e:
             logger.error(f"DataFrame cleaning failed: {e}")
-            return df  # Return original if cleaning fails 
+            return df  # Return original if cleaning fails
+    
+    def _safe_pandas_to_polars(self, pandas_df: pd.DataFrame) -> Optional[pl.DataFrame]:
+        """
+        Safely convert pandas DataFrame to polars DataFrame with data type handling.
+        
+        Args:
+            pandas_df: Pandas DataFrame to convert
+            
+        Returns:
+            Optional[pl.DataFrame]: Converted polars DataFrame or None if failed
+        """
+        try:
+            # Log DataFrame info for debugging
+            logger.debug(f"Converting pandas DataFrame: {pandas_df.shape}")
+            logger.debug(f"Data types: {pandas_df.dtypes.to_dict()}")
+            
+            # Check for problematic columns and fix them
+            pandas_df_cleaned = pandas_df.copy()
+            
+            for col in pandas_df_cleaned.columns:
+                dtype = pandas_df_cleaned[col].dtype
+                
+                # Handle object columns that might contain mixed types
+                if dtype == 'object':
+                    # Convert all values to strings to avoid type conflicts
+                    pandas_df_cleaned[col] = pandas_df_cleaned[col].astype(str)
+                    # Replace 'nan' strings with actual NaN values
+                    pandas_df_cleaned[col] = pandas_df_cleaned[col].replace('nan', pd.NA)
+                
+                # Handle integer columns with NaN values
+                elif str(dtype).startswith('int') and pandas_df_cleaned[col].isnull().any():
+                    # Convert to nullable integer type
+                    pandas_df_cleaned[col] = pandas_df_cleaned[col].astype('Int64')
+                
+                # Handle float columns with potential infinity values
+                elif str(dtype).startswith('float'):
+                    # Replace inf/-inf with NaN
+                    pandas_df_cleaned[col] = pandas_df_cleaned[col].replace([float('inf'), float('-inf')], pd.NA)
+            
+            # Convert to polars
+            polars_df = pl.from_pandas(pandas_df_cleaned)
+            
+            logger.debug(f"Successfully converted to polars: {polars_df.shape}")
+            return polars_df
+            
+        except Exception as e:
+            logger.error(f"Safe pandas to polars conversion failed: {e}")
+            return None
+    
+    def _fallback_pandas_to_polars(self, pandas_df: pd.DataFrame) -> Optional[pl.DataFrame]:
+        """
+        Fallback method to convert pandas DataFrame to polars using more aggressive cleaning.
+        
+        Args:
+            pandas_df: Pandas DataFrame to convert
+            
+        Returns:
+            Optional[pl.DataFrame]: Converted polars DataFrame or None if failed
+        """
+        try:
+            logger.info("Using fallback conversion method - converting all columns to strings")
+            
+            # Convert all columns to strings first
+            pandas_df_str = pandas_df.copy()
+            for col in pandas_df_str.columns:
+                pandas_df_str[col] = pandas_df_str[col].astype(str)
+                # Replace 'nan' with actual None
+                pandas_df_str[col] = pandas_df_str[col].replace('nan', None)
+            
+            # Create polars DataFrame manually
+            data_dict = {}
+            for col in pandas_df_str.columns:
+                # Clean column name
+                clean_col = str(col).strip()
+                data_dict[clean_col] = pandas_df_str[col].tolist()
+            
+            polars_df = pl.DataFrame(data_dict)
+            
+            logger.info(f"Fallback conversion successful: {polars_df.shape}")
+            return polars_df
+            
+        except Exception as e:
+            logger.error(f"Fallback pandas to polars conversion failed: {e}")
+            return None 
