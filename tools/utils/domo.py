@@ -16,7 +16,7 @@ import pandas as pd  # Still needed for to_dataframe conversion
 from pathlib import Path
 
 # Add argo-utils-cli/src to Python path for domo_utils module
-argo_utils_path = Path(__file__).parent.parent / "argo-utils-cli" / "src"
+argo_utils_path = Path(__file__).parent.parent.parent / "argo-utils-cli" / "src"
 if argo_utils_path.exists():
     sys.path.insert(0, str(argo_utils_path))
 else:

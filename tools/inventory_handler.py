@@ -26,16 +26,8 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Union
 from dotenv import load_dotenv
 
-# Google Sheets API imports
-try:
-    from google.oauth2.service_account import Credentials
-    from googleapiclient.discovery import build
-    from googleapiclient.errors import HttpError
-    GOOGLE_SHEETS_AVAILABLE = True
-except ImportError:
-    GOOGLE_SHEETS_AVAILABLE = False
-    print("⚠️  Google Sheets libraries not available. Install with:")
-    print("pip install google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2")
+# Import utility modules
+from .utils.gsheets import GoogleSheets, READ_WRITE_SCOPES
 
 # Load environment variables
 load_dotenv()
@@ -54,9 +46,9 @@ DATAFLOW_COLUMN_NAME = "Dataflow ID"
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly']
 
 
-class InventoryExtractor:
+class InventoryHandler:
     """
-    Extractor class for Google Sheets inventory data.
+    Handler class for Google Sheets inventory data.
     
     This class handles authentication with Google Sheets API and provides
     methods to extract inventory data from a specific spreadsheet.
@@ -64,7 +56,7 @@ class InventoryExtractor:
     
     def __init__(self, credentials_path: str = None, spreadsheet_id: str = SPREADSHEET_ID):
         """
-        Initialize the InventoryExtractor.
+        Initialize the InventoryHandler.
         
         Args:
             credentials_path (str): Path to the service account JSON file
@@ -72,10 +64,7 @@ class InventoryExtractor:
         """
         self.spreadsheet_id = spreadsheet_id
         self.credentials_path = credentials_path or os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE")
-        self.service = None
-        
-        if not GOOGLE_SHEETS_AVAILABLE:
-            raise ImportError("Google Sheets libraries not available")
+        self.gsheets_client = None
         
         self._authenticate()
     
@@ -94,10 +83,7 @@ class InventoryExtractor:
             raise FileNotFoundError(f"Credentials file not found: {self.credentials_path}")
         
         try:
-            credentials = Credentials.from_service_account_file(
-                self.credentials_path, scopes=SCOPES
-            )
-            self.service = build('sheets', 'v4', credentials=credentials)
+            self.gsheets_client = GoogleSheets(credentials_path=self.credentials_path)
             logger.info("✅ Successfully authenticated with Google Sheets API")
         except Exception as e:
             logger.error(f"❌ Failed to authenticate with Google Sheets API: {e}")
@@ -114,44 +100,30 @@ class InventoryExtractor:
             pd.DataFrame: Inventory data as a pandas DataFrame
             
         Raises:
-            HttpError: If API request fails
+            Exception: If API request fails
             ValueError: If no data is found
         """
         logger.info(f"📖 Extracting inventory data from sheet: {sheet_name}")
         
         try:
-            # Define the range to read all data from the sheet
-            range_name = f"{sheet_name}!A:Z"
+            # Use the gsheets module to read data
+            polars_df = self.gsheets_client.read_to_dataframe(
+                spreadsheet_id=self.spreadsheet_id,
+                range_name=f"{sheet_name}!A:Z",
+                header=True
+            )
             
-            # Make the API request
-            result = self.service.spreadsheets().values().get(
-                spreadsheetId=self.spreadsheet_id,
-                range=range_name
-            ).execute()
-            
-            values = result.get('values', [])
-            
-            if not values:
+            if polars_df is None or len(polars_df) == 0:
                 raise ValueError(f"No data found in sheet: {sheet_name}")
             
-            # Convert to DataFrame
-            headers = values[0]
-            data_rows = values[1:] if len(values) > 1 else []
-            
-            # Create DataFrame with proper handling of missing values
-            df = pd.DataFrame(data_rows, columns=headers)
-            
-            # Fill missing values with empty strings
-            df = df.fillna('')
+            # Convert polars DataFrame to pandas DataFrame
+            df = polars_df.to_pandas()
             
             logger.info(f"✅ Successfully extracted {len(df)} rows from {sheet_name}")
             logger.info(f"📋 Columns: {list(df.columns)}")
             
             return df
             
-        except HttpError as e:
-            logger.error(f"❌ HTTP error while reading sheet: {e}")
-            raise
         except Exception as e:
             logger.error(f"❌ Error extracting inventory data: {e}")
             raise
@@ -327,8 +299,8 @@ def export_dataflows_to_sql(output_dir: str, credentials_path: str = None) -> bo
         output_path.mkdir(parents=True, exist_ok=True)
         logger.info(f"📁 Output directory: {output_path.absolute()}")
         
-        # Initialize inventory extractor
-        extractor = InventoryExtractor(credentials_path=credentials_path)
+        # Initialize inventory handler
+        extractor = InventoryHandler(credentials_path=credentials_path)
         
         # Extract inventory data
         df = extractor.get_inventory()
@@ -479,7 +451,7 @@ Environment Variables:
     if args.test_connection:
         try:
             logger.info("🧪 Testing Google Sheets connection...")
-            extractor = InventoryExtractor(credentials_path=args.credentials)
+            extractor = InventoryHandler(credentials_path=args.credentials)
             df = extractor.get_inventory()
             
             logger.info("✅ Connection successful!")

@@ -1,264 +1,384 @@
 #!/usr/bin/env python3
 """
-Domo to Snowflake Data Transfer Script
+Main CLI for Domo to Snowflake migration tools.
 
-This script extracts data from multiple Domo datasets using SQL queries and uploads them to Snowflake.
-It supports both full table extraction and custom SQL queries.
-
-Usage:
-    python main.py  # Processes all datasets in LIST_OF_DATASETS
-    python main.py --dry-run  # Test extraction without uploading
-    python main.py --if-exists append  # Append data instead of replacing
-
-Environment Variables Required:
-    # Domo Authentication
-    DOMO_DEVELOPER_TOKEN or (DOMO_CLIENT_ID and DOMO_CLIENT_SECRET)
-    DOMO_INSTANCE
-    
-    # Snowflake Connection
-    SNOWFLAKE_USER
-    SNOWFLAKE_PASSWORD
-    SNOWFLAKE_ACCOUNT
-    SNOWFLAKE_WAREHOUSE
-    SNOWFLAKE_DATABASE
-    SNOWFLAKE_SCHEMA
+This script provides a unified interface for various migration utilities including:
+- Inventory extraction from Google Sheets
+- SQL export functionality
+- Data migration tools
 """
-
-# LISTA DE DATASETS A PROCESAR
-# Formato: [dataset_id, table_name]
-LIST_OF_DATASETS = [
-    ["a3894480-f0b0-4c70-a59d-83b8589bfddf",	"amazon_order_items"],
-]
 
 import os
 import sys
 import argparse
 import logging
-import time
-from typing import Optional, List, Tuple
 from pathlib import Path
+from typing import Optional
 
-from dotenv import load_dotenv
-
-# Import utility modules
-from utils.domo import DomoHandler
-from utils.snowflake import SnowflakeHandler
-
-# Load environment variables
-root_dir = Path(__file__).parent
-env_path = root_dir / ".env"
-print(f"🔍 Looking for .env file at: {env_path}")
-load_dotenv(env_path)
+# Add the project root to the Python path
+project_root = Path(__file__).parent
+sys.path.insert(0, str(project_root))
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler('domo_to_snowflake.log')
-    ]
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
+# Import tool modules
+try:
+    from tools.inventory_handler import export_dataflows_to_sql, InventoryHandler
+    from tools.domo_to_snowflake import migrate_dataset, batch_migrate_datasets
+    from tools.utils.domo import DomoHandler
+    from tools.utils.snowflake import SnowflakeHandler
+except ImportError as e:
+    logger.error(f"Failed to import required modules: {e}")
+    sys.exit(1)
 
-class DomoToSnowflakeTransfer:
-    """Handles the transfer of data from Domo to Snowflake."""
+def test_inventory_connection(credentials_path: Optional[str] = None) -> bool:
+    """
+    Test the Google Sheets connection and show inventory preview.
     
-    def __init__(self):
-        """Initialize the transfer handler."""
-        self.domo_handler = DomoHandler()
-        self.snowflake_handler = SnowflakeHandler()
+    Args:
+        credentials_path: Path to Google Sheets credentials file
         
-    def transfer_data(self, dataset_id: str, table_name: str, query: Optional[str] = None, 
-                     if_exists: str = 'replace') -> bool:
-        """
-        Complete data transfer from Domo to Snowflake.
+    Returns:
+        bool: True if connection successful, False otherwise
+    """
+    try:
+        logger.info("🧪 Testing Google Sheets connection...")
         
-        Args:
-            dataset_id: Domo dataset ID
-            table_name: Target Snowflake table name
-            query: Optional custom SQL query
-            if_exists: What to do if table exists ('replace', 'append', 'fail')
-            
-        Returns:
-            bool: True if transfer successful, False otherwise
-        """
-        logger.info("🚀 Starting Domo to Snowflake transfer")
+        # Use environment variable if no path provided
+        if not credentials_path:
+            credentials_path = os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE")
         
-        # Setup connections
-        if not self.domo_handler.setup_auth():
-            return False
-            
-        # if not self.snowflake_handler.setup_connection():
-        #     return False
-        
-        # Extract data
-        df = self.domo_handler.extract_data(dataset_id, query)
-        if df is None:
+        if not credentials_path:
+            logger.error("❌ No credentials file specified")
+            logger.error("Set GOOGLE_SHEETS_CREDENTIALS_FILE environment variable or use --credentials")
             return False
         
-        # Upload to Snowflake
-        if not self.snowflake_handler.upload_data(df, table_name, if_exists):
-            return False
+        extractor = InventoryHandler(credentials_path=credentials_path)
+        df = extractor.get_inventory()
         
-        # Verify upload
-        if not self.snowflake_handler.verify_upload(table_name, len(df)):
-            return False
+        logger.info("✅ Connection successful!")
+        logger.info(f"📊 Inventory preview (first 5 rows):")
+        print(df.head())
         
-        logger.info("✅ Transfer completed successfully!")
+        # Check for dataflow column
+        dataflow_column = None
+        possible_column_names = ["Dataflow ID", "dataflow", "Dataflow", "DataFlow", "dataflow_id", "Dataflow_ID"]
+        
+        for col_name in possible_column_names:
+            if col_name in df.columns:
+                dataflow_column = col_name
+                logger.info(f"✅ Found dataflow column: '{col_name}'")
+                break
+        
+        if dataflow_column:
+            unique_dataflows = extractor.get_unique_dataflows(df, dataflow_column=dataflow_column)
+            logger.info(f"📋 Found {len(unique_dataflows)} dataflows: {unique_dataflows[:10]}...")  # Show first 10
+        else:
+            logger.warning(f"⚠️  No dataflow column found. Available columns: {list(df.columns)}")
+        
         return True
+        
+    except Exception as e:
+        logger.error(f"❌ Connection test failed: {e}")
+        return False
+
+
+def handle_inventory_command(args) -> int:
+    """
+    Handle the inventory subcommand.
     
-    def cleanup(self):
-        """Cleanup connections."""
-        self.snowflake_handler.cleanup()
+    Args:
+        args: Parsed command line arguments
+        
+    Returns:
+        int: Exit code (0 for success, 1 for failure)
+    """
+    # Validate credentials
+    credentials_path = args.credentials or os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE")
+    
+    if not credentials_path:
+        logger.error("❌ Credentials file not specified")
+        logger.error("Set GOOGLE_SHEETS_CREDENTIALS_FILE environment variable or use --credentials")
+        return 1
+    
+    if not os.path.exists(credentials_path):
+        logger.error(f"❌ Credentials file not found: {credentials_path}")
+        return 1
+    
+    # Test connection mode
+    if args.test_connection:
+        success = test_inventory_connection(credentials_path)
+        return 0 if success else 1
+    
+    # Export mode
+    logger.info("🚀 Starting inventory export...")
+    logger.info(f"📁 Export directory: {args.export_dir}")
+    logger.info(f"🔑 Credentials file: {credentials_path}")
+    
+    success = export_dataflows_to_sql(
+        output_dir=args.export_dir,
+        credentials_path=credentials_path
+    )
+    
+    if success:
+        logger.info("🎉 Export completed successfully!")
+        return 0
+    else:
+        logger.error("❌ Export failed!")
+        return 1
 
 
-def main():
-    """Main function to handle command line arguments and execute transfer for multiple datasets."""
+def test_migration_connections() -> bool:
+    """
+    Test the Domo and Snowflake connections.
+    
+    Returns:
+        bool: True if both connections successful, False otherwise
+    """
+    try:
+        logger.info("🧪 Testing migration connections...")
+        
+        # Test Domo connection
+        logger.info("Testing Domo connection...")
+        domo_handler = DomoHandler()
+        if domo_handler.setup_auth():
+            logger.info("✅ Domo connection successful")
+        else:
+            logger.error("❌ Domo connection failed")
+            return False
+        
+        # Test Snowflake connection
+        logger.info("Testing Snowflake connection...")
+        snowflake_handler = SnowflakeHandler()
+        if snowflake_handler.setup_connection():
+            logger.info("✅ Snowflake connection successful")
+            snowflake_handler.cleanup()
+        else:
+            logger.error("❌ Snowflake connection failed")
+            return False
+        
+        logger.info("🎉 All migration connections tested successfully!")
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Connection test failed: {e}")
+        return False
+
+
+def handle_migrate_command(args) -> int:
+    """
+    Handle the migrate subcommand.
+    
+    Args:
+        args: Parsed command line arguments
+        
+    Returns:
+        int: Exit code (0 for success, 1 for failure)
+    """
+    # Test connection mode
+    if args.test_connection:
+        success = test_migration_connections()
+        return 0 if success else 1
+    
+    # Single dataset migration
+    if args.dataset_id and args.target_table:
+        logger.info("🚀 Starting single dataset migration...")
+        logger.info(f"📊 Dataset ID: {args.dataset_id}")
+        logger.info(f"🎯 Target table: {args.target_table}")
+        
+        success = migrate_dataset(args.dataset_id, args.target_table)
+        
+        if success:
+            logger.info("🎉 Migration completed successfully!")
+            return 0
+        else:
+            logger.error("❌ Migration failed!")
+            return 1
+    
+    # Batch migration
+    if args.batch_file:
+        logger.info("🚀 Starting batch migration...")
+        logger.info(f"📁 Batch file: {args.batch_file}")
+        
+        try:
+            import json
+            
+            if not os.path.exists(args.batch_file):
+                logger.error(f"❌ Batch file not found: {args.batch_file}")
+                return 1
+            
+            with open(args.batch_file, 'r') as f:
+                dataset_mapping = json.load(f)
+            
+            logger.info(f"📊 Found {len(dataset_mapping)} datasets to migrate")
+            
+            results = batch_migrate_datasets(dataset_mapping)
+            
+            if results['failed'] == 0:
+                logger.info("🎉 Batch migration completed successfully!")
+                return 0
+            else:
+                logger.error(f"❌ Batch migration completed with {results['failed']} failures!")
+                return 1
+                
+        except Exception as e:
+            logger.error(f"❌ Batch migration failed: {e}")
+            return 1
+    
+    # No valid arguments provided
+    logger.error("❌ No valid migration options provided")
+    logger.error("Use --dataset-id and --target-table for single migration, or --batch-file for batch migration")
+    return 1
+
+
+def create_parser() -> argparse.ArgumentParser:
+    """
+    Create the main argument parser with subcommands.
+    
+    Returns:
+        argparse.ArgumentParser: Configured argument parser
+    """
     parser = argparse.ArgumentParser(
-        description="Transfer data from multiple Domo datasets to Snowflake tables",
+        description="Domo to Snowflake Migration Tools",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=__doc__
+        epilog="""
+Examples:
+    # Export inventory dataflows to SQL
+    python main.py inventory --export-dir exported_sql
+    
+    # Test Google Sheets connection
+    python main.py inventory --test-connection
+    
+    # Migrate single dataset
+    python main.py migrate --dataset-id 12345 --target-table sales_data
+    
+    # Batch migrate datasets
+    python main.py migrate --batch-file dataset_mapping.json
+    
+    # Test migration connections
+    python main.py migrate --test-connection
+    
+    # Use custom credentials file
+    python main.py inventory --credentials /path/to/creds.json --export-dir output
+    
+Environment Variables:
+    EXPORT_DIR: Default export directory
+    GOOGLE_SHEETS_CREDENTIALS_FILE: Path to Google Sheets credentials file
+    DOMO_DEVELOPER_TOKEN: Domo API developer token
+    DOMO_INSTANCE: Domo instance name
+    SNOWFLAKE_ACCOUNT: Snowflake account identifier
+    SNOWFLAKE_USER: Snowflake username
+    SNOWFLAKE_PASSWORD: Snowflake password
+    SNOWFLAKE_WAREHOUSE: Snowflake warehouse name
+    SNOWFLAKE_DATABASE: Snowflake database name
+    SNOWFLAKE_SCHEMA: Snowflake schema name
+        """
     )
     
-    parser.add_argument(
-        "--query", 
-        help="Custom SQL query to apply to all datasets (default: 'SELECT * FROM table')"
+    # Create subparsers for different commands
+    subparsers = parser.add_subparsers(dest='command', help='Available commands')
+    
+    # Inventory subcommand
+    inventory_parser = subparsers.add_parser(
+        'inventory',
+        help='Extract and export inventory data from Google Sheets'
     )
     
-    parser.add_argument(
-        "--if-exists",
-        choices=['replace', 'append', 'fail'],
-        default='replace',
-        help="What to do if table exists (default: replace)"
+    inventory_parser.add_argument(
+        "--export-dir",
+        default=os.getenv("EXPORT_DIR", "exported_sql"),
+        help="Directory to save SQL files (default: exported_sql)"
     )
     
-    parser.add_argument(
-        "--dry-run",
-        action='store_true',
-        help="Extract data but don't upload to Snowflake"
+    inventory_parser.add_argument(
+        "--credentials",
+        default=os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE"),
+        help="Path to Google Sheets credentials JSON file"
     )
     
-    parser.add_argument(
-        "--disable-cleaning",
-        action='store_true',
-        help="Disable automatic data cleaning (not recommended)"
+    inventory_parser.add_argument(
+        "--test-connection",
+        action="store_true",
+        help="Test Google Sheets connection and show inventory preview"
     )
     
-    parser.add_argument(
-        "--numeric-threshold",
-        type=float,
-        default=0.5,
-        help="Threshold for numeric conversion (0.0-1.0, default: 0.5)"
+    # Migration subcommand
+    migrate_parser = subparsers.add_parser(
+        'migrate',
+        help='Migrate datasets from Domo to Snowflake'
     )
     
-    parser.add_argument(
-        "--date-threshold",
-        type=float,
-        default=0.3,
-        help="Threshold for date conversion (0.0-1.0, default: 0.3)"
+    migrate_parser.add_argument(
+        "--dataset-id",
+        help="Domo dataset ID to migrate"
     )
     
-    parser.add_argument(
-        "--chunk-size",
-        type=int,
-        default=1000000,
-        help="Number of rows to extract per chunk (default: 1,000,000)"
+    migrate_parser.add_argument(
+        "--target-table",
+        help="Target Snowflake table name"
     )
     
+    migrate_parser.add_argument(
+        "--batch-file",
+        help="JSON file with dataset ID to table name mappings"
+    )
+    
+    migrate_parser.add_argument(
+        "--test-connection",
+        action="store_true",
+        help="Test Domo and Snowflake connections"
+    )
+    
+    return parser
+
+
+def main() -> int:
+    """
+    Main entry point for the CLI.
+    
+    Returns:
+        int: Exit code (0 for success, 1 for failure)
+    """
+    parser = create_parser()
     args = parser.parse_args()
     
-    # Check if we have datasets to process
-    if not LIST_OF_DATASETS:
-        logger.error("❌ No datasets configured in LIST_OF_DATASETS")
-        sys.exit(1)
+    # Handle no command provided
+    if not args.command:
+        parser.print_help()
+        return 1
     
-    logger.info(f"🚀 Starting transfer for {len(LIST_OF_DATASETS)} datasets")
+    # Route to appropriate handler
+    if args.command == 'inventory':
+        return handle_inventory_command(args)
+    elif args.command == 'migrate':
+        return handle_migrate_command(args)
     
-    # Initialize transfer handler
-    transfer = DomoToSnowflakeTransfer()
-    
-    # Track results
-    successful_transfers = 0
-    failed_transfers = 0
-    
-    try:
-        # Setup connections once for all datasets
-        if not args.dry_run:
-            if not transfer.domo_handler.setup_auth():
-                logger.error("❌ Failed to authenticate with Domo")
-                sys.exit(1)
-                
-            if not transfer.snowflake_handler.setup_connection():
-                logger.error("❌ Failed to connect to Snowflake")
-                sys.exit(1)
-                time.sleep(60)
-        else:
-            # For dry run, only setup Domo auth
-            if not transfer.domo_handler.setup_auth():
-                logger.error("❌ Failed to authenticate with Domo")
-                sys.exit(1)
-        
-        # Process each dataset
-        for i, (dataset_id, table_name) in enumerate(LIST_OF_DATASETS, 1):
-            logger.info(f"\n📊 Processing dataset {i}/{len(LIST_OF_DATASETS)}")
-            logger.info(f"Dataset ID: {dataset_id}")
-            logger.info(f"Table Name: {table_name}")
-            
-            try:
-                if args.dry_run:
-                    # Dry run - only extract data
-                    df = transfer.domo_handler.extract_data(dataset_id, args.query)
-                    if df is not None:
-                        logger.info(f"✅ Dry run successful for {table_name} - extracted {len(df)} rows")
-                        logger.info(f"Data preview:\n{df.head()}")
-                        successful_transfers += 1
-                    else:
-                        logger.error(f"❌ Dry run failed for {table_name}")
-                        failed_transfers += 1
-                else:
-                    # Full transfer
-                    success = transfer.transfer_data(
-                        dataset_id=dataset_id,
-                        table_name=table_name,
-                        query=args.query,
-                        if_exists=args.if_exists
-                    )
-                    
-                    if success:
-                        successful_transfers += 1
-                        logger.info(f"✅ Transfer completed for {table_name}")
-                    else:
-                        failed_transfers += 1
-                        logger.error(f"❌ Transfer failed for {table_name}")
-                        
-            except Exception as e:
-                failed_transfers += 1
-                logger.error(f"❌ Unexpected error processing {table_name}: {e}")
-                continue  # Continue with next dataset
-        
-        # Summary
-        logger.info(f"\n📋 Transfer Summary:")
-        logger.info(f"✅ Successful: {successful_transfers}")
-        logger.error(f"❌ Failed: {failed_transfers}")
-        logger.info(f"📊 Total: {len(LIST_OF_DATASETS)}")
-        
-        if failed_transfers > 0:
-            logger.warning(f"⚠️  {failed_transfers} transfers failed")
-            sys.exit(1)
-        else:
-            logger.info("🎉 All transfers completed successfully!")
-                
-    except KeyboardInterrupt:
-        logger.info("Transfer interrupted by user")
-        sys.exit(1)
-    except Exception as e:
-        logger.error(f"Unexpected error: {e}")
-        sys.exit(1)
-    finally:
-        transfer.cleanup()
+    # If we get here, unknown command
+    logger.error(f"❌ Unknown command: {args.command}")
+    parser.print_help()
+    return 1
 
 
 if __name__ == "__main__":
-    main() 
+    try:
+        # Quick test to verify imports work
+        logger.info("🔧 Initializing migration tools...")
+        
+        # Just test that imports work, don't create handlers yet
+        logger.info("✅ Tools initialized successfully")
+        
+        # Run main CLI
+        exit_code = main()
+        sys.exit(exit_code)
+        
+    except KeyboardInterrupt:
+        logger.info("⚠️  Operation cancelled by user")
+        sys.exit(1)
+    except Exception as e:
+        logger.error(f"❌ Unexpected error: {e}")
+        sys.exit(1) 
