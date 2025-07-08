@@ -43,6 +43,11 @@ service-account-*.json
 client_secret*.json
 token.json
 
+# Test output files
+inventory_data.csv
+test_output.csv
+*.csv
+
 # Node.js cache
 node_modules/
 npm-debug.log*
@@ -80,3 +85,9 @@ logs/
 # argo-utils-cli repository
 @https://github.com/CrystalBallers/argo-utils-cli.git/
 argo-utils-cli/
+
+# SQL output files
+exported_sql/
+*.sql
+!schema.sql
+!migrations/*.sql
