@@ -15,12 +15,10 @@ import polars as pl
 
 try:
     import snowflake.connector
-    from snowflake.connector.polars_tools import write_polars
     SNOWFLAKE_AVAILABLE = True
 except ImportError:
     SNOWFLAKE_AVAILABLE = False
     snowflake = None  # type: ignore
-    write_polars = None  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -201,7 +199,7 @@ class SnowflakeHandler:
     
     def upload_data(self, df: pl.DataFrame, table_name: str, if_exists: str = 'replace') -> bool:
         """
-        Upload DataFrame to Snowflake table.
+        Upload DataFrame to Snowflake table using cursor method.
         
         Args:
             df: DataFrame to upload
@@ -217,28 +215,6 @@ class SnowflakeHandler:
         
         try:
             logger.info(f"Uploading {len(df)} rows to Snowflake table: {table_name}")
-            
-            # Try polars_tools first (faster for large datasets)
-            if write_polars is not None:
-                try:
-                    success, nchunks, nrows, _ = write_polars(
-                        self.conn, 
-                        df, 
-                        table_name.upper(),
-                        auto_create_table=True,
-                        overwrite=(if_exists == 'replace')
-                    )
-                    
-                    if success:
-                        logger.info(f"✅ Uploaded {nrows} rows in {nchunks} chunks")
-                        return True
-                    else:
-                        logger.warning("polars_tools upload failed, trying cursor method")
-                        
-                except Exception as e:
-                    logger.warning(f"polars_tools upload failed: {e}, trying cursor method")
-            
-            # Fallback to cursor method
             return self._upload_via_cursor(df, table_name, if_exists)
             
         except Exception as e:
@@ -247,7 +223,7 @@ class SnowflakeHandler:
     
     def _upload_via_cursor(self, df: pl.DataFrame, table_name: str, if_exists: str = 'replace') -> bool:
         """
-        Upload DataFrame using cursor method (fallback).
+        Upload DataFrame using cursor method with proper SQL execution.
         
         Args:
             df: DataFrame to upload
@@ -277,7 +253,7 @@ class SnowflakeHandler:
             placeholders = ', '.join(['%s'] * len(columns))
             
             # Insert data in batches
-            batch_size = 100000
+            batch_size = 1000  # Smaller batch size for better performance
             total_rows = len(df_clean)
             
             for i in range(0, total_rows, batch_size):
