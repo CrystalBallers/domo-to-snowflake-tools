@@ -1,0 +1,23 @@
+# Unified requirements for Domo-to-Snowflake migration project
+# Install with: pip install -r requirements.txt
+
+# Core dependencies
+python-dotenv>=1.0.0
+
+# Snowflake integration
+snowflake-connector-python[polars]>=3.0.0
+cryptography>=3.4.8
+
+# Data processing (migrated from pandas to polars)
+polars>=0.20.0
+
+# Google Sheets integration
+google-api-python-client>=2.0.0
+google-auth>=2.0.0
+google-auth-oauthlib>=1.0.0
+google-auth-httplib2>=0.1.0
+gspread>=5.0.0
+oauth2client>=4.1.3
+
+# Optional: pandas for compatibility (if needed for domo_utils)
+pandas>=2.0.0 

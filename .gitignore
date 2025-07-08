@@ -35,6 +35,14 @@ env/
 .env.production
 .env.*
 
+# Google Sheets credentials
+credentials.json
+*.json
+google-credentials/
+service-account-*.json
+client_secret*.json
+token.json
+
 # Node.js cache
 node_modules/
 npm-debug.log*
