@@ -90,3 +90,6 @@ argo-utils-cli/
 exported_sql/
 !schema.sql
 !migrations/*.sql
+
+
+comparison_detailed_report_*
