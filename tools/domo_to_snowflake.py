@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from utils.snowflake import SnowflakeHandler
 from utils.domo import DomoHandler
-from utils.gsheets import GoogleSheets
+from utils.gsheets import GoogleSheets, READ_WRITE_SCOPES
 
 # Load environment variables
 load_dotenv()
@@ -233,7 +233,7 @@ class MigrationManager:
                 logger.warning(f"⚠️  Google Sheets credentials file not found: {credentials_path}")
                 return False
             
-            gsheets_client = GoogleSheets(credentials_path=credentials_path)
+            gsheets_client = GoogleSheets(credentials_path=credentials_path, scopes=READ_WRITE_SCOPES)
             logger.info(f"📝 Updating status for {len(successful_migrations)} successful migrations in spreadsheet")
             
             # Read current data to find row numbers
@@ -420,7 +420,7 @@ def migrate_from_spreadsheet(spreadsheet_id: str, sheet_name: str = "Migration",
     
     try:
         # Initialize Google Sheets client
-        gsheets_client = GoogleSheets(credentials_path=credentials_path)
+        gsheets_client = GoogleSheets(credentials_path=credentials_path, scopes=READ_WRITE_SCOPES)
         logger.info(f"📊 Reading migration data from spreadsheet: {spreadsheet_id}")
         
         # Read the migration sheet
