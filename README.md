@@ -92,6 +92,7 @@ Create a `.env` file in the project root with the following variables:
 GOOGLE_SHEETS_CREDENTIALS_FILE=/path/to/your/service-account-key.json
 MIGRATION_SPREADSHEET_ID=1Y_CpIXW9RCxnlwwvP-tAL5B9UmvQlgu6DbpEnHgSgVA
 MIGRATION_SHEET_NAME=Migration
+DATASET_SHEET_NAME=Datasets  # Used by datasets export functionality
 
 # Domo API
 DOMO_DEVELOPER_TOKEN=your_domo_developer_token
@@ -187,63 +188,61 @@ python main.py migrate [options]
 - `--sheet-name`: Migration sheet tab name (default: Migration)
 - `--test-connection`: Test Domo and Snowflake connections
 
+#### 3. `datasets` - Dataset Management
+
+Manage and export Domo datasets.
+
+```bash
+python main.py datasets [options]
+```
+
+**Options:**
+- `--test-connection`: Test Domo connection
+- `--export-to-spreadsheet`: Export all Domo datasets to Google Sheets
+- `--list-local`: List all Domo datasets locally
+- `--credentials`: Path to Google Sheets credentials file
+- `--spreadsheet-id`: Google Sheets spreadsheet ID (uses default if not specified)
+- `--sheet-name`: Sheet name for datasets (default: DomoDatasets)
+- `--batch-size`: Number of datasets to fetch per batch (default: 100)
+
 ## 📚 Usage Examples
 
-### Inventory Management
-
-#### Test Google Sheets Connection
-```bash
-python main.py inventory --test-connection
-```
-
-#### Export All Dataflows to SQL
-```bash
-python main.py inventory --export-dir my_sql_directory
-```
-
-#### Use Custom Credentials
-```bash
-python main.py inventory --credentials /path/to/credentials.json --export-dir output
-```
-
-### Data Migration
-
-#### Test Migration Connections
-```bash
-python main.py migrate --test-connection
-```
-
-#### Migrate Individual Dataset
-```bash
-python main.py migrate --dataset-id 12345 --target-table sales_data
-```
-
-#### Batch Migration
-```bash
-python main.py migrate --batch-file dataset_mapping.json
-```
-
-#### Migrate from Google Sheets
-```bash
-# Migrate datasets from Google Sheets Migration tab
-python main.py migrate --from-spreadsheet
-
-# Use custom credentials
-python main.py migrate --from-spreadsheet --credentials /path/to/creds.json
-
-# Use custom spreadsheet and sheet name
-python main.py migrate --from-spreadsheet --spreadsheet-id YOUR_SHEET_ID --sheet-name MyMigration
-```
-
-**Example `dataset_mapping.json`:**
-```json
-{
-    "dataset_001": "sales_monthly",
-    "dataset_002": "customer_data",
-    "dataset_003": "inventory_levels",
-    "dataset_004": "financial_reports"
-}
-```
+Examples:
+    # Export inventory dataflows to SQL
+    python main.py inventory --export-dir exported_sql
+    
+    # Test Google Sheets connection
+    python main.py inventory --test-connection
+    
+    # Migrate single dataset
+    python main.py migrate --dataset-id 12345 --target-table sales_data
+    
+    # Batch migrate datasets from JSON file
+    python main.py migrate --batch-file dataset_mapping.json
+    
+    # Migrate datasets from Google Sheets Migration tab
+    python main.py migrate --from-spreadsheet
+    
+    # Migrate from spreadsheet with custom credentials
+    python main.py migrate --from-spreadsheet --credentials /path/to/creds.json
+    
+    # Migrate from custom spreadsheet and sheet
+    python main.py migrate --from-spreadsheet --spreadsheet-id YOUR_SHEET_ID --sheet-name MyMigration
+    
+    # Test migration connections
+    python main.py migrate --test-connection
+    
+    # Export all Domo datasets to Google Sheets
+    python main.py datasets --export-to-spreadsheet
+    
+    # List all Domo datasets locally
+    python main.py datasets --list-local
+    
+    # Test Domo connection
+    python main.py datasets --test-connection
+    
+    # Use custom credentials file
+    python main.py inventory --credentials /path/to/creds.json --export-dir output
 
 ### Migration Spreadsheet Structure
 

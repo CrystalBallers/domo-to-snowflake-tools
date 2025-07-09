@@ -5,7 +5,13 @@ This package contains utilities for handling various data migration tasks.
 """
 
 from .inventory_handler import InventoryHandler, export_dataflows_to_sql
-from .domo_to_snowflake import migrate_dataset, batch_migrate_datasets, migrate_from_spreadsheet, MigrationManager
+from .domo_to_snowflake import (
+    migrate_dataset, 
+    batch_migrate_datasets, 
+    migrate_from_spreadsheet,
+    MigrationManager
+)
+from .utils.domo import DomoHandler, export_datasets_to_spreadsheet
 
 __all__ = [
     "InventoryHandler",
@@ -14,4 +20,6 @@ __all__ = [
     "batch_migrate_datasets",
     "migrate_from_spreadsheet",
     "MigrationManager",
+    "DomoHandler",
+    "export_datasets_to_spreadsheet",
 ] 

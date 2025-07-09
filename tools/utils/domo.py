@@ -436,4 +436,185 @@ class DomoHandler:
             
         except Exception as e:
             logger.error(f"Fallback pandas to polars conversion failed: {e}")
-            return None 
+            return None
+    
+    def get_all_datasets(self, batch_size: int = 500) -> list:
+        """
+        Get all datasets from Domo using the search API with pagination.
+        
+        Args:
+            batch_size (int): Number of datasets to fetch per batch
+            
+        Returns:
+            list: List of datasets with id, name, and other metadata
+        """
+        logger.info(f"🔍 Fetching all datasets from Domo (batch size: {batch_size})")
+        
+        if self.dataset_api is None:
+            logger.error("❌ Domo dataset API not initialized")
+            return []
+        
+        try:
+            all_datasets = []
+            offset = 0
+            total_fetched = 0
+            
+            while True:
+                logger.info(f"📥 Fetching batch: offset={offset}, limit={batch_size}")
+                
+                try:
+                    # Use the search API to get datasets
+                    search_results = self.dataset_api.search(
+                        limit=batch_size, 
+                        offset=offset,
+                        filters=[],  # No filters to get all datasets
+                        sort=None
+                    )
+                    
+                    if not search_results or len(search_results) == 0:
+                        logger.info(f"✅ No more datasets found at offset {offset}")
+                        break
+                    
+                    # Extract dataset information
+                    batch_datasets = []
+                    for dataset in search_results:
+                        dataset_info = {
+                            'id': dataset.id,
+                            'name': dataset.name,
+                            'description': getattr(dataset, 'description', ''),
+                            'created': getattr(dataset, 'created', ''),
+                            'last_updated': getattr(dataset, 'last_updated', ''),
+                            'row_count': getattr(dataset, 'row_count', 0),
+                            'column_count': getattr(dataset, 'column_count', 0),
+                            'owner': getattr(dataset.owner, 'name', '') if hasattr(dataset, 'owner') and dataset.owner else ''
+                        }
+                        batch_datasets.append(dataset_info)
+                    
+                    all_datasets.extend(batch_datasets)
+                    total_fetched += len(batch_datasets)
+                    
+                    logger.info(f"✅ Fetched {len(batch_datasets)} datasets (total: {total_fetched})")
+                    
+                    # If we got fewer results than the batch size, we've reached the end
+                    if len(batch_datasets) < batch_size:
+                        logger.info("✅ Reached end of datasets")
+                        break
+                    
+                    offset += batch_size
+                    
+                except Exception as e:
+                    logger.error(f"❌ Error fetching batch at offset {offset}: {e}")
+                    break
+            
+            logger.info(f"🎉 Successfully fetched {len(all_datasets)} total datasets")
+            return all_datasets
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get datasets from Domo: {e}")
+            return [] 
+
+
+def export_datasets_to_spreadsheet(spreadsheet_id: str, sheet_name: str = "Datasets", 
+                                 credentials_path: str = None) -> bool:
+    """
+    Export all datasets from Domo to Google Sheets.
+    
+    Args:
+        spreadsheet_id (str): Google Sheets spreadsheet ID
+        sheet_name (str): Name of the sheet tab (default: "Datasets")
+        credentials_path (str): Path to Google Sheets credentials file
+        
+    Returns:
+        bool: True if export successful, False otherwise
+    """
+    if not credentials_path:
+        credentials_path = os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE")
+    
+    if not credentials_path:
+        logger.error("❌ No Google Sheets credentials provided")
+        return False
+    
+    if not os.path.exists(credentials_path):
+        logger.error(f"❌ Google Sheets credentials file not found: {credentials_path}")
+        return False
+    
+    try:
+        logger.info(f"📊 Exporting datasets to spreadsheet: {spreadsheet_id}")
+        logger.info(f"📄 Sheet name: {sheet_name}")
+        
+        # Initialize Domo handler and get datasets
+        domo_handler = DomoHandler()
+        if not domo_handler.setup_auth():
+            logger.error("❌ Failed to authenticate with Domo")
+            return False
+        
+        datasets = domo_handler.get_all_datasets()
+        
+        if not datasets:
+            logger.error("❌ No datasets found to export")
+            return False
+        
+        # Import GoogleSheets here to avoid circular imports
+        from .gsheets import GoogleSheets, READ_WRITE_SCOPES
+        
+        # Initialize Google Sheets client
+        gsheets_client = GoogleSheets(credentials_path=credentials_path, scopes=READ_WRITE_SCOPES)
+        
+        # Prepare data for export
+        headers = ['Dataset ID', 'Name', 'Description', 'Created', 'Last Updated', 'Row Count', 'Column Count', 'Owner']
+        data_rows = []
+        
+        for dataset in datasets:
+            # Convert datetime objects to strings to avoid JSON serialization issues
+            created_date = dataset['created']
+            if hasattr(created_date, 'strftime'):
+                created_date = created_date.strftime('%Y-%m-%d %H:%M:%S')
+            elif created_date is None:
+                created_date = ''
+            
+            last_updated = dataset['last_updated']
+            if hasattr(last_updated, 'strftime'):
+                last_updated = last_updated.strftime('%Y-%m-%d %H:%M:%S')
+            elif last_updated is None:
+                last_updated = ''
+            
+            row = [
+                str(dataset['id']),
+                str(dataset['name']),
+                str(dataset['description']),
+                str(created_date),
+                str(last_updated),
+                int(dataset['row_count']),
+                int(dataset['column_count']),
+                str(dataset['owner'])
+            ]
+            data_rows.append(row)
+        
+        # Combine headers and data
+        all_data = [headers] + data_rows
+        
+        # Write to Google Sheets
+        logger.info(f"📝 Writing {len(data_rows)} datasets to spreadsheet...")
+        
+        # First, try to clear the existing sheet if it exists
+        try:
+            # Read a small range to check if sheet exists
+            existing_data = gsheets_client.read_range(spreadsheet_id, f"{sheet_name}!A1:A1")
+            if existing_data:
+                logger.info(f"📄 Sheet '{sheet_name}' exists, clearing content...")
+                # Clear the sheet by writing empty data to a large range
+                gsheets_client.write_range(spreadsheet_id, f"{sheet_name}!A1:Z10000", [])
+        except Exception:
+            logger.info(f"📄 Sheet '{sheet_name}' doesn't exist, will be created automatically")
+        
+        # Write the new data
+        gsheets_client.write_range(spreadsheet_id, f"{sheet_name}!A1", all_data)
+        
+        logger.info(f"✅ Successfully exported {len(data_rows)} datasets to {sheet_name}")
+        logger.info(f"📊 Columns: {', '.join(headers)}")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Failed to export datasets to spreadsheet: {e}")
+        return False 

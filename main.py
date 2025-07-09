@@ -29,8 +29,13 @@ logger = logging.getLogger(__name__)
 # Import tool modules
 try:
     from tools.inventory_handler import export_dataflows_to_sql, InventoryHandler
-    from tools.domo_to_snowflake import migrate_dataset, batch_migrate_datasets, migrate_from_spreadsheet, MigrationManager
-    from tools.utils.domo import DomoHandler
+    from tools.domo_to_snowflake import (
+        migrate_dataset, 
+        batch_migrate_datasets, 
+        migrate_from_spreadsheet, 
+        MigrationManager
+    )
+    from tools.utils.domo import DomoHandler, export_datasets_to_spreadsheet
     from tools.utils.snowflake import SnowflakeHandler
 except ImportError as e:
     logger.error(f"Failed to import required modules: {e}")
@@ -243,6 +248,79 @@ def handle_migrate_command(args) -> int:
     return 1
 
 
+def handle_datasets_command(args) -> int:
+    """
+    Handle the datasets subcommand.
+    
+    Args:
+        args: Parsed command line arguments
+        
+    Returns:
+        int: Exit code (0 for success, 1 for failure)
+    """
+    # Test connection mode
+    if args.test_connection:
+        logger.info("🧪 Testing Domo connection...")
+        try:
+            domo_handler = DomoHandler()
+            if domo_handler.setup_auth():
+                logger.info("✅ Domo connection successful")
+                return 0
+            else:
+                logger.error("❌ Domo connection failed")
+                return 1
+        except Exception as e:
+            logger.error(f"❌ Domo connection test failed: {e}")
+            return 1
+    
+    # Export datasets to spreadsheet
+    if args.export_to_spreadsheet:
+        print("test \n\n\n")
+        logger.info("🚀 Starting dataset export to spreadsheet...")
+        logger.info(f"📋 Spreadsheet ID: {args.spreadsheet_id}")
+        logger.info(f"📄 Sheet name: {args.sheet_name}")
+        
+        success = export_datasets_to_spreadsheet(
+            spreadsheet_id=args.spreadsheet_id,
+            sheet_name=args.sheet_name,
+            credentials_path=args.credentials
+        )
+        
+        if success:
+            logger.info("🎉 Dataset export completed successfully!")
+            return 0
+        else:
+            logger.error("❌ Dataset export failed!")
+            return 1
+    
+    # List datasets locally
+    if args.list_local:
+        logger.info("📋 Fetching all datasets from Domo...")
+        
+        # Initialize Domo handler
+        domo_handler = DomoHandler()
+        if not domo_handler.setup_auth():
+            logger.error("❌ Failed to authenticate with Domo")
+            return 1
+        
+        datasets = domo_handler.get_all_datasets(batch_size=args.batch_size)
+        
+        if not datasets:
+            logger.error("❌ No datasets found")
+            return 1
+        
+        logger.info(f"📊 Found {len(datasets)} datasets:")
+        for dataset in datasets:
+            logger.info(f"   {dataset['id']}: {dataset['name']}")
+        
+        return 0
+    
+    # No valid arguments provided
+    logger.error("❌ No valid dataset options provided")
+    logger.error("Use --export-to-spreadsheet to export to Google Sheets, --list-local to list locally, or --test-connection to test Domo connection")
+    return 1
+
+
 def create_parser() -> argparse.ArgumentParser:
     """
     Create the main argument parser with subcommands.
@@ -374,6 +452,55 @@ Environment Variables:
         help="Test Domo and Snowflake connections"
     )
     
+    # Datasets subcommand
+    datasets_parser = subparsers.add_parser(
+        'datasets',
+        help='Manage Domo datasets'
+    )
+    
+    datasets_parser.add_argument(
+        "--test-connection",
+        action="store_true",
+        help="Test Domo connection"
+    )
+    
+    datasets_parser.add_argument(
+        "--export-to-spreadsheet",
+        action="store_true",
+        help="Export all Domo datasets to a Google Sheets spreadsheet"
+    )
+    
+    datasets_parser.add_argument(
+        "--list-local",
+        action="store_true",
+        help="List all Domo datasets locally"
+    )
+    
+    datasets_parser.add_argument(
+        "--credentials",
+        default=os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE"),
+        help="Path to Google Sheets credentials JSON file"
+    )
+    
+    datasets_parser.add_argument(
+        "--spreadsheet-id",
+        default=os.getenv("MIGRATION_SPREADSHEET_ID"),
+        help="Google Sheets spreadsheet ID to export to (uses default if not specified)"
+    )
+    
+    datasets_parser.add_argument(
+        "--sheet-name",
+        default=os.getenv("DATASETS_SHEET_NAME", "Datasets"),
+        help="Sheet name for Domo datasets (default: DomoDatasets)"
+    )
+    
+    datasets_parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=100,
+        help="Number of datasets to fetch per batch (default: 100)"
+    )
+    
     return parser
 
 
@@ -397,6 +524,8 @@ def main() -> int:
         return handle_inventory_command(args)
     elif args.command == 'migrate':
         return handle_migrate_command(args)
+    elif args.command == 'datasets':
+        return handle_datasets_command(args)
     
     # If we get here, unknown command
     logger.error(f"❌ Unknown command: {args.command}")
