@@ -1,0 +1,938 @@
+/*
+================================================================================
+DOMO DATAFLOW TRANSLATION
+================================================================================
+Dataflow ID: 1087
+Dataflow Name: Historical Sales Archive DF (Don't Delete or Modify)
+Target Dialect: MYSQL
+
+TRANSLATION SUMMARY:
+  Total Actions: 27
+  Successful: 27
+  Failed: 0
+  Unique Action Types: 9
+  Action Types: Constant, ExpressionEvaluator, Filter, GroupBy, LoadFromVault, MergeJoin, Metadata, PublishToVault, SelectValues
+  Pipelines: 5
+
+Generated: 2025-07-02 10:26:13
+================================================================================
+*/
+WITH _countries AS (
+  SELECT
+    created_at,
+    currency,
+    enabled,
+    id,
+    marketplace_id,
+    name,
+    sales_channel,
+    short_name,
+    updated_at,
+    batch_id,
+    batch_last_run
+  FROM countries
+), _Dates_DS AS (
+  SELECT
+    brand_name,
+    client_name,
+    date,
+    brand_id,
+    client_id,
+    week_number,
+    year,
+    week_code,
+    end_week,
+    start_week
+  FROM Dates_DS
+), _sales_by_products_archive AS (
+  SELECT
+    brand_id,
+    client_id,
+    cogs,
+    country_id,
+    date,
+    expanded_units,
+    id,
+    product_id,
+    sales,
+    units,
+    brand_name,
+    client_name,
+    amazon_seller_id,
+    country_1,
+    batch_id,
+    batch_last_run
+  FROM sales_by_products_archive
+), _amazon_skus AS (
+  SELECT
+    amazon_asin_id,
+    amazon_seller_id,
+    asin,
+    amazon_1,
+    brand_id,
+    catalog_last_appearance,
+    client_id,
+    comments,
+    country_id,
+    created_at,
+    created_by,
+    date_of_first_sale,
+    date_of_last_sale,
+    deleted_at,
+    deleted_by,
+    fnsku,
+    fulfillment_channel,
+    id,
+    is_bundle,
+    last_referral_fee,
+    last_seen_price,
+    last_shipping_fee,
+    map,
+    max_reorder_daily_velocity,
+    min_order_qty,
+    min_reorder_daily_velocity,
+    name,
+    old_sku,
+    parent_variation,
+    reorder_comments,
+    reorder_status,
+    sku,
+    srp,
+    status,
+    test_merge,
+    units_in_listing,
+    upc,
+    upc_id,
+    updated_at,
+    updated_by,
+    vendor_parameter_id,
+    is_preferred_sku_by_asin,
+    is_relist_authorized,
+    is_inbounding_authorized,
+    is_delete_once_sold_out,
+    is_agency,
+    is_dangerous_good,
+    is_apparel,
+    is_certified_renewed,
+    lithium_battery_fee,
+    velocity,
+    primary_velocity,
+    discontinued_reason_id,
+    not_sellable_reason,
+    is_virtual_tracking,
+    transparency_label_type_id,
+    batch_id,
+    batch_last_run
+  FROM amazon_skus
+), _amazon_order_items AS (
+  SELECT
+    amazon_order_id,
+    amazon_seller_id,
+    asin,
+    created_at,
+    currency,
+    expanded_units,
+    fulfillment_channel,
+    gift_wrap_price,
+    gift_wrap_tax,
+    id,
+    is_business_order,
+    is_buyer_requested_cancellation,
+    is_iba,
+    is_sold_by_ab,
+    item_price,
+    item_promotion_discount,
+    item_status,
+    item_tax,
+    last_updated_date,
+    merchant_order_id,
+    number_of_items,
+    old_product_id,
+    order_channel,
+    order_status,
+    postal_code_id,
+    price_designation,
+    product_id,
+    product_name,
+    promotion_ids,
+    purchase_date,
+    purchase_order_number,
+    quantity,
+    sales_channel,
+    ship_city,
+    ship_country,
+    ship_postal_code,
+    ship_promotion_discount,
+    ship_service_level,
+    ship_state,
+    shipping_price,
+    shipping_tax,
+    sku,
+    updated_at,
+    url,
+    batch_id,
+    batch_last_run
+  FROM amazon_order_items
+), _CountriesMergeConstant AS (
+  SELECT
+    1 AS constant_value
+), _Group_By AS (
+  SELECT
+    date,
+    week_number,
+    start_week,
+    end_week,
+    COUNT(client_name) AS count_rows
+  FROM _Dates_DS
+  GROUP BY
+    date,
+    week_number,
+    start_week,
+    end_week
+), _Group_By_Get_Min_Date AS (
+  SELECT
+    product_id,
+    country_id,
+    MIN(date) AS first_purchase_date,
+    MAX(date) AS last_purchase_date
+  FROM _sales_by_products_archive
+  GROUP BY
+    product_id,
+    country_id
+), _Add_SDLY_Field AS (
+  SELECT
+    brand_id,
+    client_id,
+    cogs,
+    country_id,
+    date,
+    expanded_units,
+    id,
+    product_id,
+    sales,
+    units,
+    brand_name,
+    client_name,
+    amazon_seller_id,
+    country_1,
+    batch_id,
+    batch_last_run,
+    (
+      DATEADD(YEAR, '1' * -1, date)
+    ) AS sdly
+  FROM _sales_by_products_archive
+), _Products_MergeConstant AS (
+  SELECT
+    1 AS constant_value
+), _Set_Column_Type AS (
+  SELECT
+    CAST(purchase_date AS DATE),
+    amazon_order_id,
+    amazon_seller_id,
+    asin,
+    created_at,
+    currency,
+    expanded_units,
+    fulfillment_channel,
+    gift_wrap_price,
+    gift_wrap_tax,
+    id,
+    is_business_order,
+    is_buyer_requested_cancellation,
+    is_iba,
+    is_sold_by_ab,
+    item_price,
+    item_promotion_discount,
+    item_status,
+    item_tax,
+    last_updated_date,
+    merchant_order_id,
+    number_of_items,
+    old_product_id,
+    order_channel,
+    order_status,
+    postal_code_id,
+    price_designation,
+    product_id,
+    product_name,
+    promotion_ids,
+    purchase_order_number,
+    quantity,
+    sales_channel,
+    ship_city,
+    ship_country,
+    ship_postal_code,
+    ship_promotion_discount,
+    ship_service_level,
+    ship_state,
+    shipping_price,
+    shipping_tax,
+    sku,
+    updated_at,
+    url,
+    batch_id,
+    batch_last_run
+  FROM _amazon_order_items
+), _Filter_only_Enabled_Countries AS (
+  SELECT
+    *
+  FROM _CountriesMergeConstant
+  WHERE
+    enabled = '1'
+), _DateMergeConstant AS (
+  SELECT
+    1 AS constant_value
+), _sales_SDLW AS (
+  SELECT
+    _Add_SDLY_Field.brand_id,
+    _Add_SDLY_Field.client_id,
+    _Add_SDLY_Field.cogs,
+    _Add_SDLY_Field.country_id,
+    _Add_SDLY_Field.date,
+    _Add_SDLY_Field.expanded_units,
+    _Add_SDLY_Field.id,
+    _Add_SDLY_Field.product_id,
+    _Add_SDLY_Field.sales,
+    _Add_SDLY_Field.units,
+    _Add_SDLY_Field.brand_name,
+    _Add_SDLY_Field.client_name,
+    _Add_SDLY_Field.amazon_seller_id,
+    _Add_SDLY_Field.country_1,
+    _Add_SDLY_Field.batch_id,
+    _Add_SDLY_Field.batch_last_run,
+    _Add_SDLY_Field.sdly,
+    _sales_by_products_archive.expanded_units AS expanded_units_sdly,
+    _sales_by_products_archive.sales AS sales_sdly,
+    _sales_by_products_archive.units AS units_sdly
+  FROM _Add_SDLY_Field
+  LEFT JOIN _sales_by_products_archive
+    ON _Add_SDLY_Field.sdly = _sales_by_products_archive.date
+    AND _Add_SDLY_Field.product_id = _sales_by_products_archive.product_id
+), _Amazon_Only_1_Day_No_Cancels AS (
+  SELECT
+    *
+  FROM _Set_Column_Type
+  WHERE
+    (
+      item_price <> '0'
+      AND (
+        purchase_date < NULL
+        AND (
+          order_status <> 'Cancelled'
+          AND (
+            item_status <> 'Cancelled' AND sales_channel <> 'Non-Amazon'
+          )
+        )
+      )
+    )
+), _Join_Countries_with_Dates AS (
+  SELECT
+    _Filter_only_Enabled_Countries.created_at,
+    _Filter_only_Enabled_Countries.currency,
+    _Filter_only_Enabled_Countries.enabled,
+    _Filter_only_Enabled_Countries.id AS country_id,
+    _Filter_only_Enabled_Countries.marketplace_id,
+    _Filter_only_Enabled_Countries.name,
+    _Filter_only_Enabled_Countries.sales_channel,
+    _Filter_only_Enabled_Countries.short_name,
+    _Filter_only_Enabled_Countries.updated_at,
+    _Filter_only_Enabled_Countries.batch_id,
+    _Filter_only_Enabled_Countries.batch_last_run,
+    _DateMergeConstant.date,
+    _DateMergeConstant.week_number,
+    _DateMergeConstant.start_week,
+    _DateMergeConstant.end_week,
+    _DateMergeConstant.count_rows
+  FROM _Filter_only_Enabled_Countries
+  INNER JOIN _DateMergeConstant
+    ON _Filter_only_Enabled_Countries.mergecolumn = _DateMergeConstant.mergecolumn
+), _Join_Data_1 AS (
+  SELECT
+    _Amazon_Only_1_Day_No_Cancels.amazon_order_id,
+    _Amazon_Only_1_Day_No_Cancels.amazon_seller_id,
+    _Amazon_Only_1_Day_No_Cancels.asin,
+    _Amazon_Only_1_Day_No_Cancels.created_at,
+    _Amazon_Only_1_Day_No_Cancels.currency,
+    _Amazon_Only_1_Day_No_Cancels.expanded_units,
+    _Amazon_Only_1_Day_No_Cancels.fulfillment_channel,
+    _Amazon_Only_1_Day_No_Cancels.gift_wrap_price,
+    _Amazon_Only_1_Day_No_Cancels.gift_wrap_tax,
+    _Amazon_Only_1_Day_No_Cancels.id,
+    _Amazon_Only_1_Day_No_Cancels.is_business_order,
+    _Amazon_Only_1_Day_No_Cancels.is_buyer_requested_cancellation,
+    _Amazon_Only_1_Day_No_Cancels.is_iba,
+    _Amazon_Only_1_Day_No_Cancels.is_sold_by_ab,
+    _Amazon_Only_1_Day_No_Cancels.item_price,
+    _Amazon_Only_1_Day_No_Cancels.item_promotion_discount,
+    _Amazon_Only_1_Day_No_Cancels.item_status,
+    _Amazon_Only_1_Day_No_Cancels.item_tax,
+    _Amazon_Only_1_Day_No_Cancels.last_updated_date,
+    _Amazon_Only_1_Day_No_Cancels.merchant_order_id,
+    _Amazon_Only_1_Day_No_Cancels.number_of_items,
+    _Amazon_Only_1_Day_No_Cancels.old_product_id,
+    _Amazon_Only_1_Day_No_Cancels.order_channel,
+    _Amazon_Only_1_Day_No_Cancels.order_status,
+    _Amazon_Only_1_Day_No_Cancels.postal_code_id,
+    _Amazon_Only_1_Day_No_Cancels.price_designation,
+    _Amazon_Only_1_Day_No_Cancels.product_id,
+    _Amazon_Only_1_Day_No_Cancels.product_name,
+    _Amazon_Only_1_Day_No_Cancels.promotion_ids,
+    _Amazon_Only_1_Day_No_Cancels.purchase_date,
+    _Amazon_Only_1_Day_No_Cancels.purchase_order_number,
+    _Amazon_Only_1_Day_No_Cancels.quantity,
+    _Amazon_Only_1_Day_No_Cancels.sales_channel,
+    _Amazon_Only_1_Day_No_Cancels.ship_city,
+    _Amazon_Only_1_Day_No_Cancels.ship_country,
+    _Amazon_Only_1_Day_No_Cancels.ship_postal_code,
+    _Amazon_Only_1_Day_No_Cancels.ship_promotion_discount,
+    _Amazon_Only_1_Day_No_Cancels.ship_service_level,
+    _Amazon_Only_1_Day_No_Cancels.ship_state,
+    _Amazon_Only_1_Day_No_Cancels.shipping_price,
+    _Amazon_Only_1_Day_No_Cancels.shipping_tax,
+    _Amazon_Only_1_Day_No_Cancels.sku,
+    _Amazon_Only_1_Day_No_Cancels.updated_at,
+    _Amazon_Only_1_Day_No_Cancels.url,
+    _Amazon_Only_1_Day_No_Cancels.batch_id,
+    _Amazon_Only_1_Day_No_Cancels.batch_last_run,
+    _countries.enabled,
+    _countries.id AS country_id,
+    _countries.marketplace_id,
+    _countries.name,
+    _countries.short_name
+  FROM _Amazon_Only_1_Day_No_Cancels
+  INNER JOIN _countries
+    ON _Amazon_Only_1_Day_No_Cancels.sales_channel = _countries.sales_channel
+), _Join_Dates_with_Products_Catalog AS (
+  SELECT
+    _Join_Countries_with_Dates.created_at AS join_countries_with_dates_created_at,
+    _Join_Countries_with_Dates.currency,
+    _Join_Countries_with_Dates.enabled,
+    _Join_Countries_with_Dates.country_id,
+    _Join_Countries_with_Dates.marketplace_id,
+    _Join_Countries_with_Dates.name AS join_countries_with_dates_name,
+    _Join_Countries_with_Dates.sales_channel,
+    _Join_Countries_with_Dates.short_name,
+    _Join_Countries_with_Dates.updated_at AS join_countries_with_dates_updated_at,
+    _Join_Countries_with_Dates.batch_id AS join_countries_with_dates_batch_id,
+    _Join_Countries_with_Dates.batch_last_run AS join_countries_with_dates_batch_last_run,
+    _Join_Countries_with_Dates.date,
+    _Join_Countries_with_Dates.week_number,
+    _Join_Countries_with_Dates.start_week,
+    _Join_Countries_with_Dates.end_week,
+    _Join_Countries_with_Dates.count_rows,
+    _Products_MergeConstant.amazon_asin_id,
+    _Products_MergeConstant.amazon_seller_id,
+    _Products_MergeConstant.asin,
+    _Products_MergeConstant.amazon_1,
+    _Products_MergeConstant.brand_id,
+    _Products_MergeConstant.catalog_last_appearance,
+    _Products_MergeConstant.client_id,
+    _Products_MergeConstant.comments,
+    _Products_MergeConstant.created_at,
+    _Products_MergeConstant.created_by,
+    _Products_MergeConstant.date_of_first_sale,
+    _Products_MergeConstant.date_of_last_sale,
+    _Products_MergeConstant.deleted_at,
+    _Products_MergeConstant.deleted_by,
+    _Products_MergeConstant.fnsku,
+    _Products_MergeConstant.fulfillment_channel,
+    _Products_MergeConstant.id AS product_id,
+    _Products_MergeConstant.is_bundle,
+    _Products_MergeConstant.last_referral_fee,
+    _Products_MergeConstant.last_seen_price,
+    _Products_MergeConstant.last_shipping_fee,
+    _Products_MergeConstant.map,
+    _Products_MergeConstant.max_reorder_daily_velocity,
+    _Products_MergeConstant.min_order_qty,
+    _Products_MergeConstant.min_reorder_daily_velocity,
+    _Products_MergeConstant.name,
+    _Products_MergeConstant.old_sku,
+    _Products_MergeConstant.parent_variation,
+    _Products_MergeConstant.reorder_comments,
+    _Products_MergeConstant.reorder_status,
+    _Products_MergeConstant.sku,
+    _Products_MergeConstant.srp,
+    _Products_MergeConstant.status,
+    _Products_MergeConstant.test_merge,
+    _Products_MergeConstant.units_in_listing,
+    _Products_MergeConstant.upc,
+    _Products_MergeConstant.upc_id,
+    _Products_MergeConstant.updated_at,
+    _Products_MergeConstant.updated_by,
+    _Products_MergeConstant.vendor_parameter_id,
+    _Products_MergeConstant.is_preferred_sku_by_asin,
+    _Products_MergeConstant.is_relist_authorized,
+    _Products_MergeConstant.is_inbounding_authorized,
+    _Products_MergeConstant.is_delete_once_sold_out,
+    _Products_MergeConstant.is_agency,
+    _Products_MergeConstant.is_dangerous_good,
+    _Products_MergeConstant.is_apparel,
+    _Products_MergeConstant.is_certified_renewed,
+    _Products_MergeConstant.lithium_battery_fee,
+    _Products_MergeConstant.velocity,
+    _Products_MergeConstant.primary_velocity,
+    _Products_MergeConstant.discontinued_reason_id,
+    _Products_MergeConstant.not_sellable_reason,
+    _Products_MergeConstant.is_virtual_tracking,
+    _Products_MergeConstant.transparency_label_type_id,
+    _Products_MergeConstant.batch_id,
+    _Products_MergeConstant.batch_last_run
+  FROM _Join_Countries_with_Dates
+  INNER JOIN _Products_MergeConstant
+    ON _Join_Countries_with_Dates.mergecolumn = _Products_MergeConstant.mergecolumn
+), _AOI_by_Product_Country AS (
+  SELECT
+    product_id,
+    country_id,
+    purchase_date,
+    MAX(expanded_units) AS max_daily_velocity
+  FROM _Join_Data_1
+  GROUP BY
+    product_id,
+    country_id,
+    purchase_date
+), _Multiply_Sales_with_Dates_and_Countries AS (
+  SELECT
+    _sales_SDLW.brand_id AS add_min_date_to_all_records_brand_id,
+    _sales_SDLW.client_id AS add_min_date_to_all_records_client_id,
+    _sales_SDLW.cogs,
+    _sales_SDLW.date AS purchase_date,
+    _sales_SDLW.expanded_units,
+    _sales_SDLW.sales,
+    _sales_SDLW.units,
+    _sales_SDLW.country_1,
+    _sales_SDLW.sdly,
+    _sales_SDLW.expanded_units_sdly,
+    _sales_SDLW.sales_sdly,
+    _sales_SDLW.units_sdly,
+    _Join_Dates_with_Products_Catalog.join_countries_with_dates_created_at,
+    _Join_Dates_with_Products_Catalog.currency,
+    _Join_Dates_with_Products_Catalog.enabled,
+    _Join_Dates_with_Products_Catalog.country_id,
+    _Join_Dates_with_Products_Catalog.marketplace_id,
+    _Join_Dates_with_Products_Catalog.join_countries_with_dates_name,
+    _Join_Dates_with_Products_Catalog.sales_channel,
+    _Join_Dates_with_Products_Catalog.short_name,
+    _Join_Dates_with_Products_Catalog.join_countries_with_dates_updated_at,
+    _Join_Dates_with_Products_Catalog.join_countries_with_dates_batch_id,
+    _Join_Dates_with_Products_Catalog.join_countries_with_dates_batch_last_run,
+    _Join_Dates_with_Products_Catalog.date,
+    _Join_Dates_with_Products_Catalog.week_number,
+    _Join_Dates_with_Products_Catalog.start_week,
+    _Join_Dates_with_Products_Catalog.end_week,
+    _Join_Dates_with_Products_Catalog.count_rows,
+    _Join_Dates_with_Products_Catalog.amazon_asin_id,
+    _Join_Dates_with_Products_Catalog.amazon_seller_id,
+    _Join_Dates_with_Products_Catalog.asin,
+    _Join_Dates_with_Products_Catalog.amazon_1,
+    _Join_Dates_with_Products_Catalog.brand_id,
+    _Join_Dates_with_Products_Catalog.catalog_last_appearance,
+    _Join_Dates_with_Products_Catalog.client_id,
+    _Join_Dates_with_Products_Catalog.comments,
+    _Join_Dates_with_Products_Catalog.created_at,
+    _Join_Dates_with_Products_Catalog.created_by,
+    _Join_Dates_with_Products_Catalog.date_of_first_sale,
+    _Join_Dates_with_Products_Catalog.date_of_last_sale,
+    _Join_Dates_with_Products_Catalog.deleted_at,
+    _Join_Dates_with_Products_Catalog.deleted_by,
+    _Join_Dates_with_Products_Catalog.fnsku,
+    _Join_Dates_with_Products_Catalog.fulfillment_channel,
+    _Join_Dates_with_Products_Catalog.product_id,
+    _Join_Dates_with_Products_Catalog.is_bundle,
+    _Join_Dates_with_Products_Catalog.last_referral_fee,
+    _Join_Dates_with_Products_Catalog.last_seen_price,
+    _Join_Dates_with_Products_Catalog.last_shipping_fee,
+    _Join_Dates_with_Products_Catalog.map,
+    _Join_Dates_with_Products_Catalog.max_reorder_daily_velocity,
+    _Join_Dates_with_Products_Catalog.min_order_qty,
+    _Join_Dates_with_Products_Catalog.min_reorder_daily_velocity,
+    _Join_Dates_with_Products_Catalog.name,
+    _Join_Dates_with_Products_Catalog.old_sku,
+    _Join_Dates_with_Products_Catalog.parent_variation,
+    _Join_Dates_with_Products_Catalog.reorder_comments,
+    _Join_Dates_with_Products_Catalog.reorder_status,
+    _Join_Dates_with_Products_Catalog.sku,
+    _Join_Dates_with_Products_Catalog.srp,
+    _Join_Dates_with_Products_Catalog.status,
+    _Join_Dates_with_Products_Catalog.test_merge,
+    _Join_Dates_with_Products_Catalog.units_in_listing,
+    _Join_Dates_with_Products_Catalog.upc,
+    _Join_Dates_with_Products_Catalog.upc_id,
+    _Join_Dates_with_Products_Catalog.updated_at,
+    _Join_Dates_with_Products_Catalog.updated_by,
+    _Join_Dates_with_Products_Catalog.vendor_parameter_id,
+    _Join_Dates_with_Products_Catalog.is_preferred_sku_by_asin,
+    _Join_Dates_with_Products_Catalog.is_relist_authorized,
+    _Join_Dates_with_Products_Catalog.is_inbounding_authorized,
+    _Join_Dates_with_Products_Catalog.is_delete_once_sold_out,
+    _Join_Dates_with_Products_Catalog.is_agency,
+    _Join_Dates_with_Products_Catalog.is_dangerous_good,
+    _Join_Dates_with_Products_Catalog.is_apparel,
+    _Join_Dates_with_Products_Catalog.is_certified_renewed,
+    _Join_Dates_with_Products_Catalog.lithium_battery_fee,
+    _Join_Dates_with_Products_Catalog.velocity,
+    _Join_Dates_with_Products_Catalog.primary_velocity,
+    _Join_Dates_with_Products_Catalog.discontinued_reason_id,
+    _Join_Dates_with_Products_Catalog.not_sellable_reason,
+    _Join_Dates_with_Products_Catalog.is_virtual_tracking,
+    _Join_Dates_with_Products_Catalog.transparency_label_type_id,
+    _Join_Dates_with_Products_Catalog.batch_id,
+    _Join_Dates_with_Products_Catalog.batch_last_run
+  FROM _sales_SDLW
+  RIGHT JOIN _Join_Dates_with_Products_Catalog
+    ON _sales_SDLW.country_id = _Join_Dates_with_Products_Catalog.country_id
+    AND _sales_SDLW.product_id = _Join_Dates_with_Products_Catalog.product_id
+    AND _sales_SDLW.date = _Join_Dates_with_Products_Catalog.date
+), _Join_Data AS (
+  SELECT
+    _Group_By_Get_Min_Date.first_purchase_date,
+    _Group_By_Get_Min_Date.last_purchase_date,
+    _Multiply_Sales_with_Dates_and_Countries.join_countries_with_dates_created_at,
+    _Multiply_Sales_with_Dates_and_Countries.currency,
+    _Multiply_Sales_with_Dates_and_Countries.enabled,
+    _Multiply_Sales_with_Dates_and_Countries.marketplace_id,
+    _Multiply_Sales_with_Dates_and_Countries.join_countries_with_dates_name,
+    _Multiply_Sales_with_Dates_and_Countries.sales_channel,
+    _Multiply_Sales_with_Dates_and_Countries.short_name,
+    _Multiply_Sales_with_Dates_and_Countries.join_countries_with_dates_updated_at,
+    _Multiply_Sales_with_Dates_and_Countries.join_countries_with_dates_batch_id,
+    _Multiply_Sales_with_Dates_and_Countries.join_countries_with_dates_batch_last_run,
+    _Multiply_Sales_with_Dates_and_Countries.purchase_date,
+    _Multiply_Sales_with_Dates_and_Countries.week_number,
+    _Multiply_Sales_with_Dates_and_Countries.start_week,
+    _Multiply_Sales_with_Dates_and_Countries.end_week,
+    _Multiply_Sales_with_Dates_and_Countries.count_rows,
+    _Multiply_Sales_with_Dates_and_Countries.amazon_asin_id,
+    _Multiply_Sales_with_Dates_and_Countries.asin,
+    _Multiply_Sales_with_Dates_and_Countries.amazon_1,
+    _Multiply_Sales_with_Dates_and_Countries.add_min_date_to_all_records_brand_id,
+    _Multiply_Sales_with_Dates_and_Countries.catalog_last_appearance,
+    _Multiply_Sales_with_Dates_and_Countries.add_min_date_to_all_records_client_id,
+    _Multiply_Sales_with_Dates_and_Countries.comments,
+    _Multiply_Sales_with_Dates_and_Countries.created_at,
+    _Multiply_Sales_with_Dates_and_Countries.created_by,
+    _Multiply_Sales_with_Dates_and_Countries.date_of_first_sale,
+    _Multiply_Sales_with_Dates_and_Countries.date_of_last_sale,
+    _Multiply_Sales_with_Dates_and_Countries.deleted_at,
+    _Multiply_Sales_with_Dates_and_Countries.deleted_by,
+    _Multiply_Sales_with_Dates_and_Countries.fnsku,
+    _Multiply_Sales_with_Dates_and_Countries.fulfillment_channel,
+    _Multiply_Sales_with_Dates_and_Countries.is_bundle,
+    _Multiply_Sales_with_Dates_and_Countries.last_referral_fee,
+    _Multiply_Sales_with_Dates_and_Countries.last_seen_price,
+    _Multiply_Sales_with_Dates_and_Countries.last_shipping_fee,
+    _Multiply_Sales_with_Dates_and_Countries.map,
+    _Multiply_Sales_with_Dates_and_Countries.max_reorder_daily_velocity,
+    _Multiply_Sales_with_Dates_and_Countries.min_order_qty,
+    _Multiply_Sales_with_Dates_and_Countries.min_reorder_daily_velocity,
+    _Multiply_Sales_with_Dates_and_Countries.name,
+    _Multiply_Sales_with_Dates_and_Countries.old_sku,
+    _Multiply_Sales_with_Dates_and_Countries.parent_variation,
+    _Multiply_Sales_with_Dates_and_Countries.reorder_comments,
+    _Multiply_Sales_with_Dates_and_Countries.reorder_status,
+    _Multiply_Sales_with_Dates_and_Countries.sku,
+    _Multiply_Sales_with_Dates_and_Countries.srp,
+    _Multiply_Sales_with_Dates_and_Countries.status,
+    _Multiply_Sales_with_Dates_and_Countries.test_merge,
+    _Multiply_Sales_with_Dates_and_Countries.units_in_listing,
+    _Multiply_Sales_with_Dates_and_Countries.upc,
+    _Multiply_Sales_with_Dates_and_Countries.upc_id,
+    _Multiply_Sales_with_Dates_and_Countries.updated_at,
+    _Multiply_Sales_with_Dates_and_Countries.updated_by,
+    _Multiply_Sales_with_Dates_and_Countries.vendor_parameter_id,
+    _Multiply_Sales_with_Dates_and_Countries.is_preferred_sku_by_asin,
+    _Multiply_Sales_with_Dates_and_Countries.is_relist_authorized,
+    _Multiply_Sales_with_Dates_and_Countries.is_inbounding_authorized,
+    _Multiply_Sales_with_Dates_and_Countries.is_delete_once_sold_out,
+    _Multiply_Sales_with_Dates_and_Countries.is_agency,
+    _Multiply_Sales_with_Dates_and_Countries.is_dangerous_good,
+    _Multiply_Sales_with_Dates_and_Countries.is_apparel,
+    _Multiply_Sales_with_Dates_and_Countries.is_certified_renewed,
+    _Multiply_Sales_with_Dates_and_Countries.lithium_battery_fee,
+    _Multiply_Sales_with_Dates_and_Countries.velocity,
+    _Multiply_Sales_with_Dates_and_Countries.primary_velocity,
+    _Multiply_Sales_with_Dates_and_Countries.discontinued_reason_id,
+    _Multiply_Sales_with_Dates_and_Countries.not_sellable_reason,
+    _Multiply_Sales_with_Dates_and_Countries.is_virtual_tracking,
+    _Multiply_Sales_with_Dates_and_Countries.transparency_label_type_id,
+    _Multiply_Sales_with_Dates_and_Countries.brand_id,
+    _Multiply_Sales_with_Dates_and_Countries.client_id,
+    _Multiply_Sales_with_Dates_and_Countries.cogs,
+    _Multiply_Sales_with_Dates_and_Countries.country_id,
+    _Multiply_Sales_with_Dates_and_Countries.date,
+    _Multiply_Sales_with_Dates_and_Countries.expanded_units,
+    _Multiply_Sales_with_Dates_and_Countries.id,
+    _Multiply_Sales_with_Dates_and_Countries.product_id,
+    _Multiply_Sales_with_Dates_and_Countries.sales,
+    _Multiply_Sales_with_Dates_and_Countries.units,
+    _Multiply_Sales_with_Dates_and_Countries.brand_name,
+    _Multiply_Sales_with_Dates_and_Countries.client_name,
+    _Multiply_Sales_with_Dates_and_Countries.amazon_seller_id,
+    _Multiply_Sales_with_Dates_and_Countries.country_1,
+    _Multiply_Sales_with_Dates_and_Countries.batch_id,
+    _Multiply_Sales_with_Dates_and_Countries.batch_last_run,
+    _Multiply_Sales_with_Dates_and_Countries.sdly,
+    _Multiply_Sales_with_Dates_and_Countries.expanded_units_sdly,
+    _Multiply_Sales_with_Dates_and_Countries.sales_sdly,
+    _Multiply_Sales_with_Dates_and_Countries.units_sdly
+  FROM _Group_By_Get_Min_Date
+  INNER JOIN _Multiply_Sales_with_Dates_and_Countries
+    ON _Group_By_Get_Min_Date.product_id = _Multiply_Sales_with_Dates_and_Countries.product_id
+    AND _Group_By_Get_Min_Date.country_id = _Multiply_Sales_with_Dates_and_Countries.country_id
+), _Join_Data_2 AS (
+  SELECT
+    _Join_Data.first_purchase_date,
+    _Join_Data.last_purchase_date,
+    _Join_Data.join_countries_with_dates_created_at,
+    _Join_Data.currency,
+    _Join_Data.enabled,
+    _Join_Data.marketplace_id,
+    _Join_Data.join_countries_with_dates_name,
+    _Join_Data.sales_channel,
+    _Join_Data.short_name,
+    _Join_Data.join_countries_with_dates_updated_at,
+    _Join_Data.join_countries_with_dates_batch_id,
+    _Join_Data.join_countries_with_dates_batch_last_run,
+    _Join_Data.purchase_date,
+    _Join_Data.week_number,
+    _Join_Data.start_week,
+    _Join_Data.end_week,
+    _Join_Data.count_rows,
+    _Join_Data.amazon_asin_id,
+    _Join_Data.asin,
+    _Join_Data.amazon_1,
+    _Join_Data.add_min_date_to_all_records_brand_id,
+    _Join_Data.catalog_last_appearance,
+    _Join_Data.add_min_date_to_all_records_client_id,
+    _Join_Data.comments,
+    _Join_Data.created_at,
+    _Join_Data.created_by,
+    _Join_Data.date_of_first_sale,
+    _Join_Data.date_of_last_sale,
+    _Join_Data.deleted_at,
+    _Join_Data.deleted_by,
+    _Join_Data.fnsku,
+    _Join_Data.fulfillment_channel,
+    _Join_Data.is_bundle,
+    _Join_Data.last_referral_fee,
+    _Join_Data.last_seen_price,
+    _Join_Data.last_shipping_fee,
+    _Join_Data.map,
+    _Join_Data.max_reorder_daily_velocity,
+    _Join_Data.min_order_qty,
+    _Join_Data.min_reorder_daily_velocity,
+    _Join_Data.name,
+    _Join_Data.old_sku,
+    _Join_Data.parent_variation,
+    _Join_Data.reorder_comments,
+    _Join_Data.reorder_status,
+    _Join_Data.sku,
+    _Join_Data.srp,
+    _Join_Data.status,
+    _Join_Data.test_merge,
+    _Join_Data.units_in_listing,
+    _Join_Data.upc,
+    _Join_Data.upc_id,
+    _Join_Data.updated_at,
+    _Join_Data.updated_by,
+    _Join_Data.vendor_parameter_id,
+    _Join_Data.is_preferred_sku_by_asin,
+    _Join_Data.is_relist_authorized,
+    _Join_Data.is_inbounding_authorized,
+    _Join_Data.is_delete_once_sold_out,
+    _Join_Data.is_agency,
+    _Join_Data.is_dangerous_good,
+    _Join_Data.is_apparel,
+    _Join_Data.is_certified_renewed,
+    _Join_Data.lithium_battery_fee,
+    _Join_Data.velocity,
+    _Join_Data.primary_velocity,
+    _Join_Data.discontinued_reason_id,
+    _Join_Data.not_sellable_reason,
+    _Join_Data.is_virtual_tracking,
+    _Join_Data.transparency_label_type_id,
+    _Join_Data.brand_id,
+    _Join_Data.client_id,
+    _Join_Data.cogs,
+    _Join_Data.country_id,
+    _Join_Data.date,
+    _Join_Data.expanded_units,
+    _Join_Data.id,
+    _Join_Data.product_id,
+    _Join_Data.sales,
+    _Join_Data.units,
+    _Join_Data.brand_name,
+    _Join_Data.client_name,
+    _Join_Data.amazon_seller_id,
+    _Join_Data.country_1,
+    _Join_Data.batch_id,
+    _Join_Data.batch_last_run,
+    _Join_Data.sdly,
+    _Join_Data.expanded_units_sdly,
+    _Join_Data.sales_sdly,
+    _Join_Data.units_sdly,
+    _AOI_by_Product_Country.max_daily_velocity
+  FROM _Join_Data
+  LEFT JOIN _AOI_by_Product_Country
+    ON _Join_Data.product_id = _AOI_by_Product_Country.product_id
+    AND _Join_Data.country_id = _AOI_by_Product_Country.country_id
+    AND _Join_Data.date = _AOI_by_Product_Country.purchase_date
+), _Filter_Rows AS (
+  SELECT
+    *
+  FROM _Join_Data_2
+  WHERE
+    (
+      date >= first_purchase_date AND date <= last_purchase_date
+    )
+), _Add_Formula AS (
+  SELECT
+    product_id,
+    country_id,
+    purchase_date,
+    max_daily_velocity,
+    first_purchase_date,
+    last_purchase_date,
+    join_countries_with_dates_created_at,
+    currency,
+    enabled,
+    marketplace_id,
+    join_countries_with_dates_name,
+    sales_channel,
+    short_name,
+    join_countries_with_dates_updated_at,
+    join_countries_with_dates_batch_id,
+    join_countries_with_dates_batch_last_run,
+    week_number,
+    start_week,
+    end_week,
+    count_rows,
+    amazon_asin_id,
+    asin,
+    amazon_1,
+    add_min_date_to_all_records_brand_id,
+    catalog_last_appearance,
+    add_min_date_to_all_records_client_id,
+    comments,
+    created_at,
+    created_by,
+    date_of_first_sale,
+    date_of_last_sale,
+    deleted_at,
+    deleted_by,
+    fnsku,
+    fulfillment_channel,
+    is_bundle,
+    last_referral_fee,
+    last_seen_price,
+    last_shipping_fee,
+    map,
+    max_reorder_daily_velocity,
+    min_order_qty,
+    min_reorder_daily_velocity,
+    name,
+    old_sku,
+    parent_variation,
+    reorder_comments,
+    reorder_status,
+    sku,
+    srp,
+    status,
+    test_merge,
+    units_in_listing,
+    upc,
+    upc_id,
+    updated_at,
+    updated_by,
+    vendor_parameter_id,
+    is_preferred_sku_by_asin,
+    is_relist_authorized,
+    is_inbounding_authorized,
+    is_delete_once_sold_out,
+    is_agency,
+    is_dangerous_good,
+    is_apparel,
+    is_certified_renewed,
+    lithium_battery_fee,
+    velocity,
+    primary_velocity,
+    discontinued_reason_id,
+    not_sellable_reason,
+    is_virtual_tracking,
+    transparency_label_type_id,
+    brand_id,
+    client_id,
+    cogs,
+    date,
+    expanded_units,
+    id,
+    sales,
+    units,
+    brand_name,
+    client_name,
+    amazon_seller_id,
+    country_1,
+    batch_id,
+    batch_last_run,
+    sdly,
+    expanded_units_sdly,
+    sales_sdly,
+    units_sdly,
+    (
+      COALESCE(expanded_units, 0)
+    ) AS formula_expanded_units,
+    (
+      COALESCE(sales, 0)
+    ) AS formula_sales,
+    (
+      COALESCE(units, 0)
+    ) AS formula_units,
+    (
+      COALESCE(units_sdly, 0)
+    ) AS formula_units_sdly,
+    (
+      COALESCE(sales_sdly, 0)
+    ) AS formula_sales_sdly,
+    (
+      COALESCE(expanded_units_sdly, 0)
+    ) AS formula_expanded_units_sdly,
+    (
+      COALESCE(cogs, 0)
+    ) AS formula_cogs
+  FROM _Filter_Rows
+), _Select_Columns AS (
+  SELECT
+    brand_id,
+    asin,
+    client_id,
+    product_id,
+    country_id,
+    date,
+    formula_expanded_units AS expanded_units,
+    formula_sales AS sales,
+    formula_units AS units,
+    formula_units_sdly AS units_sdly,
+    formula_sales_sdly AS sales_sdly,
+    formula_expanded_units_sdly AS expanded_units_sdly,
+    formula_cogs AS cogs,
+    max_daily_velocity,
+    amazon_seller_id,
+    velocity,
+    primary_velocity,
+    fulfillment_channel,
+    currency
+  FROM _Add_Formula
+), _Up_to_December_31_2024 AS (
+  SELECT
+    *
+  FROM _Select_Columns
+  WHERE
+    date <= '2024-12-31'
+), _Historical_Sales_Archive_DS_Don_t_Delete_or_Modify AS (
+  SELECT
+    *
+  FROM _Up_to_December_31_2024
+)
+SELECT
+  *
+FROM _Historical_Sales_Archive_DS_Don_t_Delete_or_Modify

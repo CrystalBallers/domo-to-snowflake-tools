@@ -88,6 +88,5 @@ argo-utils-cli/
 
 # SQL output files
 exported_sql/
-*.sql
 !schema.sql
 !migrations/*.sql
