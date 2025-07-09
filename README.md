@@ -90,6 +90,8 @@ Create a `.env` file in the project root with the following variables:
 ```env
 # Google Sheets
 GOOGLE_SHEETS_CREDENTIALS_FILE=/path/to/your/service-account-key.json
+MIGRATION_SPREADSHEET_ID=1Y_CpIXW9RCxnlwwvP-tAL5B9UmvQlgu6DbpEnHgSgVA
+MIGRATION_SHEET_NAME=Migration
 
 # Domo API
 DOMO_DEVELOPER_TOKEN=your_domo_developer_token
@@ -107,23 +109,24 @@ SNOWFLAKE_SCHEMA=your_schema
 EXPORT_DIR=exported_sql  # Default directory for SQL exports
 ```
 
-### Google Sheets Configuration
+### Google Sheets Setup
 
-1. **Create a Service Account**:
-   - Go to [Google Cloud Console](https://console.cloud.google.com/)
-   - Create a new project or select an existing one
-   - Enable the Google Sheets API
-   - Create a service account
-   - Download the JSON credentials file
+1. **Create a Google Cloud Project** (if you don't have one)
+2. **Enable Google Sheets API**
+3. **Create a Service Account**:
+   - Go to "APIs & Services" > "Credentials"
+   - Click "Create Credentials" > "Service Account"
+   - Download the JSON key file
+4. **Share your Google Sheet** with the service account email
+5. **Set up credentials**:
+   ```bash
+   export GOOGLE_SHEETS_CREDENTIALS_FILE="/path/to/your/service-account-key.json"
+   ```
 
-2. **Share the Spreadsheet**:
-   - Open your Google Sheet
-   - Share with the service account email
-   - Grant "Viewer" or "Editor" permissions
-
-3. **Configure the Spreadsheet**:
-   - Ensure your sheet has a column named "Dataflow ID"
-   - Or any of these variants: "dataflow", "Dataflow", "DataFlow", "dataflow_id", "Dataflow_ID"
+**Important for Status Updates**: When using spreadsheet migration with automatic status updates, the service account needs **write permissions** to the Google Sheet. Make sure to:
+- Share the spreadsheet with the service account email
+- Give it "Editor" permissions (not just "Viewer")
+- The service account will automatically update the Status column to "Migrated" for successful migrations
 
 ### Domo Configuration
 
@@ -178,6 +181,10 @@ python main.py migrate [options]
 - `--dataset-id`: Domo dataset ID to migrate
 - `--target-table`: Target Snowflake table name
 - `--batch-file`: JSON file with dataset_id → table mappings
+- `--from-spreadsheet`: Migrate datasets from Google Sheets Migration tab
+- `--credentials`: Path to Google Sheets credentials file (for spreadsheet migration)
+- `--spreadsheet-id`: Google Sheets spreadsheet ID (uses default if not specified)
+- `--sheet-name`: Migration sheet tab name (default: Migration)
 - `--test-connection`: Test Domo and Snowflake connections
 
 ## 📚 Usage Examples
@@ -216,6 +223,18 @@ python main.py migrate --dataset-id 12345 --target-table sales_data
 python main.py migrate --batch-file dataset_mapping.json
 ```
 
+#### Migrate from Google Sheets
+```bash
+# Migrate datasets from Google Sheets Migration tab
+python main.py migrate --from-spreadsheet
+
+# Use custom credentials
+python main.py migrate --from-spreadsheet --credentials /path/to/creds.json
+
+# Use custom spreadsheet and sheet name
+python main.py migrate --from-spreadsheet --spreadsheet-id YOUR_SHEET_ID --sheet-name MyMigration
+```
+
 **Example `dataset_mapping.json`:**
 ```json
 {
@@ -226,7 +245,28 @@ python main.py migrate --batch-file dataset_mapping.json
 }
 ```
 
-## 🗂 Project Structure
+### Migration Spreadsheet Structure
+
+When using `--from-spreadsheet`, the system reads from a Google Sheets tab with the following structure:
+
+| Dataset ID | Name | Status |
+|------------|------|--------|
+| dataset_001 | sales_monthly | Pending |
+| dataset_002 | customer_data | Migrated |
+| dataset_003 | inventory_levels | Failed |
+| dataset_004 | financial_reports | Pending |
+
+**Required Columns:**
+- **Dataset ID**: The Domo dataset identifier
+- **Name**: The target table name in Snowflake (will be cleaned: spaces→underscores, lowercase)
+- **Status**: Migration status. Only rows where Status ≠ "Migrated" will be processed
+
+**Alternative Column Names:**
+- Dataset ID: `dataset_id`, `DatasetID`, `dataset`, `Dataset`, `ID`
+- Name: `name`, `table_name`, `Table Name`, `TableName`, `target_table`
+- Status: `status`, `migration_status`, `Migration Status`, `state`
+
+## 📝 Project Structure
 
 ```
 Domo-to-snowflake-migration/
@@ -248,13 +288,25 @@ Domo-to-snowflake-migration/
 
 ## 🔧 Advanced Configuration
 
-### Customize Spreadsheet ID
+### Customize Spreadsheet Configuration
 
-By default, the system uses a specific spreadsheet. To change it:
+The system uses environment variables for Google Sheets configuration:
 
-```python
-# In tools/inventory_handler.py, line ~43
-SPREADSHEET_ID = "your_new_spreadsheet_id"
+```env
+# Default spreadsheet ID (can be overridden)
+MIGRATION_SPREADSHEET_ID=1Y_CpIXW9RCxnlwwvP-tAL5B9UmvQlgu6DbpEnHgSgVA
+
+# Default migration sheet name (can be overridden)
+MIGRATION_SHEET_NAME=Migration
+```
+
+You can also override these at runtime:
+```bash
+# Use custom spreadsheet
+python main.py migrate --from-spreadsheet --spreadsheet-id YOUR_SHEET_ID
+
+# Use custom sheet name
+python main.py migrate --from-spreadsheet --sheet-name MyMigrationTab
 ```
 
 ### Customize Dataflow Columns
@@ -275,6 +327,23 @@ To adjust API timeouts:
 # In tools/inventory_handler.py, line ~200
 timeout=60  # Increase if necessary
 ```
+
+### Using MigrationManager for Custom Migrations
+
+For advanced use cases, you can use the `MigrationManager` class directly:
+
+```python
+from tools.domo_to_snowflake import MigrationManager
+
+# Efficient batch migration with connection reuse
+with MigrationManager() as manager:
+    # All datasets will use the same connections
+    success1 = manager.migrate_dataset("dataset_001", "table_1")
+    success2 = manager.migrate_dataset("dataset_002", "table_2")
+    success3 = manager.migrate_dataset("dataset_003", "table_3")
+```
+
+This approach is much more efficient than calling `migrate_dataset()` individually, as it reuses connections instead of re-authenticating for each dataset.
 
 ## 🚨 Troubleshooting
 
@@ -445,3 +514,67 @@ For technical support:
 ---
 
 **Note**: This project is under active development. Features may change between versions. Always check the latest documentation before using in production. 
+
+## Migration from Google Sheets
+
+The tool can read migration datasets from a Google Sheets spreadsheet and automatically update the status after successful migrations.
+
+### Spreadsheet Structure
+
+Your Google Sheets should have a tab (default name: "Migration") with the following columns:
+
+| Column Name | Description | Required | Example |
+|-------------|-------------|----------|---------|
+| Dataset ID | The Domo dataset ID to migrate | Yes | `12345` |
+| Name | Dataset name (for reference) | No | `Sales Data` |
+| Status | Migration status | No | `Pending`, `Migrated`, `Failed` |
+
+**Note:** The tool is flexible with column names and will try to find columns with similar names (e.g., `dataset_id`, `DatasetID`, etc.).
+
+### Usage
+
+```bash
+# Migrate from default spreadsheet (uses environment variables)
+python main.py migrate --from-spreadsheet
+
+# Migrate from custom spreadsheet
+python main.py migrate --from-spreadsheet \
+    --spreadsheet-id "your-spreadsheet-id" \
+    --sheet-name "Migration" \
+    --credentials "path/to/credentials.json"
+```
+
+### Environment Variables
+
+You can set these environment variables to avoid passing parameters:
+
+```bash
+export MIGRATION_SPREADSHEET_ID="your-spreadsheet-id"
+export MIGRATION_SHEET_NAME="Migration"
+export GOOGLE_SHEETS_CREDENTIALS_FILE="path/to/credentials.json"
+```
+
+### Automatic Status Updates
+
+When using spreadsheet migration, the tool will:
+
+1. **Read** datasets where Status is not "Migrated"
+2. **Migrate** each dataset to Snowflake
+3. **Update** the Status column to "Migrated" for successful migrations
+4. **Log** detailed progress and any errors
+
+This allows you to:
+- Track migration progress visually in the spreadsheet
+- Re-run migrations safely (only pending datasets will be processed)
+- Maintain a clear audit trail of migration status
+
+### Example Workflow
+
+1. **Prepare your spreadsheet** with Dataset ID, Name, and Status columns
+2. **Set Status to "Pending"** for datasets you want to migrate
+3. **Run the migration**:
+   ```bash
+   python main.py migrate --from-spreadsheet
+   ```
+4. **Check the results** - successful migrations will have Status updated to "Migrated"
+5. **Review any errors** in the logs for failed migrations 

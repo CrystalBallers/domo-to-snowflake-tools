@@ -266,9 +266,9 @@ class DomoHandler:
         try:
             logger.info("Cleaning DataFrame...")
             
-            # Remove completely empty rows and columns
-            df = df.drop_nulls(how='all')
-            # Note: polars doesn't have dropna(axis=1), we'll handle empty columns differently
+            # Remove completely empty rows (all columns null)
+            # In Polars, we need to filter out rows where all values are null
+            df = df.filter(~pl.all_horizontal(pl.all().is_null()))
             
             if df.is_empty():
                 logger.warning("DataFrame is empty after cleaning")

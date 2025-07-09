@@ -40,7 +40,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Google Sheets configuration
-SPREADSHEET_ID = "1Y_CpIXW9RCxnlwwvP-tAL5B9UmvQlgu6DbpEnHgSgVA"
+SPREADSHEET_ID = os.getenv("MIGRATION_SPREADSHEET_ID", "1Y_CpIXW9RCxnlwwvP-tAL5B9UmvQlgu6DbpEnHgSgVA")
 INVENTORY_SHEET_NAME = "Inventory"
 DATAFLOW_COLUMN_NAME = "Dataflow ID"
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly']

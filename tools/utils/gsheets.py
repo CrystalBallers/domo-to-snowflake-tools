@@ -201,18 +201,45 @@ class GoogleSheets:
             )
 
         try:
-            # Convert polars DataFrame to list of lists
-            if include_header:
-                # Add headers as first row
-                values = [df.columns]
-                # Add data rows
-                values.extend(df.iter_rows())
-            else:
-                # Just add data rows
-                values = [list(row) for row in df.iter_rows()]
+            # Convert polars DataFrame to pandas for easier handling
+            pandas_df = df.to_pandas()
 
-            # Create a ValueRange object that the API expects
-            body: ValueRange = {"values": values}
+            # Convert DataFrame to list of lists
+            if include_header:
+                values = [pandas_df.columns.tolist()] + pandas_df.values.tolist()
+            else:
+                values = pandas_df.values.tolist()
+
+            return self.write_range(spreadsheet_id, range_name, values)
+        except Exception as err:
+            self.logger.error(f"Error writing DataFrame to range: {err}")
+            raise
+
+    def update_cell(
+        self, spreadsheet_id: str, range_name: str, value: Any
+    ) -> "UpdateValuesResponse":
+        """
+        Update a single cell in a spreadsheet
+
+        Args:
+            spreadsheet_id (str): The ID of the spreadsheet
+            range_name (str): The cell range (e.g., 'Sheet1!A1')
+            value (Any): The value to write to the cell
+
+        Returns:
+            UpdateValuesResponse: The response from the API
+        """
+        if "https://www.googleapis.com/auth/spreadsheets" not in self.scopes:
+            self.logger.error(
+                "Write operation requires read-write scope. Please initialize with READ_WRITE_SCOPES"
+            )
+            raise PermissionError(
+                "Write operation requires read-write scope. Please initialize with READ_WRITE_SCOPES"
+            )
+
+        try:
+            # Create a ValueRange object with a single value
+            body: ValueRange = {"values": [[value]]}
             result = (
                 self.sheet.values()
                 .update(
@@ -223,10 +250,10 @@ class GoogleSheets:
                 )
                 .execute()
             )
-            self.logger.info(f"Updated {result.get('updatedCells')} cells")
+            self.logger.info(f"Updated cell {range_name} with value: {value}")
             return result
         except HttpError as err:
-            self.logger.error(f"Error writing to range: {err}")
+            self.logger.error(f"Error updating cell {range_name}: {err}")
             raise
 
     def create_sheet(

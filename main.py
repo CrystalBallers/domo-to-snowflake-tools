@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # Import tool modules
 try:
     from tools.inventory_handler import export_dataflows_to_sql, InventoryHandler
-    from tools.domo_to_snowflake import migrate_dataset, batch_migrate_datasets
+    from tools.domo_to_snowflake import migrate_dataset, batch_migrate_datasets, migrate_from_spreadsheet, MigrationManager
     from tools.utils.domo import DomoHandler
     from tools.utils.snowflake import SnowflakeHandler
 except ImportError as e:
@@ -135,7 +135,7 @@ def handle_inventory_command(args) -> int:
 
 def test_migration_connections() -> bool:
     """
-    Test the Domo and Snowflake connections.
+    Test the Domo and Snowflake connections using MigrationManager.
     
     Returns:
         bool: True if both connections successful, False otherwise
@@ -143,27 +143,10 @@ def test_migration_connections() -> bool:
     try:
         logger.info("🧪 Testing migration connections...")
         
-        # Test Domo connection
-        logger.info("Testing Domo connection...")
-        domo_handler = DomoHandler()
-        if domo_handler.setup_auth():
-            logger.info("✅ Domo connection successful")
-        else:
-            logger.error("❌ Domo connection failed")
-            return False
-        
-        # Test Snowflake connection
-        logger.info("Testing Snowflake connection...")
-        snowflake_handler = SnowflakeHandler()
-        if snowflake_handler.setup_connection():
-            logger.info("✅ Snowflake connection successful")
-            snowflake_handler.cleanup()
-        else:
-            logger.error("❌ Snowflake connection failed")
-            return False
-        
-        logger.info("🎉 All migration connections tested successfully!")
-        return True
+        # Use MigrationManager to test connections
+        with MigrationManager() as manager:
+            logger.info("✅ All migration connections tested successfully!")
+            return True
         
     except Exception as e:
         logger.error(f"❌ Connection test failed: {e}")
@@ -184,6 +167,30 @@ def handle_migrate_command(args) -> int:
     if args.test_connection:
         success = test_migration_connections()
         return 0 if success else 1
+    
+    # Spreadsheet migration
+    if args.from_spreadsheet:
+        logger.info("🚀 Starting spreadsheet-based migration...")
+        logger.info(f"📋 Spreadsheet ID: {args.spreadsheet_id}")
+        logger.info(f"📄 Sheet name: {args.sheet_name}")
+        
+        results = migrate_from_spreadsheet(
+            spreadsheet_id=args.spreadsheet_id,
+            sheet_name=args.sheet_name,
+            credentials_path=args.credentials
+        )
+        
+        if 'errors' in results and results['errors']:
+            logger.error("❌ Spreadsheet migration failed due to errors:")
+            for error in results['errors']:
+                logger.error(f"   - {error}")
+            return 1
+        elif results['failed'] == 0:
+            logger.info("🎉 Spreadsheet migration completed successfully!")
+            return 0
+        else:
+            logger.error(f"❌ Spreadsheet migration completed with {results['failed']} failures!")
+            return 1
     
     # Single dataset migration
     if args.dataset_id and args.target_table:
@@ -232,7 +239,7 @@ def handle_migrate_command(args) -> int:
     
     # No valid arguments provided
     logger.error("❌ No valid migration options provided")
-    logger.error("Use --dataset-id and --target-table for single migration, or --batch-file for batch migration")
+    logger.error("Use --dataset-id and --target-table for single migration, --batch-file for batch migration, or --from-spreadsheet for spreadsheet migration")
     return 1
 
 
@@ -257,8 +264,17 @@ Examples:
     # Migrate single dataset
     python main.py migrate --dataset-id 12345 --target-table sales_data
     
-    # Batch migrate datasets
+    # Batch migrate datasets from JSON file
     python main.py migrate --batch-file dataset_mapping.json
+    
+    # Migrate datasets from Google Sheets Migration tab
+    python main.py migrate --from-spreadsheet
+    
+    # Migrate from spreadsheet with custom credentials
+    python main.py migrate --from-spreadsheet --credentials /path/to/creds.json
+    
+    # Migrate from custom spreadsheet and sheet
+    python main.py migrate --from-spreadsheet --spreadsheet-id YOUR_SHEET_ID --sheet-name MyMigration
     
     # Test migration connections
     python main.py migrate --test-connection
@@ -326,6 +342,30 @@ Environment Variables:
     migrate_parser.add_argument(
         "--batch-file",
         help="JSON file with dataset ID to table name mappings"
+    )
+    
+    migrate_parser.add_argument(
+        "--from-spreadsheet",
+        action="store_true",
+        help="Migrate datasets from Google Sheets Migration tab"
+    )
+    
+    migrate_parser.add_argument(
+        "--credentials",
+        default=os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE"),
+        help="Path to Google Sheets credentials JSON file"
+    )
+    
+    migrate_parser.add_argument(
+        "--spreadsheet-id",
+        default=os.getenv("MIGRATION_SPREADSHEET_ID"),
+        help="Google Sheets spreadsheet ID (uses default if not specified)"
+    )
+    
+    migrate_parser.add_argument(
+        "--sheet-name",
+        default=os.getenv("MIGRATION_SHEET_NAME", "Migration"),
+        help="Migration sheet tab name (default: Migration)"
     )
     
     migrate_parser.add_argument(
