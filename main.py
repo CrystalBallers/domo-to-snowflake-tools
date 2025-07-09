@@ -148,6 +148,13 @@ def test_migration_connections() -> bool:
     try:
         logger.info("🧪 Testing migration connections...")
         
+        # Show TOTP debug info if using MFA
+        from tools.utils.snowflake import show_current_totp_debug
+        import os
+        if os.getenv("SNOWFLAKE_PASSCODE"):
+            logger.info("🔐 Using MFA authentication - TOTP Debug Info:")
+            show_current_totp_debug()
+        
         # Use MigrationManager to test connections
         with MigrationManager() as manager:
             logger.info("✅ All migration connections tested successfully!")
@@ -168,6 +175,21 @@ def handle_migrate_command(args) -> int:
     Returns:
         int: Exit code (0 for success, 1 for failure)
     """
+    # Handle reload-env argument
+    if args.reload_env:
+        print("🔄 Reloading environment variables...")
+        from tools.utils.snowflake import reload_env_vars, show_current_totp_debug
+        reload_env_vars()
+        
+        # Show current TOTP passcode for debugging
+        import os
+        passcode = os.getenv('SNOWFLAKE_PASSCODE')
+        if passcode:
+            masked_passcode = passcode[:2] + '*' * (len(passcode) - 2) if len(passcode) > 2 else '***'
+            print(f"📱 Current TOTP passcode: {masked_passcode}")
+        else:
+            print("📱 No TOTP passcode found")
+    
     # Test connection mode
     if args.test_connection:
         success = test_migration_connections()
@@ -178,6 +200,13 @@ def handle_migrate_command(args) -> int:
         logger.info("🚀 Starting spreadsheet-based migration...")
         logger.info(f"📋 Spreadsheet ID: {args.spreadsheet_id}")
         logger.info(f"📄 Sheet name: {args.sheet_name}")
+        
+        # Show TOTP debug info if using MFA
+        from tools.utils.snowflake import show_current_totp_debug
+        import os
+        if os.getenv("SNOWFLAKE_PASSCODE"):
+            logger.info("🔐 Using MFA authentication - TOTP Debug Info:")
+            show_current_totp_debug()
         
         results = migrate_from_spreadsheet(
             spreadsheet_id=args.spreadsheet_id,
@@ -203,6 +232,13 @@ def handle_migrate_command(args) -> int:
         logger.info(f"📊 Dataset ID: {args.dataset_id}")
         logger.info(f"🎯 Target table: {args.target_table}")
         
+        # Show TOTP debug info if using MFA
+        from tools.utils.snowflake import show_current_totp_debug
+        import os
+        if os.getenv("SNOWFLAKE_PASSCODE"):
+            logger.info("🔐 Using MFA authentication - TOTP Debug Info:")
+            show_current_totp_debug()
+        
         success = migrate_dataset(args.dataset_id, args.target_table)
         
         if success:
@@ -216,6 +252,13 @@ def handle_migrate_command(args) -> int:
     if args.batch_file:
         logger.info("🚀 Starting batch migration...")
         logger.info(f"📁 Batch file: {args.batch_file}")
+        
+        # Show TOTP debug info if using MFA
+        from tools.utils.snowflake import show_current_totp_debug
+        import os
+        if os.getenv("SNOWFLAKE_PASSCODE"):
+            logger.info("🔐 Using MFA authentication - TOTP Debug Info:")
+            show_current_totp_debug()
         
         try:
             import json
@@ -450,6 +493,12 @@ Environment Variables:
         "--test-connection",
         action="store_true",
         help="Test Domo and Snowflake connections"
+    )
+    
+    migrate_parser.add_argument(
+        "--reload-env",
+        action="store_true",
+        help="Force reload environment variables from .env file"
     )
     
     # Datasets subcommand

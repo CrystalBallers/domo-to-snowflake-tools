@@ -12,6 +12,7 @@ import logging
 import time
 from typing import Optional
 import polars as pl
+from dotenv import load_dotenv
 
 try:
     import snowflake.connector
@@ -21,6 +22,22 @@ except ImportError:
     snowflake = None  # type: ignore
 
 logger = logging.getLogger(__name__)
+
+def reload_env_vars():
+    """Reload environment variables from .env file"""
+    load_dotenv(override=True)  # override=True forces reload of existing variables
+    logger.info("🔄 Environment variables reloaded from .env file")
+
+def show_current_totp_debug():
+    """Show current TOTP passcode for debugging purposes"""
+    passcode = os.getenv('SNOWFLAKE_PASSCODE')
+    if passcode:
+        masked_passcode = passcode[:2] + '*' * (len(passcode) - 2) if len(passcode) > 2 else '***'
+        print(f"📱 Current TOTP passcode: {masked_passcode}")
+        print(f"⏰ Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"💡 Remember: TOTP codes expire every 30 seconds")
+    else:
+        print("📱 No TOTP passcode found in environment variables")
 
 
 class SnowflakeHandler:
@@ -43,6 +60,9 @@ class SnowflakeHandler:
             return False
             
         try:
+            # Reload environment variables to get fresh TOTP codes
+            reload_env_vars()
+            
             # Get connection parameters
             snowflake_config = {
                 'user': os.getenv("SNOWFLAKE_USER"),
@@ -117,6 +137,7 @@ class SnowflakeHandler:
                     return False
                 
                 logger.info(f"Using MFA authentication with passcode: {passcode[:2]}****")
+                logger.info(f"📱 TOTP passcode loaded at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
                 snowflake_config['password'] = password
                 snowflake_config['passcode'] = passcode
                 

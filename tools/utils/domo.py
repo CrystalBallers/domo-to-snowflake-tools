@@ -86,7 +86,7 @@ class DomoHandler:
             return False
     
     def extract_data(self, dataset_id: str, query: Optional[str] = None, 
-                    chunk_size: int = 1000000) -> Optional[pl.DataFrame]:
+                    chunk_size: int = 1000000, enable_auto_type_conversion: bool = False) -> Optional[pl.DataFrame]:
         """
         Extract data from Domo dataset.
         
@@ -94,6 +94,7 @@ class DomoHandler:
             dataset_id: Domo dataset ID
             query: Optional custom SQL query
             chunk_size: Number of rows to extract per chunk
+            enable_auto_type_conversion: Whether to enable automatic type conversion (default: False)
             
         Returns:
             Optional[pl.DataFrame]: Extracted data or None if failed
@@ -119,22 +120,23 @@ class DomoHandler:
             # Extract data
             if total_rows <= chunk_size:
                 # Single chunk extraction
-                return self._extract_single_chunk(dataset_id, base_query)
+                return self._extract_single_chunk(dataset_id, base_query, enable_auto_type_conversion)
             else:
                 # Paginated extraction
-                return self._extract_with_pagination(dataset_id, base_query, chunk_size, total_rows)
+                return self._extract_with_pagination(dataset_id, base_query, chunk_size, total_rows, enable_auto_type_conversion)
                 
         except Exception as e:
             logger.error(f"Failed to extract data from Domo: {e}")
             return None
     
-    def _extract_single_chunk(self, dataset_id: str, query: str) -> Optional[pl.DataFrame]:
+    def _extract_single_chunk(self, dataset_id: str, query: str, enable_auto_type_conversion: bool = False) -> Optional[pl.DataFrame]:
         """
         Extract data in a single chunk.
         
         Args:
             dataset_id: Domo dataset ID
             query: SQL query
+            enable_auto_type_conversion: Whether to enable automatic type conversion
             
         Returns:
             Optional[pl.DataFrame]: Extracted data or None if failed
@@ -154,7 +156,8 @@ class DomoHandler:
                     df = self._safe_pandas_to_polars(pandas_df)
                     if df is not None:
                         logger.info(f"✅ Extracted {len(df)} rows")
-                        return self._clean_dataframe(df)
+                        # Use the provided auto-type conversion setting
+                        return self._clean_dataframe(df, enable_auto_type_conversion=enable_auto_type_conversion)
                     else:
                         logger.error("Failed to convert single chunk")
                         return None
@@ -164,7 +167,8 @@ class DomoHandler:
                     df = self._fallback_pandas_to_polars(pandas_df)
                     if df is not None:
                         logger.info(f"✅ Extracted {len(df)} rows (fallback method)")
-                        return self._clean_dataframe(df)
+                        # Use the provided auto-type conversion setting
+                        return self._clean_dataframe(df, enable_auto_type_conversion=enable_auto_type_conversion)
                     else:
                         logger.error("Fallback conversion also failed")
                         return None
@@ -177,7 +181,7 @@ class DomoHandler:
             return None
     
     def _extract_with_pagination(self, dataset_id: str, base_query: str, chunk_size: int, 
-                                total_rows: int) -> Optional[pl.DataFrame]:
+                                total_rows: int, enable_auto_type_conversion: bool = False) -> Optional[pl.DataFrame]:
         """
         Extract data using pagination for large datasets.
         
@@ -186,6 +190,7 @@ class DomoHandler:
             base_query: Base SQL query
             chunk_size: Number of rows per chunk
             total_rows: Total number of rows in dataset
+            enable_auto_type_conversion: Whether to enable automatic type conversion
             
         Returns:
             Optional[pl.DataFrame]: Extracted data or None if failed
@@ -244,7 +249,8 @@ class DomoHandler:
                 # Combine all chunks
                 combined_df = pl.concat(all_data, how="vertical")
                 logger.info(f"✅ Extracted {len(combined_df)} rows in {len(all_data)} chunks")
-                return self._clean_dataframe(combined_df)
+                # Use the provided auto-type conversion setting
+                return self._clean_dataframe(combined_df, enable_auto_type_conversion=enable_auto_type_conversion)
             else:
                 logger.warning("No data extracted from any chunk")
                 return pl.DataFrame()
@@ -253,12 +259,13 @@ class DomoHandler:
             logger.error(f"Pagination extraction failed: {e}")
             return None
     
-    def _clean_dataframe(self, df: pl.DataFrame) -> pl.DataFrame:
+    def _clean_dataframe(self, df: pl.DataFrame, enable_auto_type_conversion: bool = False) -> pl.DataFrame:
         """
         Clean and preprocess DataFrame.
         
         Args:
             df: Raw DataFrame
+            enable_auto_type_conversion: Whether to enable automatic type conversion (default: False)
             
         Returns:
             pl.DataFrame: Cleaned DataFrame
@@ -277,75 +284,81 @@ class DomoHandler:
             # Clean column names
             df = df.rename(lambda col: col.strip())
             
-            # Handle data types
-            for col in df.columns:
-                # Skip if column is already numeric
-                if df.schema[col] in [pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Float32, pl.Float64]:
-                    continue
+            # Only perform automatic type conversion if explicitly enabled
+            if enable_auto_type_conversion:
+                logger.info("Automatic type conversion enabled - analyzing column types")
                 
-                # Try to convert to numeric if possible
-                numeric_threshold = 0.5  # Configurable
-                non_null_values = df.filter(pl.col(col).is_not_null()).select(pl.col(col))
-                
-                if len(non_null_values) > 0:
-                    # Count how many values can be converted to numeric
-                    try:
-                        numeric_count = non_null_values.select(pl.col(col).cast(pl.Float64).is_not_null()).sum().item()
-                        
-                        # Convert if threshold is met
-                        if numeric_count / len(non_null_values) >= numeric_threshold:
-                            try:
-                                df = df.with_columns(pl.col(col).cast(pl.Float64))
-                                logger.info(f"Converted column '{col}' to numeric")
-                            except Exception:
-                                pass
-                    except Exception:
-                        pass
-            
-            # Handle date columns
-            for col in df.columns:
-                if df.schema[col] == pl.Utf8:
-                    # Try to convert to datetime
-                    date_threshold = 0.3  # Configurable
+                # Handle data types
+                for col in df.columns:
+                    # Skip if column is already numeric
+                    if df.schema[col] in [pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Float32, pl.Float64]:
+                        continue
+                    
+                    # Try to convert to numeric if possible
+                    numeric_threshold = 0.8  # Increased threshold to be more conservative
                     non_null_values = df.filter(pl.col(col).is_not_null()).select(pl.col(col))
                     
                     if len(non_null_values) > 0:
+                        # Count how many values can be converted to numeric
                         try:
-                            date_count = non_null_values.select(pl.col(col).str.to_datetime().is_not_null()).sum().item()
+                            numeric_count = non_null_values.select(pl.col(col).cast(pl.Float64).is_not_null()).sum().item()
                             
                             # Convert if threshold is met
-                            if date_count / len(non_null_values) >= date_threshold:
+                            if numeric_count / len(non_null_values) >= numeric_threshold:
                                 try:
-                                    df = df.with_columns(pl.col(col).str.to_datetime())
-                                    logger.info(f"Converted column '{col}' to datetime")
+                                    df = df.with_columns(pl.col(col).cast(pl.Float64))
+                                    logger.info(f"Converted column '{col}' to numeric")
                                 except Exception:
                                     pass
                         except Exception:
                             pass
-            
-            # Handle boolean columns
-            for col in df.columns:
-                if df.schema[col] == pl.Utf8:
-                    # Check if column contains boolean-like values
-                    try:
-                        unique_values = df.filter(pl.col(col).is_not_null()).select(pl.col(col).unique()).to_series()
-                        if len(unique_values) <= 2:
-                            bool_like = all(str(val).lower() in ['true', 'false', '1', '0', 'yes', 'no'] 
-                                          for val in unique_values)
-                            if bool_like:
-                                try:
-                                    df = df.with_columns(
-                                        pl.when(pl.col(col).str.to_lowercase().is_in(['true', '1', 'yes']))
-                                        .then(True)
-                                        .otherwise(False)
-                                        .cast(pl.Boolean)
-                                        .alias(col)
-                                    )
-                                    logger.info(f"Converted column '{col}' to boolean")
-                                except Exception:
-                                    pass
-                    except Exception:
-                        pass
+                
+                # Handle date columns
+                for col in df.columns:
+                    if df.schema[col] == pl.Utf8:
+                        # Try to convert to datetime
+                        date_threshold = 0.8  # Increased threshold to be more conservative
+                        non_null_values = df.filter(pl.col(col).is_not_null()).select(pl.col(col))
+                        
+                        if len(non_null_values) > 0:
+                            try:
+                                date_count = non_null_values.select(pl.col(col).str.to_datetime().is_not_null()).sum().item()
+                                
+                                # Convert if threshold is met
+                                if date_count / len(non_null_values) >= date_threshold:
+                                    try:
+                                        df = df.with_columns(pl.col(col).str.to_datetime())
+                                        logger.info(f"Converted column '{col}' to datetime")
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                pass
+                
+                # Handle boolean columns
+                for col in df.columns:
+                    if df.schema[col] == pl.Utf8:
+                        # Check if column contains boolean-like values
+                        try:
+                            unique_values = df.filter(pl.col(col).is_not_null()).select(pl.col(col).unique()).to_series()
+                            if len(unique_values) <= 2:
+                                bool_like = all(str(val).lower() in ['true', 'false', '1', '0', 'yes', 'no'] 
+                                              for val in unique_values)
+                                if bool_like:
+                                    try:
+                                        df = df.with_columns(
+                                            pl.when(pl.col(col).str.to_lowercase().is_in(['true', '1', 'yes']))
+                                            .then(True)
+                                            .otherwise(False)
+                                            .cast(pl.Boolean)
+                                            .alias(col)
+                                        )
+                                        logger.info(f"Converted column '{col}' to boolean")
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
+            else:
+                logger.info("Automatic type conversion disabled - preserving original data types")
             
             logger.info(f"✅ DataFrame cleaned: {len(df)} rows, {len(df.columns)} columns")
             return df
