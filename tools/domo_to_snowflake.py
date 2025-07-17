@@ -42,19 +42,28 @@ SPREADSHEET_ID = os.getenv("MIGRATION_SPREADSHEET_ID", "1Y_CpIXW9RCxnlwwvP-tAL5B
 MIGRATION_SHEET_NAME = os.getenv("MIGRATION_SHEET_NAME", "Migration")
 
 
-def sanitize_table_name(dataset_id: str, dataset_name: str = None) -> str:
+def sanitize_table_name(dataset_id: str, dataset_name: str = None, use_prefix: bool = None) -> str:
     """
     Create a Snowflake-compatible table name from dataset ID and name.
     
     Args:
         dataset_id (str): Domo dataset ID
         dataset_name (str): Optional dataset name for better naming
+        use_prefix (bool): Whether to add DOMO_ prefix (default: from env var DOMO_TABLE_PREFIX)
         
     Returns:
         str: Sanitized table name safe for Snowflake
     """
-    # Start with DOMO prefix
-    table_name = "DOMO_"
+    # Check environment variable if use_prefix is not specified
+    if use_prefix is None:
+        prefix_env = os.getenv("DOMO_TABLE_PREFIX", "DOMO_")
+        use_prefix = prefix_env.lower() not in ['false', 'none', '']
+        prefix = prefix_env if use_prefix else ""
+    else:
+        prefix = "DOMO_" if use_prefix else ""
+    
+    # Start with prefix
+    table_name = prefix
     
     # If we have a dataset name, use it as base
     if dataset_name and dataset_name.strip() and dataset_name.lower() != 'unknown':

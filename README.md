@@ -108,6 +108,7 @@ SNOWFLAKE_SCHEMA=your_schema
 
 # Optional
 EXPORT_DIR=exported_sql  # Default directory for SQL exports
+DOMO_TABLE_PREFIX=DOMO_  # Prefix for Snowflake table names (set to empty string to disable)
 ```
 
 ### Google Sheets Setup
@@ -317,6 +318,39 @@ The system automatically searches for these columns for dataflows:
 - "DataFlow"
 - "dataflow_id"
 - "Dataflow_ID"
+
+### Control Table Name Prefix
+
+By default, all Snowflake tables are created with a `DOMO_` prefix. You can control this behavior:
+
+**Option 1: Environment Variable**
+```bash
+# Remove prefix completely
+export DOMO_TABLE_PREFIX=""
+
+# Use custom prefix
+export DOMO_TABLE_PREFIX="MIGRATED_"
+
+# Use default prefix
+export DOMO_TABLE_PREFIX="DOMO_"
+```
+
+**Option 2: In .env file**
+```env
+# Remove prefix
+DOMO_TABLE_PREFIX=
+
+# Custom prefix
+DOMO_TABLE_PREFIX=MIGRATED_
+
+# Default prefix
+DOMO_TABLE_PREFIX=DOMO_
+```
+
+**Examples:**
+- With prefix: `DOMO_sales_data`
+- Without prefix: `sales_data`
+- Custom prefix: `MIGRATED_sales_data`
 
 ### Configure Timeouts
 

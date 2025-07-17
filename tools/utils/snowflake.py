@@ -240,7 +240,7 @@ class SnowflakeHandler:
             
         except Exception as e:
             logger.error(f"Failed to upload data to Snowflake: {e}")
-            return False
+            return False 
     
     def _upload_via_cursor(self, df: pl.DataFrame, table_name: str, if_exists: str = 'replace') -> bool:
         """
@@ -359,6 +359,45 @@ class SnowflakeHandler:
             logger.error(f"Error verifying upload: {e}")
             return False
     
+    def execute_query(self, query: str) -> Optional[pl.DataFrame]:
+        """
+        Executes a SQL query and returns the result as a Polars DataFrame.
+
+        Args:
+            query (str): The SQL query to execute.
+
+        Returns:
+            Optional[pl.DataFrame]: A Polars DataFrame with the query results,
+                                    or None if the query fails.
+        """
+        if not self.conn:
+            logger.error("❌ No active Snowflake connection.")
+            return None
+        
+        try:
+            logger.info(f"Executing query: {query[:100]}...")
+            cursor = self.conn.cursor()
+            cursor.execute(query)
+            
+            # Fetch results into a pandas DataFrame first
+            pandas_df = cursor.fetch_pandas_all()
+
+            if pandas_df is not None and not pandas_df.empty:
+                # Convert to Polars DataFrame
+                polars_df = pl.from_pandas(pandas_df)
+                logger.info(f"✅ Query returned {len(polars_df)} rows.")
+                return polars_df
+            else:
+                logger.info("ℹ️ Query executed successfully, but returned no rows.")
+                return pl.DataFrame() # Return empty DataFrame for consistency
+
+        except Exception as e:
+            logger.error(f"❌ Failed to execute query: {e}")
+            return None
+        finally:
+            if 'cursor' in locals() and cursor:
+                cursor.close()
+
     def cleanup(self):
         """Close Snowflake connection."""
         if self.conn:
