@@ -11,29 +11,20 @@ import argparse
 import math
 import re
 from typing import List, Dict, Any, Optional, Tuple
-from dotenv import load_dotenv
+from pathlib import Path
 import pandas as pd
-import snowflake.connector
-from snowflake.connector.errors import ProgrammingError
+from dotenv import load_dotenv
+import datacompy
+
+# Add tools to path
+sys.path.insert(0, str(Path(__file__).parent / "tools"))
+
+# Import utilities from tools
 from tools.utils.domo_compare import Domo
+from tools.utils.snowflake import SnowflakeHandler
+from tools.utils.domo import DomoHandler
 
-def reload_env_vars():
-    """Reload environment variables from .env file"""
-    load_dotenv(override=True)  # override=True forces reload of existing variables
-    logger.info("🔄 Environment variables reloaded from .env file")
-
-def show_current_totp_debug():
-    """Show current TOTP passcode for debugging purposes"""
-    passcode = os.getenv('SNOWFLAKE_PASSCODE')
-    if passcode:
-        masked_passcode = passcode[:2] + '*' * (len(passcode) - 2) if len(passcode) > 2 else '***'
-        print(f"📱 Current TOTP passcode: {masked_passcode}")
-        print(f"⏰ Timestamp: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"💡 Remember: TOTP codes expire every 30 seconds")
-    else:
-        print("📱 No TOTP passcode found in environment variables")
-
-# Load environment variables
+# Load environmxent variables
 load_dotenv()
 
 # Configure logging
@@ -43,109 +34,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def _determine_auth_method() -> str:
-    """
-    Determine the authentication method based on environment variables.
-    
-    Returns:
-        str: Authentication method ('key_pair', 'mfa', 'sso', 'password')
-    """
-    # Check for key pair authentication
-    if os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH"):
-        return "key_pair"
-    
-    # Check for MFA
-    if os.getenv("SNOWFLAKE_PASSCODE"):
-        return "mfa"
-    
-    # Check for SSO
-    if os.getenv("SNOWFLAKE_AUTHENTICATOR"):
-        return "sso"
-    
-    # Default to password authentication
-    return "password"
+# =============================================================================
+# DIRECT CONFIGURATION - EDIT THESE VALUES ACCORDING TO YOUR NEEDS
+# =============================================================================
 
+# Default configuration (can be overridden with command line arguments)
+DEFAULT_CONFIG = {
+    'domo_dataset_id': '383336aa-ba94-4eb8-be9b-bccc94ffff40',  # Domo dataset ID
+    'snowflake_table': 'int_view_of_upcs_w_categories_v2',       # Snowflake table name
+    'key_columns': ['id', 'loreal_media_categories'],              # Key columns for comparison
+    'sample_size': None,                        # None = calculate automatically, or specific number
+    'interactive': True,                        # True = interactive mode, False = use default values
+    'transform_column_names': True             # True = apply column name transformation, False = use original names
+}
 
-# Check if environment variables were loaded correctly
-def check_env_vars(reload_env: bool = True):
-    """Check and display the status of environment variables
-    
-    Args:
-        reload_env: Whether to reload environment variables from .env file
-    """
-    if reload_env:
-        reload_env_vars()
-    required_vars = {
-        'DOMO_INSTANCE': 'Domo Instance',
-        'DOMO_DEVELOPER_TOKEN': 'Domo Developer Token',
-        'SNOWFLAKE_USER': 'Snowflake User',
-        'SNOWFLAKE_ACCOUNT': 'Snowflake Account',
-        'SNOWFLAKE_WAREHOUSE': 'Snowflake Warehouse',
-        'SNOWFLAKE_DATABASE': 'Snowflake Database',
-        'SNOWFLAKE_SCHEMA': 'Snowflake Schema'
-    }
-    
-    # Optional variables that depend on authentication method
-    optional_vars = {
-        'SNOWFLAKE_PASSWORD': 'Snowflake Password',
-        'SNOWFLAKE_PASSCODE': 'Snowflake TOTP Passcode',
-        'SNOWFLAKE_PRIVATE_KEY_PATH': 'Snowflake Private Key Path',
-        'SNOWFLAKE_PRIVATE_KEY_PASSPHRASE': 'Snowflake Private Key Passphrase',
-        'SNOWFLAKE_AUTHENTICATOR': 'Snowflake Authenticator'
-    }
-    
-    missing_vars = []
-    loaded_vars = {}
-    
-    # Check required variables
-    for var, description in required_vars.items():
-        value = os.getenv(var)
-        if value:
-            loaded_vars[var] = value
-            # Show only first characters for security
-            masked_value = value[:3] + '*' * (len(value) - 6) + value[-3:] if len(value) > 6 else '***'
-            logger.info(f"✅ {var}: {masked_value}")
-        else:
-            missing_vars.append(var)
-            logger.warning(f"❌ {var}: NOT FOUND")
-    
-    if missing_vars:
-        logger.error(f"Missing required variables: {', '.join(missing_vars)}")
-        logger.error("Please verify that the .env file exists and contains all required variables")
-        return False
-    
-    # Check optional variables and determine authentication method
-    auth_method = _determine_auth_method()
-    logger.info(f"🔐 Authentication method: {auth_method}")
-    
-    # Show optional variables that are configured
-    for var, description in optional_vars.items():
-        value = os.getenv(var)
-        if value:
-            # Show masked value for security
-            masked_value = value[:3] + '*' * (len(value) - 6) + value[-3:] if len(value) > 6 else '***'
-            logger.info(f"✅ {var}: {masked_value}")
-    
-    # Validate authentication method requirements
-    if auth_method == "mfa":
-        if not os.getenv("SNOWFLAKE_PASSWORD"):
-            logger.error("❌ SNOWFLAKE_PASSWORD is required for MFA authentication")
-            return False
-        if not os.getenv("SNOWFLAKE_PASSCODE"):
-            logger.error("❌ SNOWFLAKE_PASSCODE is required for MFA authentication")
-            logger.error("💡 Set SNOWFLAKE_PASSCODE to your current TOTP code (6 digits)")
-            return False
-    elif auth_method == "key_pair":
-        if not os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH"):
-            logger.error("❌ SNOWFLAKE_PRIVATE_KEY_PATH is required for key pair authentication")
-            return False
-    elif auth_method == "password":
-        if not os.getenv("SNOWFLAKE_PASSWORD"):
-            logger.error("❌ SNOWFLAKE_PASSWORD is required for password authentication")
-            return False
-    
-    logger.info("✅ All required environment variables are configured")
-    return True
+# =============================================================================
+# END OF CONFIGURATION
+# =============================================================================
+
 
 def transform_column_name(column_name):
     """
@@ -187,265 +93,77 @@ def transform_column_name(column_name):
 
     return name
 
-# =============================================================================
-# DIRECT CONFIGURATION - EDIT THESE VALUES ACCORDING TO YOUR NEEDS
-# =============================================================================
 
-# Default configuration (can be overridden with command line arguments)
-DEFAULT_CONFIG = {
-    'domo_dataset_id': '383336aa-ba94-4eb8-be9b-bccc94ffff40',  # Domo dataset ID
-    'snowflake_table': 'int_view_of_upcs_w_categories_v2',       # Snowflake table name
-    'key_columns': ['id', 'loreal_media_categories'],              # Key columns for comparison
-    'sample_size': None,                        # None = calculate automatically, or specific number
-    'interactive': True,                        # True = interactive mode, False = use default values
-    'transform_column_names': True             # True = apply column name transformation, False = use original names
-}
-
-# =============================================================================
-# END OF CONFIGURATION
-# =============================================================================
-
-
-class SnowflakeConnector:
-    """Class to handle connections and queries to Snowflake"""
+def check_env_vars(reload_env: bool = True):
+    """Check and display the status of environment variables
     
-    def __init__(self):
-        self.conn = None
-        self.connect()
+    Args:
+        reload_env: Whether to reload environment variables from .env file
+    """
+    if reload_env:
+        load_dotenv(override=True)
+        logger.info("🔄 Environment variables reloaded from .env file")
     
-    def connect(self):
-        """Establish connection with Snowflake using multiple authentication methods"""
-        try:
-            # Reload environment variables to get fresh TOTP codes
-            reload_env_vars()
-            
-            # Get connection parameters
-            snowflake_config = {
-                'user': os.getenv('SNOWFLAKE_USER'),
-                'account': os.getenv('SNOWFLAKE_ACCOUNT'),
-                'warehouse': os.getenv('SNOWFLAKE_WAREHOUSE'),
-                'database': os.getenv('SNOWFLAKE_DATABASE'),
-                'schema': os.getenv('SNOWFLAKE_SCHEMA')
-            }
-            
-            # Check required parameters
-            required_params = ['user', 'account']
-            missing_params = [k for k in required_params if not snowflake_config[k]]
-            
-            if missing_params:
-                logger.error(f"Missing required Snowflake parameters: {missing_params}")
-                logger.error("Please set the following environment variables:")
-                for param in missing_params:
-                    logger.error(f"  - SNOWFLAKE_{param.upper()}")
-                raise ValueError(f"Missing required parameters: {missing_params}")
-            
-            # Determine authentication method
-            auth_method = _determine_auth_method()
-            logger.info(f"Using Snowflake authentication method: {auth_method}")
-            
-            if auth_method == "key_pair":
-                # RSA Key Pair Authentication (recommended for automated scripts)
-                private_key_path = os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH")
-                private_key_passphrase = os.getenv("SNOWFLAKE_PRIVATE_KEY_PASSPHRASE")
-                
-                if not private_key_path:
-                    logger.error("SNOWFLAKE_PRIVATE_KEY_PATH is required for key pair authentication")
-                    raise ValueError("Private key path is required for key pair authentication")
-                
-                from cryptography.hazmat.primitives import serialization
-                from cryptography.hazmat.primitives.serialization import load_pem_private_key
-                
-                # Load private key
-                with open(private_key_path, 'rb') as key_file:
-                    private_key = load_pem_private_key(
-                        key_file.read(),
-                        password=private_key_passphrase.encode() if private_key_passphrase else None,
-                    )
-                
-                # Convert to DER format for Snowflake
-                private_key_der = private_key.private_bytes(
-                    encoding=serialization.Encoding.DER,
-                    format=serialization.PrivateFormat.PKCS8,
-                    encryption_algorithm=serialization.NoEncryption()
-                )
-                
-                snowflake_config['private_key'] = private_key_der
-                
-            elif auth_method == "mfa":
-                # MFA with TOTP
-                password = os.getenv("SNOWFLAKE_PASSWORD")
-                passcode = os.getenv("SNOWFLAKE_PASSCODE")
-                
-                if not password:
-                    logger.error("SNOWFLAKE_PASSWORD is required for MFA authentication")
-                    raise ValueError("Password is required for MFA authentication")
-                
-                if not passcode:
-                    logger.error("SNOWFLAKE_PASSCODE is required for MFA authentication")
-                    logger.error("Set SNOWFLAKE_PASSCODE to your current TOTP code")
-                    logger.error("💡 TOTP codes expire every 30 seconds - make sure to use a fresh code")
-                    raise ValueError("TOTP passcode is required for MFA authentication")
-                
-                # Validate passcode format (should be 6 digits)
-                if not passcode.isdigit() or len(passcode) != 6:
-                    logger.error(f"Invalid TOTP passcode format: {passcode}")
-                    logger.error("TOTP passcode should be 6 digits (e.g., 123456)")
-                    raise ValueError(f"Invalid TOTP passcode format")
-                
-                logger.info(f"Using MFA authentication with passcode: {passcode[:2]}****")
-                logger.info(f"📱 TOTP passcode loaded at: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                snowflake_config['password'] = password
-                snowflake_config['passcode'] = passcode
-                
-            elif auth_method == "sso":
-                # SSO Authentication
-                authenticator = os.getenv("SNOWFLAKE_AUTHENTICATOR", "externalbrowser")
-                snowflake_config['authenticator'] = authenticator
-                
-            else:
-                # Standard password authentication
-                password = os.getenv("SNOWFLAKE_PASSWORD")
-                if not password:
-                    logger.error("SNOWFLAKE_PASSWORD is required for password authentication")
-                    raise ValueError("Password is required for password authentication")
-                snowflake_config['password'] = password
-            
-            # Remove None values
-            snowflake_config = {k: v for k, v in snowflake_config.items() if v is not None}
-            
-            # Create connection
-            logger.info("Connecting to Snowflake...")
-            self.conn = snowflake.connector.connect(**snowflake_config)
-            
-            # Test connection
-            cursor = self.conn.cursor()
-            cursor.execute("SELECT CURRENT_VERSION()")
-            version = cursor.fetchone()[0]
-            cursor.close()
-            
-            logger.info(f"✅ Connected to Snowflake version: {version}")
-            
-        except Exception as e:
-            logger.error(f"Error connecting to Snowflake: {e}")
-            
-            # Provide helpful error messages
-            error_str = str(e)
-            if "MFA with TOTP is required" in error_str:
-                logger.error("💡 MFA (Multi-Factor Authentication) is required.")
-                logger.error("   Set SNOWFLAKE_PASSCODE to your current TOTP code, or")
-                logger.error("   Use key pair authentication (see README for setup)")
-            elif "TOTP Invalid" in error_str:
-                logger.error("💡 TOTP code is invalid or has expired.")
-                logger.error("   TOTP codes expire every 30 seconds.")
-                logger.error("   Please generate a fresh code and update SNOWFLAKE_PASSCODE")
-            elif "Failed to authenticate" in error_str:
-                logger.error("💡 Authentication failed. Check your credentials.")
-            elif "cryptography" in error_str:
-                logger.error("💡 Install cryptography: pip install cryptography")
-            elif "private key" in error_str.lower():
-                logger.error("💡 Check your private key path and passphrase")
-            
-            raise
+    required_vars = {
+        'DOMO_INSTANCE': 'Domo Instance',
+        'DOMO_DEVELOPER_TOKEN': 'Domo Developer Token',
+        'SNOWFLAKE_USER': 'Snowflake User',
+        'SNOWFLAKE_ACCOUNT': 'Snowflake Account',
+        'SNOWFLAKE_WAREHOUSE': 'Snowflake Warehouse',
+        'SNOWFLAKE_DATABASE': 'Snowflake Database',
+        'SNOWFLAKE_SCHEMA': 'Snowflake Schema'
+    }
     
-    def execute_query(self, query: str) -> pd.DataFrame:
-        """Execute query and return DataFrame"""
-        try:
-            cursor = self.conn.cursor()
-            cursor.execute(query)
-            results = cursor.fetchall()
-            columns = [desc[0] for desc in cursor.description]
-            cursor.close()
-            return pd.DataFrame(results, columns=columns)
-        except Exception as e:
-            logger.error(f"Error executing query: {e}")
-            raise
+    missing_vars = []
+    loaded_vars = {}
     
-    def process_column_name(self, column_name: str, for_snowflake_query: bool = False) -> str:
-        """
-        Process column name to maintain case-sensitivity
-        
-        Args:
-            column_name: Column name
-            for_snowflake_query: True if for Snowflake query, False for comparison
-        
-        Returns:
-            Processed column name
-        """
-        if for_snowflake_query:
-            # For Snowflake queries, add quotes if they don't have
-            if column_name.startswith('"') and column_name.endswith('"'):
-                return column_name  # Already has quotes
-            else:
-                return f'"{column_name}"'  # Add quotes
+    # Check required variables
+    for var, description in required_vars.items():
+        value = os.getenv(var)
+        if value:
+            loaded_vars[var] = value
+            # Show only first characters for security
+            masked_value = value[:3] + '*' * (len(value) - 6) + value[-3:] if len(value) > 6 else '***'
+            logger.info(f"✅ {var}: {masked_value}")
         else:
-            # For comparison, remove quotes if they have
-            return column_name.strip('"')
+            missing_vars.append(var)
+            logger.warning(f"❌ {var}: NOT FOUND")
     
-    def get_table_schema(self, table_name: str) -> List[Dict[str, Any]]:
-        """Get table schema in Snowflake"""
-        # Use current database and schema from environment variables
-        database = os.getenv('SNOWFLAKE_DATABASE')
-        schema = os.getenv('SNOWFLAKE_SCHEMA')
-        
-        query = f"""
-        SELECT 
-            COLUMN_NAME,
-            DATA_TYPE,
-            IS_NULLABLE,
-            COLUMN_DEFAULT
-        FROM {database}.INFORMATION_SCHEMA.COLUMNS 
-        WHERE TABLE_NAME = '{table_name.upper()}'
-        AND TABLE_SCHEMA = '{schema.upper()}'
-        AND TABLE_CATALOG = '{database.upper()}'
-        ORDER BY ORDINAL_POSITION
-        """
-        
-        logger.info(f"Executing schema query: {query}")
-        result = self.execute_query(query)
-        logger.info(f"Schema query returned {len(result)} columns")
-        logger.info(f"Column names found: {result['COLUMN_NAME'].tolist()}")
-        
-        return result.to_dict('records')
+    if missing_vars:
+        logger.error(f"Missing required variables: {', '.join(missing_vars)}")
+        logger.error("Please verify that the .env file exists and contains all required variables")
+        return False
     
-    def get_row_count(self, table_name: str) -> int:
-        """Get row count of table"""
-        query = f"SELECT COUNT(*) as row_count FROM {table_name}"
-        logger.info(f"Executing count query: {query}")
-        result = self.execute_query(query)
-        logger.info(f"Count result: {result}")
-        logger.info(f"Columns of result: {result.columns.tolist()}")
-        logger.info(f"First row: {result.iloc[0].to_dict()}")
-        # Use ROW_COUNT in uppercase as Snowflake returns
-        count = int(result.iloc[0]['ROW_COUNT'])
-        logger.info(f"Final count: {count}")
-        return count
-    
-    def get_sample_data(self, table_name: str, key_columns: List[str], limit: int = 1000) -> pd.DataFrame:
-        """Get sample data using key columns for sorting"""
-        # Process column names for Snowflake query
-        processed_key_columns = [self.process_column_name(col, for_snowflake_query=True) for col in key_columns]
-        
-        key_cols_str = ', '.join(processed_key_columns)
-        query = f"""
-        SELECT * FROM {table_name}
-        ORDER BY {key_cols_str}
-        LIMIT {limit}
-        """
-        return self.execute_query(query)
-    
-    def close(self):
-        """Close connection"""
-        if self.conn:
-            self.conn.close()
+    logger.info("✅ All required environment variables are configured")
+    return True
 
 
 class DatasetComparator:
-    """Main class to compare Domo datasets with Snowflake tables"""
+    """Main class to compare Domo datasets with Snowflake tables using the tools utilities"""
     
     def __init__(self):
         self.domo = Domo()
-        self.snowflake = SnowflakeConnector()
+        self.snowflake_handler = SnowflakeHandler()
         self.errors = []  # List to store errors
+        self._snowflake_connected = False
+    
+    def setup_connections(self) -> bool:
+        """Setup connections to both Domo and Snowflake"""
+        try:
+            logger.info("🔧 Setting up connections...")
+            
+            # Setup Snowflake connection
+            if not self.snowflake_handler.setup_connection():
+                logger.error("❌ Failed to connect to Snowflake")
+                return False
+            
+            self._snowflake_connected = True
+            logger.info("✅ All connections established successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to setup connections: {e}")
+            return False
     
     def add_error(self, section: str, error: str, details: str = ""):
         """Add error to error list"""
@@ -490,9 +208,9 @@ class DatasetComparator:
         logger.info("Comparing schemas...")
         
         try:
-            # Get Domo schema
+            # Get Domo schema using the Domo utility
             domo_schema = self.domo.get_dataset_schema(domo_dataset_id)
-            domo_columns = {col['name']: col['type'] for col in domo_schema['columns']}  # Maintain original case
+            domo_columns = {col['name']: col['type'] for col in domo_schema['columns']}
             
             # Apply column name transformation if enabled
             if transform_names:
@@ -517,10 +235,28 @@ class DatasetComparator:
             }
         
         try:
-            # Get Snowflake schema
-            sf_schema = self.snowflake.get_table_schema(snowflake_table)
-            sf_columns = {col['COLUMN_NAME']: col['DATA_TYPE'] for col in sf_schema}  # Maintain original case
-            logger.info(f"Snowflake columns after processing: {list(sf_columns.keys())}")
+            # Get Snowflake schema using the Snowflake utility
+            query = f"""
+            SELECT 
+                COLUMN_NAME,
+                DATA_TYPE,
+                IS_NULLABLE,
+                COLUMN_DEFAULT
+            FROM {os.getenv('SNOWFLAKE_DATABASE')}.INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_NAME = '{snowflake_table.upper()}'
+            AND TABLE_SCHEMA = '{os.getenv('SNOWFLAKE_SCHEMA').upper()}'
+            AND TABLE_CATALOG = '{os.getenv('SNOWFLAKE_DATABASE').upper()}'
+            ORDER BY ORDINAL_POSITION
+            """
+            
+            sf_result = self.snowflake_handler.execute_query(query)
+            if sf_result is not None:
+                sf_schema_df = sf_result.to_pandas()
+                sf_columns = {col['COLUMN_NAME']: col['DATA_TYPE'] for _, col in sf_schema_df.iterrows()}
+            else:
+                raise Exception("Failed to get Snowflake schema")
+                
+            logger.info(f"Snowflake columns: {list(sf_columns.keys())}")
         except Exception as e:
             self.add_error("Snowflake Schema", f"Could not get Snowflake schema", str(e))
             return {
@@ -534,27 +270,19 @@ class DatasetComparator:
                 'error': True
             }
         
-        # Compare columns (maintain original case)
+        # Compare columns
         domo_cols_set = set(domo_columns.keys())
         sf_cols_set = set(sf_columns.keys())
-        
-        logger.info(f"Domo columns set: {domo_cols_set}")
-        logger.info(f"Snowflake columns set: {sf_cols_set}")
         
         missing_in_sf = domo_cols_set - sf_cols_set
         extra_in_sf = sf_cols_set - domo_cols_set
         common_cols = domo_cols_set & sf_cols_set
-        
-        logger.info(f"Missing in Snowflake: {missing_in_sf}")
-        logger.info(f"Extra in Snowflake: {extra_in_sf}")
-        logger.info(f"Common columns: {common_cols}")
         
         # Compare data types for common columns
         type_mismatches = []
         for col in common_cols:
             domo_type = domo_columns[col]
             sf_type = sf_columns[col]
-            # Basic type mapping (may need adjustments)
             if not self._types_compatible(domo_type, sf_type):
                 type_mismatches.append({
                     'column': col,
@@ -588,17 +316,44 @@ class DatasetComparator:
         
         return True  # Default assume compatibility
     
-    def is_row_count_difference_negligible(self, domo_count: int, snowflake_count: int) -> Dict[str, Any]:
-        """
-        Determine if the difference in row counts is statistically negligible
+    def compare_row_counts(self, domo_dataset_id: str, snowflake_table: str) -> Dict[str, Any]:
+        """Compare row counts between Domo and Snowflake"""
+        logger.info("Comparing row counts...")
         
-        Args:
-            domo_count: Number of rows in Domo
-            snowflake_count: Number of rows in Snowflake
+        # Get Domo count using the Domo utility
+        try:
+            domo_count_query = "SELECT COUNT(*) as row_count FROM table"
+            domo_result = self.domo.query_dataset(domo_dataset_id, domo_count_query)
+            domo_count = domo_result['rows'][0][0] if domo_result['rows'] else 0
+        except Exception as e:
+            self.add_error("Domo Count", f"Could not get row count from Domo", str(e))
+            domo_count = 0
         
-        Returns:
-            Dictionary with analysis results
-        """
+        # Get Snowflake count using the Snowflake utility
+        try:
+            sf_count_query = f"SELECT COUNT(*) as row_count FROM {snowflake_table}"
+            sf_result = self.snowflake_handler.execute_query(sf_count_query)
+            if sf_result is not None:
+                sf_count = int(sf_result.to_pandas().iloc[0]['ROW_COUNT'])
+            else:
+                raise Exception("Failed to get Snowflake count")
+        except Exception as e:
+            self.add_error("Snowflake Count", f"Could not get row count from Snowflake", str(e))
+            sf_count = 0
+        
+        # Analyze if difference is negligible
+        negligible_analysis = self._is_row_count_difference_negligible(domo_count, sf_count)
+        
+        return {
+            'domo_rows': domo_count,
+            'snowflake_rows': sf_count,
+            'difference': sf_count - domo_count,
+            'match': domo_count == sf_count,
+            'negligible_analysis': negligible_analysis
+        }
+    
+    def _is_row_count_difference_negligible(self, domo_count: int, snowflake_count: int) -> Dict[str, Any]:
+        """Determine if the difference in row counts is statistically negligible"""
         if domo_count == 0 and snowflake_count == 0:
             return {
                 'is_negligible': True,
@@ -662,37 +417,6 @@ class DatasetComparator:
             'percentage': percentage
         }
     
-    def compare_row_counts(self, domo_dataset_id: str, snowflake_table: str) -> Dict[str, Any]:
-        """Compare row counts"""
-        logger.info("Comparing row counts...")
-        
-        # Get Domo count
-        try:
-            domo_count_query = "SELECT COUNT(*) as row_count FROM table"
-            domo_result = self.domo.query_dataset(domo_dataset_id, domo_count_query)
-            domo_count = domo_result['rows'][0][0] if domo_result['rows'] else 0
-        except Exception as e:
-            self.add_error("Domo Count", f"Could not get row count from Domo", str(e))
-            domo_count = 0
-        
-        # Get Snowflake count
-        try:
-            sf_count = self.snowflake.get_row_count(snowflake_table)
-        except Exception as e:
-            self.add_error("Snowflake Count", f"Could not get row count from Snowflake", str(e))
-            sf_count = 0
-        
-        # Analyze if difference is negligible
-        negligible_analysis = self.is_row_count_difference_negligible(domo_count, sf_count)
-        
-        return {
-            'domo_rows': domo_count,
-            'snowflake_rows': sf_count,
-            'difference': sf_count - domo_count,
-            'match': domo_count == sf_count,
-            'negligible_analysis': negligible_analysis
-        }
-    
     def compare_data_samples(self, domo_dataset_id: str, snowflake_table: str, 
                            key_columns: List[str], sample_size: Optional[int] = None, 
                            transform_names: bool = False) -> Dict[str, Any]:
@@ -715,7 +439,7 @@ class DatasetComparator:
         
         logger.info(f"Total rows in Domo: {total_domo_rows}, Sample to compare: {sample_size}")
         
-        # Get Domo sample
+        # Get Domo sample using the Domo utility
         try:
             key_cols_str = ', '.join(key_columns)
             domo_query = f"SELECT * FROM table ORDER BY {key_cols_str} LIMIT {sample_size}"
@@ -724,17 +448,7 @@ class DatasetComparator:
             
             if not domo_result['rows']:
                 self.add_error("Domo Sample", "Could not get data from Domo")
-                return {
-                    'sample_size': sample_size,
-                    'domo_sample_rows': 0,
-                    'snowflake_sample_rows': 0,
-                    'data_match': False,
-                    'mismatched_rows': [],
-                    'missing_in_snowflake': 0,
-                    'extra_in_snowflake': 0,
-                    'rows_with_differences': 0,
-                    'error': True
-                }
+                return self._get_error_data_comparison_result(sample_size)
             
             domo_df = pd.DataFrame(domo_result['rows'], columns=domo_result['columns'])
             
@@ -745,37 +459,31 @@ class DatasetComparator:
                 transformed_columns = [transform_column_name(col) for col in original_columns]
                 domo_df.columns = transformed_columns
                 
-                # Log the transformations
-                for orig, trans in zip(original_columns, transformed_columns):
-                    if orig != trans:
-                        logger.info(f"   '{orig}' -> '{trans}'")
-                
                 # Transform key columns as well
                 transformed_key_columns = [transform_column_name(col) for col in key_columns]
                 logger.info(f"Transformed key columns: {key_columns} -> {transformed_key_columns}")
                 key_columns = transformed_key_columns
             
             logger.info(f"Domo DataFrame: {len(domo_df)} rows, {len(domo_df.columns)} columns")
-            logger.info(f"Domo Columns: {domo_df.columns.tolist()}")
         except Exception as e:
             self.add_error("Domo Sample", f"Could not get Domo sample", str(e))
-            return {
-                'sample_size': sample_size,
-                'domo_sample_rows': 0,
-                'snowflake_sample_rows': 0,
-                'data_match': False,
-                'mismatched_rows': [],
-                'missing_in_snowflake': 0,
-                'extra_in_snowflake': 0,
-                'rows_with_differences': 0,
-                'error': True
-            }
+            return self._get_error_data_comparison_result(sample_size)
         
-        # Get Snowflake sample
+        # Get Snowflake sample using the Snowflake utility
         try:
-            sf_df = self.snowflake.get_sample_data(snowflake_table, key_columns, sample_size)
+            key_cols_str = ', '.join([f'"{col}"' for col in key_columns])
+            sf_query = f"""
+            SELECT * FROM {snowflake_table}
+            ORDER BY {key_cols_str}
+            LIMIT {sample_size}
+            """
+            sf_result = self.snowflake_handler.execute_query(sf_query)
+            if sf_result is not None:
+                sf_df = sf_result.to_pandas()
+            else:
+                raise Exception("Failed to get Snowflake sample")
+                
             logger.info(f"Snowflake DataFrame: {len(sf_df)} rows, {len(sf_df.columns)} columns")
-            logger.info(f"Snowflake Columns: {sf_df.columns.tolist()}")
         except Exception as e:
             self.add_error("Snowflake Sample", f"Could not get Snowflake sample", str(e))
             return {
@@ -795,8 +503,7 @@ class DatasetComparator:
             comparison_result = self._compare_dataframes(domo_df, sf_df, key_columns)
             
             # Generate detailed report
-            detailed_report = self.generate_detailed_row_comparison(domo_df, sf_df, key_columns)
-            logger.info("Detailed report generated")
+            detailed_report = self._generate_detailed_row_comparison(domo_df, sf_df, key_columns)
             
             # Save detailed report to file
             timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
@@ -815,17 +522,7 @@ class DatasetComparator:
             
         except Exception as e:
             self.add_error("Data Comparison", f"Error comparing DataFrames", str(e))
-            return {
-                'sample_size': sample_size,
-                'domo_sample_rows': len(domo_df),
-                'snowflake_sample_rows': len(sf_df),
-                'data_match': False,
-                'mismatched_rows': [],
-                'missing_in_snowflake': 0,
-                'extra_in_snowflake': 0,
-                'rows_with_differences': 0,
-                'error': True
-            }
+            return self._get_error_data_comparison_result(sample_size, len(domo_df), len(sf_df))
         
         return {
             'sample_size': sample_size,
@@ -839,19 +536,26 @@ class DatasetComparator:
             'transform_applied': transform_names
         }
     
+    def _get_error_data_comparison_result(self, sample_size: int, domo_rows: int = 0, sf_rows: int = 0) -> Dict[str, Any]:
+        """Get error result for data comparison"""
+        return {
+            'sample_size': sample_size,
+            'domo_sample_rows': domo_rows,
+            'snowflake_sample_rows': sf_rows,
+            'data_match': False,
+            'mismatched_rows': [],
+            'missing_in_snowflake': 0,
+            'extra_in_snowflake': 0,
+            'rows_with_differences': 0,
+            'error': True
+        }
+    
     def _compare_dataframes(self, domo_df: pd.DataFrame, sf_df: pd.DataFrame, 
                           key_columns: List[str]) -> Dict[str, Any]:
         """Compare two DataFrames using key columns"""
-        # DO NOT normalize column names - maintain original case
-        # domo_df.columns = domo_df.columns.str.upper()
-        # sf_df.columns = sf_df.columns.str.upper()
-        
-        # Process key column names for comparison
-        processed_key_columns = [self.snowflake.process_column_name(col, for_snowflake_query=False) for col in key_columns]
-        
-        # Verify that key columns exist (case-sensitive comparison)
-        missing_key_cols_domo = [col for col in processed_key_columns if col not in domo_df.columns]
-        missing_key_cols_sf = [col for col in processed_key_columns if col not in sf_df.columns]
+        # Verify that key columns exist
+        missing_key_cols_domo = [col for col in key_columns if col not in domo_df.columns]
+        missing_key_cols_sf = [col for col in key_columns if col not in sf_df.columns]
         
         if missing_key_cols_domo:
             self.add_error("Key Columns", f"Missing key columns in Domo: {missing_key_cols_domo}")
@@ -859,14 +563,13 @@ class DatasetComparator:
             self.add_error("Key Columns", f"Missing key columns in Snowflake: {missing_key_cols_sf}")
         
         # Create composite keys
-        # Handle null/empty values consistently
         def clean_key_value(val):
             if pd.isna(val) or str(val).strip() == '' or str(val).strip().lower() == 'null':
                 return 'NULL'
             return str(val).strip()
         
-        domo_df['_key'] = domo_df[processed_key_columns].applymap(clean_key_value).agg('|'.join, axis=1)
-        sf_df['_key'] = sf_df[processed_key_columns].applymap(clean_key_value).agg('|'.join, axis=1)
+        domo_df['_key'] = domo_df[key_columns].applymap(clean_key_value).agg('|'.join, axis=1)
+        sf_df['_key'] = sf_df[key_columns].applymap(clean_key_value).agg('|'.join, axis=1)
         
         # Find differences
         domo_keys = set(domo_df['_key'])
@@ -877,15 +580,14 @@ class DatasetComparator:
         common_keys = domo_keys & sf_keys
         
         # Compare common rows and count unique rows with differences
-        rows_with_differences = set()  # Use set to count unique rows
         mismatched_rows = []
+        total_rows_with_differences = 0
         
         for key in list(common_keys)[:10]:  # Limit to 10 examples for report
             domo_row = domo_df[domo_df['_key'] == key].iloc[0]
             sf_row = sf_df[sf_df['_key'] == key].iloc[0]
             
             has_differences = False
-            # Compare values (excluding the key)
             for col in domo_df.columns:
                 if col != '_key' and col in sf_df.columns:
                     if str(domo_row[col]) != str(sf_row[col]):
@@ -896,12 +598,8 @@ class DatasetComparator:
                             'domo_value': domo_row[col],
                             'snowflake_value': sf_row[col]
                         })
-            
-            if has_differences:
-                rows_with_differences.add(key)
         
-        # Count all rows with differences (not just the first 10)
-        total_rows_with_differences = 0
+        # Count all rows with differences
         for key in common_keys:
             domo_row = domo_df[domo_df['_key'] == key].iloc[0]
             sf_row = sf_df[sf_df['_key'] == key].iloc[0]
@@ -920,6 +618,71 @@ class DatasetComparator:
             'rows_with_differences': total_rows_with_differences
         }
     
+    def _generate_detailed_row_comparison(self, domo_df: pd.DataFrame, sf_df: pd.DataFrame, 
+                                       key_columns: List[str]) -> str:
+        """Generate detailed row comparison report"""
+        report_lines = []
+        report_lines.append("\n" + "="*80)
+        report_lines.append("DETAILED ROW COMPARISON REPORT")
+        report_lines.append("="*80)
+        
+        # Create composite keys
+        def clean_key_value(val):
+            if pd.isna(val) or str(val).strip() == '' or str(val).strip().lower() == 'null':
+                return 'NULL'
+            return str(val).strip()
+        
+        domo_df['_key'] = domo_df[key_columns].applymap(clean_key_value).agg('|'.join, axis=1)
+        sf_df['_key'] = sf_df[key_columns].applymap(clean_key_value).agg('|'.join, axis=1)
+        
+        # Find common rows
+        domo_keys = set(domo_df['_key'])
+        sf_keys = set(sf_df['_key'])
+        common_keys = domo_keys & sf_keys
+        
+        report_lines.append(f"\n📊 STATISTICS:")
+        report_lines.append(f"   Total rows in Domo: {len(domo_df)}")
+        report_lines.append(f"   Total rows in Snowflake: {len(sf_df)}")
+        report_lines.append(f"   Common rows: {len(common_keys)}")
+        report_lines.append(f"   Rows only in Domo: {len(domo_keys - sf_keys)}")
+        report_lines.append(f"   Rows only in Snowflake: {len(sf_keys - domo_keys)}")
+        
+        # Show examples of rows with differences
+        if common_keys:
+            report_lines.append(f"\n🔍 DETAILED COMPARISON OF FIRST 5 ROWS:")
+            
+            for i, key in enumerate(list(common_keys)[:5], 1):
+                domo_row = domo_df[domo_df['_key'] == key].iloc[0]
+                sf_row = sf_df[sf_df['_key'] == key].iloc[0]
+                
+                report_lines.append(f"\n   📋 ROW {i}:")
+                report_lines.append(f"      Key: {key}")
+                
+                # Show differences in columns
+                differences = []
+                for col in domo_df.columns:
+                    if col != '_key' and col in sf_df.columns:
+                        domo_val = domo_row[col]
+                        sf_val = sf_row[col]
+                        if str(domo_val) != str(sf_val):
+                            differences.append({
+                                'column': col,
+                                'domo_value': domo_val,
+                                'snowflake_value': sf_val
+                            })
+                
+                if differences:
+                    report_lines.append(f"      🔄 DIFFERENCES FOUND ({len(differences)} columns):")
+                    for diff in differences:
+                        report_lines.append(f"         {diff['column']}:")
+                        report_lines.append(f"            Domo:      '{diff['domo_value']}'")
+                        report_lines.append(f"            Snowflake: '{diff['snowflake_value']}'")
+                else:
+                    report_lines.append(f"      ✅ No differences found in this row")
+        
+        report_lines.append("\n" + "="*80)
+        return "\n".join(report_lines)
+    
     def generate_report(self, domo_dataset_id: str, snowflake_table: str, 
                        key_columns: List[str], sample_size: Optional[int] = None,
                        transform_names: bool = False) -> Dict[str, Any]:
@@ -928,6 +691,19 @@ class DatasetComparator:
         
         # Clear previous errors
         self.errors = []
+        
+        # Setup connections if not already done
+        if not self._snowflake_connected:
+            if not self.setup_connections():
+                return {
+                    'domo_dataset_id': domo_dataset_id,
+                    'snowflake_table': snowflake_table,
+                    'key_columns': key_columns,
+                    'overall_match': False,
+                    'errors': [{'section': 'Connection', 'error': 'Failed to setup connections', 'details': ''}],
+                    'timestamp': pd.Timestamp.now().isoformat(),
+                    'transform_applied': transform_names
+                }
         
         # Compare schemas
         schema_comparison = self.compare_schemas(domo_dataset_id, snowflake_table, transform_names)
@@ -1067,126 +843,16 @@ class DatasetComparator:
                 print(f"   🔄 {data['rows_with_differences']} rows with different data")
             
             if data.get('data_match', False):
-                print(f"   ✅ Domo sample data matches")
+                print(f"   ✅ Data samples match")
             else:
-                print(f"   ❌ Domo sample data does not match")
+                print(f"   ❌ Data samples do not match")
         
         print("\n" + "="*80)
     
     def cleanup(self):
         """Clean up resources"""
-        self.snowflake.close()
-
-    def generate_detailed_row_comparison(self, domo_df: pd.DataFrame, sf_df: pd.DataFrame, 
-                                       key_columns: List[str]) -> str:
-        """
-        Generate detailed row comparison report
-        
-        Args:
-            domo_df: Domo DataFrame
-            sf_df: Snowflake DataFrame
-            key_columns: Key columns
-        
-        Returns:
-            String with detailed report
-        """
-        report_lines = []
-        report_lines.append("\n" + "="*80)
-        report_lines.append("REPORTE DETALLADO DE COMPARACIÓN DE FILAS")
-        report_lines.append("="*80)
-        
-        # Process key column names
-        processed_key_columns = [self.snowflake.process_column_name(col, for_snowflake_query=False) for col in key_columns]
-        
-        # Create composite keys
-        # Handle null/empty values consistently
-        def clean_key_value(val):
-            if pd.isna(val) or str(val).strip() == '' or str(val).strip().lower() == 'null':
-                return 'NULL'
-            return str(val).strip()
-        
-        domo_df['_key'] = domo_df[processed_key_columns].applymap(clean_key_value).agg('|'.join, axis=1)
-        sf_df['_key'] = sf_df[processed_key_columns].applymap(clean_key_value).agg('|'.join, axis=1)
-        
-        # Find common rows
-        domo_keys = set(domo_df['_key'])
-        sf_keys = set(sf_df['_key'])
-        common_keys = domo_keys & sf_keys
-        
-        report_lines.append(f"\n📊 STATISTICS:")
-        report_lines.append(f"   Total rows in Domo: {len(domo_df)}")
-        report_lines.append(f"   Total rows in Snowflake: {len(sf_df)}")
-        report_lines.append(f"   Common rows: {len(common_keys)}")
-        report_lines.append(f"   Rows only in Domo: {len(domo_keys - sf_keys)}")
-        report_lines.append(f"   Rows only in Snowflake: {len(sf_keys - domo_keys)}")
-        
-        # Show examples of rows with differences
-        if common_keys:
-            report_lines.append(f"\n🔍 COMPARISON DETAILED OF 5 ROWS (of {len(common_keys)} total):")
-            
-            for i, key in enumerate(list(common_keys)[:5], 1):
-                domo_row = domo_df[domo_df['_key'] == key].iloc[0]
-                sf_row = sf_df[sf_df['_key'] == key].iloc[0]
-                
-                report_lines.append(f"\n   📋 ROW {i}:")
-                report_lines.append(f"      Key: {key}")
-                
-                # Show values of key columns
-                report_lines.append(f"      🔑 Key Columns:")
-                for col in processed_key_columns:
-                    domo_val = domo_row[col]
-                    sf_val = sf_row[col]
-                    status = "✅" if str(domo_val) == str(sf_val) else "❌"
-                    report_lines.append(f"         {col}: {status}")
-                    if str(domo_val) != str(sf_val):
-                        report_lines.append(f"            Domo:     '{domo_val}'")
-                        report_lines.append(f"            Snowflake: '{sf_val}'")
-                
-                # Show differences in other columns
-                differences = []
-                for col in domo_df.columns:
-                    if col != '_key' and col in sf_df.columns:
-                        domo_val = domo_row[col]
-                        sf_val = sf_row[col]
-                        if str(domo_val) != str(sf_val):
-                            differences.append({
-                                'column': col,
-                                'domo_value': domo_val,
-                                'snowflake_value': sf_val
-                            })
-                
-                if differences:
-                    report_lines.append(f"      🔄 DIFFERENCES FOUND ({len(differences)} columns):")
-                    for diff in differences:
-                        report_lines.append(f"         {diff['column']}:")
-                        report_lines.append(f"            Domo:     '{diff['domo_value']}'")
-                        report_lines.append(f"            Snowflake: '{diff['snowflake_value']}'")
-                else:
-                    report_lines.append(f"      ✅ No differences found in this row")
-            
-        
-        # Show rows missing in Snowflake
-        missing_in_sf = domo_keys - sf_keys
-        if missing_in_sf:
-            report_lines.append(f"\n❌ ROWS MISSING IN SNOWFLAKE ({len(missing_in_sf)}):")
-            for i, key in enumerate(list(missing_in_sf), 1):
-                domo_row = domo_df[domo_df['_key'] == key].iloc[0]
-                report_lines.append(f"   {i}. Key: {key}")
-                for col in processed_key_columns:
-                    report_lines.append(f"      {col}: '{domo_row[col]}'")
-        
-        # Show extra rows in Snowflake
-        extra_in_sf = sf_keys - domo_keys
-        if extra_in_sf:
-            report_lines.append(f"\n⚠️  EXTRA ROWS IN SNOWFLAKE ({len(extra_in_sf)}):")
-            for i, key in enumerate(list(extra_in_sf), 1):
-                sf_row = sf_df[sf_df['_key'] == key].iloc[0]
-                report_lines.append(f"   {i}. Key: {key}")
-                for col in processed_key_columns:
-                    report_lines.append(f"      {col}: '{sf_row[col]}'")
-        
-        report_lines.append("\n" + "="*80)
-        return "\n".join(report_lines)
+        if self.snowflake_handler:
+            self.snowflake_handler.cleanup()
 
 
 def get_config_from_args():
@@ -1201,6 +867,7 @@ def get_config_from_args():
     parser.add_argument('--transform-columns', action='store_true', help='Apply column name transformation')
     parser.add_argument('--no-transform-columns', action='store_true', help='Do not apply column name transformation')
     parser.add_argument('--reload-env', action='store_true', help='Force reload environment variables from .env file')
+    parser.add_argument('--test-datacompy', action='store_true', help='Run datacompy test function')
     
     args = parser.parse_args()
     
@@ -1224,23 +891,16 @@ def get_config_from_args():
     if args.no_transform_columns:
         config['transform_column_names'] = False
     
-    # Handle reload-env argument
-    if args.reload_env:
-        print("🔄 Reloading environment variables...")
-        reload_env_vars()
-        
-        # Show current TOTP passcode for debugging
-        passcode = os.getenv('SNOWFLAKE_PASSCODE')
-        if passcode:
-            masked_passcode = passcode[:2] + '*' * (len(passcode) - 2) if len(passcode) > 2 else '***'
-            print(f"📱 Current TOTP passcode: {masked_passcode}")
-        else:
-            print("📱 No TOTP passcode found")
-    
     return config
 
 
 def main():
+    # Check if we should run the datacompy test
+    import sys
+    if '--test-datacompy' in sys.argv:
+        test_datacompy()
+        return
+    
     # Get configuration (from code or arguments)
     config = get_config_from_args()
     
@@ -1252,16 +912,13 @@ def main():
         print("python compare_domo_snowflake.py --domo-dataset-id 'tu-id' --snowflake-table 'TU_TABLE' --key-columns 'id' 'date'")
         return
     
-    # Verify environment variables with detailed information
+    # Verify environment variables
     print("🔍 Verifying environment variables...")
     env_check = check_env_vars()
     if not env_check:
         print("\n⚠️  WARNING: Missing environment variables")
         print("The script will continue but may fail in some operations.")
-        print("Please:")
-        print("1. Copy the file 'env_template.txt' to '.env'")
-        print("2. Complete the values in the '.env' file")
-        print("3. Ensure that the '.env' file is in the same folder as the script")
+        print("Please check the .env file and make sure all required variables are set.")
         
         # Ask if to continue
         response = input("\nDo you want to continue anyway? (y/n): ").lower()
@@ -1270,12 +927,6 @@ def main():
             return
     
     print("\n🚀 Starting comparison...")
-    
-    # Show TOTP debug info if using MFA
-    auth_method = _determine_auth_method()
-    if auth_method == "mfa":
-        print("\n🔐 Using MFA authentication - TOTP Debug Info:")
-        show_current_totp_debug()
     
     try:
         comparator = DatasetComparator()
@@ -1353,6 +1004,133 @@ def main():
             comparator.cleanup()
         except:
             pass  # Ignore cleanup errors
+
+
+def test_datacompy():
+    """
+    Función de prueba para el paquete datacompy.
+    Esta función prueba las capacidades de datacompy para comparar DataFrames.
+    """
+    print("\n" + "="*80)
+    print("PRUEBA DEL PAQUETE DATACOMPY")
+    print("="*80)
+    
+    # Crear DataFrames de ejemplo para la prueba
+    print("\n📊 Creando DataFrames de ejemplo...")
+    
+    # DataFrame base (simulando datos de Domo)
+    df_domo = pd.DataFrame({
+        'id': [1, 2, 3, 4, 5],
+        'nombre': ['Producto A', 'Producto B', 'Producto C', 'Producto D', 'Producto E'],
+        'precio': [10.50, 25.30, 15.75, 30.00, 12.25],
+        'categoria': ['Electrónicos', 'Ropa', 'Hogar', 'Electrónicos', 'Hogar'],
+        'stock': [100, 50, 75, 200, 30]
+    })
+    
+    # DataFrame modificado (simulando datos de Snowflake con algunas diferencias)
+    df_snowflake = pd.DataFrame({
+        'id': [1, 2, 3, 4, 6],  # ID 5 eliminado, ID 6 agregado
+        'nombre': ['Producto A', 'Producto B Modificado', 'Producto C', 'Producto D', 'Producto F'],  # Cambios en nombres
+        'precio': [10.50, 25.30, 16.00, 30.00, 18.99],  # Precio cambiado para id=3, nuevo precio para id=6
+        'categoria': ['Electrónicos', 'Ropa', 'Hogar', 'Electrónicos', 'Deportes'],  # Nueva categoría
+        'stock': [100, 50, 75, 200, 45],  # Stock para nuevo producto
+        'descuento': [0.1, 0.15, 0.05, 0.2, 0.1]  # Nueva columna
+    })
+    
+    print(f"✅ DataFrame Domo creado: {df_domo.shape}")
+    print(f"✅ DataFrame Snowflake creado: {df_snowflake.shape}")
+    
+    # Mostrar los DataFrames
+    print("\n📋 DataFrame Domo (simulado):")
+    print(df_domo.to_string(index=False))
+    
+    print("\n📋 DataFrame Snowflake (simulado):")
+    print(df_snowflake.to_string(index=False))
+    
+    # Realizar comparación con datacompy
+    print("\n🔍 Iniciando comparación con datacompy...")
+    
+    try:
+        # Crear el objeto Compare
+        compare = datacompy.Compare(
+            df_domo,
+            df_snowflake,
+            join_columns='id',  # Columna clave para la comparación
+            abs_tol=0.01,  # Tolerancia absoluta para valores numéricos
+            rel_tol=0.01,  # Tolerancia relativa para valores numéricos
+            df1_name='Domo',
+            df2_name='Snowflake'
+        )
+        
+        # Mostrar resumen de la comparación
+        print("\n📊 RESUMEN DE LA COMPARACIÓN:")
+        print(f"   DataFrames coinciden: {'✅ SÍ' if compare.matches() else '❌ NO'}")
+        print(f"   Filas en Domo: {len(df_domo)}")
+        print(f"   Filas en Snowflake: {len(df_snowflake)}")
+        print(f"   Filas en común: {len(compare.intersect_rows)}")
+        print(f"   Filas solo en Domo: {len(compare.df1_unq_rows)}")
+        print(f"   Filas solo en Snowflake: {len(compare.df2_unq_rows)}")
+        
+        # Mostrar diferencias en columnas
+        if compare.column_stats is not None and len(compare.column_stats) > 0:
+            print(f"\n📋 DIFERENCIAS POR COLUMNA:")
+            col_diff = compare.column_stats[compare.column_stats['matches'] == False]
+            if len(col_diff) > 0:
+                for _, row in col_diff.iterrows():
+                    print(f"   🔄 {row['column']}: {row['all_match']} ({row['null_diff']} nulls diff)")
+            else:
+                print("   ✅ Todas las columnas comunes coinciden")
+        
+        # Mostrar columnas que existen solo en un DataFrame
+        if hasattr(compare, 'df1_unq_columns') and compare.df1_unq_columns:
+            print(f"\n📝 Columnas solo en Domo: {', '.join(compare.df1_unq_columns)}")
+        
+        if hasattr(compare, 'df2_unq_columns') and compare.df2_unq_columns:
+            print(f"📝 Columnas solo en Snowflake: {', '.join(compare.df2_unq_columns)}")
+        
+        # Mostrar reporte completo
+        print("\n📄 REPORTE DETALLADO:")
+        print("-" * 60)
+        print(compare.report())
+        
+        # Casos específicos de prueba
+        print("\n🧪 CASOS DE PRUEBA ESPECÍFICOS:")
+        
+        # Prueba 1: DataFrames idénticos
+        print("\n   🧪 Prueba 1: DataFrames idénticos")
+        df_identical = df_domo.copy()
+        compare_identical = datacompy.Compare(df_domo, df_identical, join_columns='id')
+        print(f"      Resultado: {'✅ CORRECTO' if compare_identical.matches() else '❌ ERROR'}")
+        
+        # Prueba 2: Solo diferencias en una columna
+        print("\n   🧪 Prueba 2: Solo diferencias en precios")
+        df_price_diff = df_domo.copy()
+        df_price_diff.loc[0, 'precio'] = 999.99  # Cambiar un precio
+        compare_price = datacompy.Compare(df_domo, df_price_diff, join_columns='id')
+        print(f"      Coinciden: {'✅ SÍ' if compare_price.matches() else '❌ NO (esperado)'}")
+        
+        # Prueba 3: Tolerancia numérica
+        print("\n   🧪 Prueba 3: Tolerancia numérica")
+        df_tolerance = df_domo.copy()
+        df_tolerance.loc[0, 'precio'] = 10.51  # Diferencia pequeña
+        compare_tolerance = datacompy.Compare(
+            df_domo, df_tolerance, 
+            join_columns='id',
+            abs_tol=0.1  # Tolerancia de 0.1
+        )
+        print(f"      Con tolerancia 0.1: {'✅ COINCIDEN' if compare_tolerance.matches() else '❌ NO COINCIDEN'}")
+        
+        print("\n✅ Prueba de datacompy completada exitosamente!")
+        
+    except Exception as e:
+        print(f"\n❌ Error durante la prueba de datacompy: {e}")
+        print(f"   Tipo de error: {type(e).__name__}")
+        import traceback
+        print(f"   Traceback: {traceback.format_exc()}")
+    
+    print("\n" + "="*80)
+    print("FIN DE LA PRUEBA DE DATACOMPY")
+    print("="*80)
 
 
 if __name__ == "__main__":

@@ -37,6 +37,7 @@ try:
     )
     from tools.utils.domo import DomoHandler, export_datasets_to_spreadsheet
     from tools.utils.snowflake import SnowflakeHandler
+    from compare_domo_snowflake import DatasetComparator
 except ImportError as e:
     logger.error(f"Failed to import required modules: {e}")
     sys.exit(1)
@@ -364,6 +365,119 @@ def handle_datasets_command(args) -> int:
     return 1
 
 
+def handle_compare_command(args) -> int:
+    """
+    Handle the compare subcommand for comparing Domo datasets with Snowflake tables.
+    
+    Args:
+        args: Parsed command line arguments
+        
+    Returns:
+        int: Exit code (0 for success, 1 for failure)
+    """
+    # Validate required arguments
+    if not args.domo_dataset_id:
+        logger.error("❌ Domo dataset ID is required")
+        logger.error("Use --domo-dataset-id to specify the dataset to compare")
+        return 1
+    
+    if not args.snowflake_table:
+        logger.error("❌ Snowflake table name is required")
+        logger.error("Use --snowflake-table to specify the table to compare")
+        return 1
+    
+    if not args.key_columns:
+        logger.error("❌ Key columns are required for comparison")
+        logger.error("Use --key-columns to specify one or more key columns")
+        return 1
+    
+    # Test connection mode
+    if args.test_connection:
+        logger.info("🧪 Testing connections for comparison...")
+        try:
+            comparator = DatasetComparator()
+            success = comparator.setup_connections()
+            if success:
+                logger.info("✅ All connections for comparison tested successfully!")
+                return 0
+            else:
+                logger.error("❌ Connection test failed!")
+                return 1
+        except Exception as e:
+            logger.error(f"❌ Connection test failed: {e}")
+            return 1
+        finally:
+            try:
+                comparator.cleanup()
+            except:
+                pass
+    
+    # Perform comparison
+    logger.info("🚀 Starting Domo vs Snowflake comparison...")
+    logger.info(f"📊 Domo Dataset ID: {args.domo_dataset_id}")
+    logger.info(f"❄️  Snowflake Table: {args.snowflake_table}")
+    logger.info(f"🔑 Key Columns: {', '.join(args.key_columns)}")
+    
+    if args.sample_size:
+        logger.info(f"📏 Sample Size: {args.sample_size:,}")
+    else:
+        logger.info(f"📏 Sample Size: Automatic calculation")
+    
+    if args.transform_columns:
+        logger.info(f"🔄 Column Name Transformation: Enabled")
+    else:
+        logger.info(f"🔄 Column Name Transformation: Disabled")
+    
+    try:
+        # Initialize the comparator
+        comparator = DatasetComparator()
+        
+        # Setup connections
+        if not comparator.setup_connections():
+            logger.error("❌ Failed to setup connections")
+            return 1
+        
+        # Generate comparison report
+        report = comparator.generate_report(
+            domo_dataset_id=args.domo_dataset_id,
+            snowflake_table=args.snowflake_table,
+            key_columns=args.key_columns,
+            sample_size=args.sample_size,
+            transform_names=args.transform_columns
+        )
+        
+        # Print the report
+        comparator.print_report(report)
+        
+        # Determine exit code based on comparison results
+        if report.get('errors'):
+            logger.error("❌ Comparison completed with errors")
+            return 1
+        elif report.get('overall_match', False):
+            logger.info("🎉 Comparison completed successfully - datasets match!")
+            return 0
+        else:
+            logger.warning("⚠️  Comparison completed - discrepancies found")
+            return 0  # Not an error, just differences found
+        
+    except KeyboardInterrupt:
+        logger.info("⚠️  Comparison cancelled by user")
+        return 1
+    except Exception as e:
+        logger.error(f"❌ Comparison failed: {e}")
+        logger.error("💡 Suggestions:")
+        logger.error("   - Verify that the Domo dataset ID is correct")
+        logger.error("   - Verify that the Snowflake table exists and is accessible")
+        logger.error("   - Verify that the key columns exist in both sources")
+        logger.error("   - Check your connection credentials")
+        return 1
+    finally:
+        try:
+            comparator.cleanup()
+        except:
+            pass  # Ignore cleanup errors
+
+
 def create_parser() -> argparse.ArgumentParser:
     """
     Create the main argument parser with subcommands.
@@ -399,6 +513,15 @@ Examples:
     
     # Test migration connections
     python main.py migrate --test-connection
+    
+    # Compare Domo dataset with Snowflake table
+    python main.py compare --domo-dataset-id 12345 --snowflake-table sales_data --key-columns id date
+    
+    # Compare with custom sample size and column transformation
+    python main.py compare --domo-dataset-id 12345 --snowflake-table sales_data --key-columns id --sample-size 5000 --transform-columns
+    
+    # Test comparison connections
+    python main.py compare --test-connection
     
     # Use custom credentials file
     python main.py inventory --credentials /path/to/creds.json --export-dir output
@@ -550,6 +673,49 @@ Environment Variables:
         help="Number of datasets to fetch per batch (default: 100)"
     )
     
+    # Compare subcommand
+    compare_parser = subparsers.add_parser(
+        'compare',
+        help='Compare a Domo dataset with a Snowflake table'
+    )
+    
+    compare_parser.add_argument(
+        "--domo-dataset-id",
+        required=True,
+        help="Domo dataset ID to compare"
+    )
+    
+    compare_parser.add_argument(
+        "--snowflake-table",
+        required=True,
+        help="Snowflake table name to compare"
+    )
+    
+    compare_parser.add_argument(
+        "--key-columns",
+        nargs='+',
+        required=True,
+        help="One or more key columns to use for comparison"
+    )
+    
+         compare_parser.add_argument(
+         "--sample-size",
+         type=int,
+         help="Number of rows to sample for comparison (default: automatic calculation)"
+     )
+    
+    compare_parser.add_argument(
+        "--transform-columns",
+        action="store_true",
+        help="Transform column names for comparison (e.g., 'My Column' -> 'my_column')"
+    )
+    
+    compare_parser.add_argument(
+        "--test-connection",
+        action="store_true",
+        help="Test Domo and Snowflake connections for comparison"
+    )
+    
     return parser
 
 
@@ -575,6 +741,8 @@ def main() -> int:
         return handle_migrate_command(args)
     elif args.command == 'datasets':
         return handle_datasets_command(args)
+    elif args.command == 'compare':
+        return handle_compare_command(args)
     
     # If we get here, unknown command
     logger.error(f"❌ Unknown command: {args.command}")
