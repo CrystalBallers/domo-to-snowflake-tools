@@ -46,9 +46,12 @@ class DomoHandler:
             bool: True if authentication successful, False otherwise
         """
         try:
-            # Try developer token first
-            dev_token = os.getenv("DOMO_DEVELOPER_TOKEN")
-            instance_id = os.getenv("DOMO_INSTANCE")
+            # Get all environment config at once
+            from .common import get_env_config
+            env_config = get_env_config()
+            
+            dev_token = env_config.get("DOMO_DEVELOPER_TOKEN")
+            instance_id = env_config.get("DOMO_INSTANCE")
             
             if dev_token and instance_id:
                 logger.info("Using Developer Token authentication")
@@ -61,8 +64,8 @@ class DomoHandler:
                 return True
             
             # Try client credentials
-            client_id = os.getenv("DOMO_CLIENT_ID")
-            client_secret = os.getenv("DOMO_CLIENT_SECRET")
+            client_id = env_config.get("DOMO_CLIENT_ID")
+            client_secret = env_config.get("DOMO_CLIENT_SECRET")
             
             if client_id and client_secret and instance_id:
                 logger.info("Using Client Credentials authentication")
@@ -631,3 +634,68 @@ def export_datasets_to_spreadsheet(spreadsheet_id: str, sheet_name: str = "Datas
     except Exception as e:
         logger.error(f"❌ Failed to export datasets to spreadsheet: {e}")
         return False 
+
+    def get_dataset_schema(self, dataset_id: str) -> dict:
+        """
+        Get the schema of a dataset.
+        
+        Args:
+            dataset_id: The dataset ID
+            
+        Returns:
+            dict: The dataset schema with columns information
+        """
+        try:
+            if not self.dataset_api:
+                logger.error("Dataset API not initialized. Call setup_auth() first.")
+                return {"columns": []}
+            
+            # Get dataset info including schema
+            dataset_info = self.dataset_api.get_dataset(dataset_id)
+            schema = dataset_info.get('schema', {})
+            
+            logger.info(f"Retrieved schema for dataset {dataset_id}")
+            return schema
+            
+        except Exception as e:
+            logger.error(f"Error getting schema for dataset {dataset_id}: {e}")
+            return {"columns": []}
+
+    def query_dataset(self, dataset_id: str, query: str) -> dict:
+        """
+        Execute a simple SQL query on a dataset.
+        
+        Args:
+            dataset_id: The dataset ID
+            query: The SQL query to execute
+            
+        Returns:
+            dict: Query result with columns and rows
+        """
+        try:
+            if not self.dataset_api:
+                logger.error("Dataset API not initialized. Call setup_auth() first.")
+                return {"datasource": "", "columns": [], "rows": []}
+            
+            # For simple queries (like COUNT), use extract_data with the query
+            df = self.extract_data(dataset_id, query, chunk_size=1000)
+            
+            if df is None:
+                return {"datasource": "", "columns": [], "rows": []}
+            
+            # Convert polars DataFrame to the expected format
+            columns = df.columns
+            rows = df.rows()
+            
+            result = {
+                "datasource": dataset_id,
+                "columns": columns,
+                "rows": rows
+            }
+            
+            logger.info(f"Query executed successfully on dataset {dataset_id}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error querying dataset {dataset_id}: {e}")
+            return {"datasource": "", "columns": [], "rows": []} 

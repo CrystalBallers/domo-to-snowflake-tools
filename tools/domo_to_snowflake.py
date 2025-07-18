@@ -24,6 +24,7 @@ from typing import Dict, List, Optional
 sys.path.insert(0, str(Path(__file__).parent))
 
 from utils.snowflake import SnowflakeHandler
+from utils.common import setup_dual_connections
 from utils.domo import DomoHandler
 from utils.gsheets import GoogleSheets, READ_WRITE_SCOPES
 
@@ -56,7 +57,9 @@ def sanitize_table_name(dataset_id: str, dataset_name: str = None, use_prefix: b
     """
     # Check environment variable if use_prefix is not specified
     if use_prefix is None:
-        prefix_env = os.getenv("DOMO_TABLE_PREFIX", "DOMO_")
+        from utils.common import get_env_config
+        env_config = get_env_config()
+        prefix_env = env_config.get("DOMO_TABLE_PREFIX", "DOMO_")
         use_prefix = prefix_env.lower() not in ['false', 'none', '']
         prefix = prefix_env if use_prefix else ""
     else:
@@ -121,28 +124,14 @@ class MigrationManager:
         Returns:
             bool: True if both connections successful, False otherwise
         """
-        try:
-            logger.info("🔧 Setting up connections...")
-            
-            # Initialize Domo connection
-            self.domo_handler = DomoHandler()
-            if not self.domo_handler.setup_auth():
-                logger.error("❌ Failed to authenticate with Domo")
-                return False
-            
-            # Initialize Snowflake connection
-            self.snowflake_handler = SnowflakeHandler()
-            if not self.snowflake_handler.setup_connection():
-                logger.error("❌ Failed to connect to Snowflake")
-                return False
-            
+        success, domo_handler, snowflake_handler = setup_dual_connections()
+        
+        if success:
+            self.domo_handler = domo_handler
+            self.snowflake_handler = snowflake_handler
             self._connections_established = True
-            logger.info("✅ All connections established successfully")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to setup connections: {e}")
-            return False
+        
+        return success
     
     def migrate_dataset(self, dataset_id: str, target_table: str) -> bool:
         """

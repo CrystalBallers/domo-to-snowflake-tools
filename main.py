@@ -35,9 +35,9 @@ try:
         migrate_from_spreadsheet, 
         MigrationManager
     )
-    from tools.utils.domo import DomoHandler, export_datasets_to_spreadsheet
-    from tools.utils.snowflake import SnowflakeHandler
-    from compare_domo_snowflake import DatasetComparator
+    from tools.utils import DomoHandler, SnowflakeHandler, DatasetComparator
+    from tools.utils import show_mfa_debug_info, reload_environment
+    from tools.utils.domo import export_datasets_to_spreadsheet
 except ImportError as e:
     logger.error(f"Failed to import required modules: {e}")
     sys.exit(1)
@@ -150,11 +150,7 @@ def test_migration_connections() -> bool:
         logger.info("🧪 Testing migration connections...")
         
         # Show TOTP debug info if using MFA
-        from tools.utils.snowflake import show_current_totp_debug
-        import os
-        if os.getenv("SNOWFLAKE_PASSCODE"):
-            logger.info("🔐 Using MFA authentication - TOTP Debug Info:")
-            show_current_totp_debug()
+        show_mfa_debug_info()
         
         # Use MigrationManager to test connections
         with MigrationManager() as manager:
@@ -178,18 +174,7 @@ def handle_migrate_command(args) -> int:
     """
     # Handle reload-env argument
     if args.reload_env:
-        print("🔄 Reloading environment variables...")
-        from tools.utils.snowflake import reload_env_vars, show_current_totp_debug
-        reload_env_vars()
-        
-        # Show current TOTP passcode for debugging
-        import os
-        passcode = os.getenv('SNOWFLAKE_PASSCODE')
-        if passcode:
-            masked_passcode = passcode[:2] + '*' * (len(passcode) - 2) if len(passcode) > 2 else '***'
-            print(f"📱 Current TOTP passcode: {masked_passcode}")
-        else:
-            print("📱 No TOTP passcode found")
+        reload_environment()
     
     # Test connection mode
     if args.test_connection:
@@ -203,11 +188,7 @@ def handle_migrate_command(args) -> int:
         logger.info(f"📄 Sheet name: {args.sheet_name}")
         
         # Show TOTP debug info if using MFA
-        from tools.utils.snowflake import show_current_totp_debug
-        import os
-        if os.getenv("SNOWFLAKE_PASSCODE"):
-            logger.info("🔐 Using MFA authentication - TOTP Debug Info:")
-            show_current_totp_debug()
+        show_mfa_debug_info()
         
         results = migrate_from_spreadsheet(
             spreadsheet_id=args.spreadsheet_id,
@@ -234,11 +215,7 @@ def handle_migrate_command(args) -> int:
         logger.info(f"🎯 Target table: {args.target_table}")
         
         # Show TOTP debug info if using MFA
-        from tools.utils.snowflake import show_current_totp_debug
-        import os
-        if os.getenv("SNOWFLAKE_PASSCODE"):
-            logger.info("🔐 Using MFA authentication - TOTP Debug Info:")
-            show_current_totp_debug()
+        show_mfa_debug_info()
         
         success = migrate_dataset(args.dataset_id, args.target_table)
         
@@ -255,11 +232,7 @@ def handle_migrate_command(args) -> int:
         logger.info(f"📁 Batch file: {args.batch_file}")
         
         # Show TOTP debug info if using MFA
-        from tools.utils.snowflake import show_current_totp_debug
-        import os
-        if os.getenv("SNOWFLAKE_PASSCODE"):
-            logger.info("🔐 Using MFA authentication - TOTP Debug Info:")
-            show_current_totp_debug()
+        show_mfa_debug_info()
         
         try:
             import json
@@ -698,11 +671,11 @@ Environment Variables:
         help="One or more key columns to use for comparison"
     )
     
-         compare_parser.add_argument(
-         "--sample-size",
-         type=int,
-         help="Number of rows to sample for comparison (default: automatic calculation)"
-     )
+    compare_parser.add_argument(
+        "--sample-size",
+        type=int,
+        help="Number of rows to sample for comparison (default: automatic calculation)"
+    )
     
     compare_parser.add_argument(
         "--transform-columns",
