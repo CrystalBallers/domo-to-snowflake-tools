@@ -648,6 +648,7 @@ Environment Variables:
     SNOWFLAKE_WAREHOUSE: Snowflake warehouse name
     SNOWFLAKE_DATABASE: Snowflake database name
     SNOWFLAKE_SCHEMA: Snowflake schema name
+    SNOWFLAKE_ROLE: Snowflake role name (optional, for privilege management)
         """
     )
     

@@ -69,7 +69,8 @@ class SnowflakeHandler:
                 'account': os.getenv("SNOWFLAKE_ACCOUNT"),
                 'warehouse': os.getenv("SNOWFLAKE_WAREHOUSE"),
                 'database': os.getenv("SNOWFLAKE_DATABASE"),
-                'schema': os.getenv("SNOWFLAKE_SCHEMA")
+                'schema': os.getenv("SNOWFLAKE_SCHEMA"),
+                'role': os.getenv("SNOWFLAKE_ROLE")  # Add role support
             }
             
             # Check required parameters
@@ -156,13 +157,28 @@ class SnowflakeHandler:
             
             # Remove None values
             snowflake_config = {k: v for k, v in snowflake_config.items() if v is not None}
-            
+
+            # Log connection info (excluding sensitive data)  
+            connection_info = []
+            connection_info.append(f"User: {snowflake_config.get('user', 'Not set')}")
+            connection_info.append(f"Account: {snowflake_config.get('account', 'Not set')}")
+            connection_info.append(f"Warehouse: {snowflake_config.get('warehouse', 'Not set')}")
+            connection_info.append(f"Database: {snowflake_config.get('database', 'Not set')}")
+            connection_info.append(f"Schema: {snowflake_config.get('schema', 'Not set')}")
+            if snowflake_config.get('role'):
+                connection_info.append(f"Role: {snowflake_config.get('role')}")
+            else:
+                connection_info.append("Role: Using default role")
+
+            logger.info("Connecting to Snowflake with:")
+            for info in connection_info:
+                logger.info(f"  {info}")
+
             # Create connection
-            logger.info("Connecting to Snowflake...")
             if snowflake is None:
                 logger.error("Snowflake connector not available")
                 return False
-            
+
             self.conn = snowflake.connector.connect(**snowflake_config)
             
             # Test connection

@@ -105,6 +105,7 @@ SNOWFLAKE_PASSWORD=your_password
 SNOWFLAKE_WAREHOUSE=your_warehouse
 SNOWFLAKE_DATABASE=your_database
 SNOWFLAKE_SCHEMA=your_schema
+SNOWFLAKE_ROLE=your_role_name  # Optional: Role to assume (e.g., ANALYST, DEVELOPER)
 
 # Optional
 EXPORT_DIR=exported_sql  # Default directory for SQL exports
@@ -147,6 +148,17 @@ DOMO_TABLE_PREFIX=DOMO_  # Prefix for Snowflake table names (set to empty string
    - Account identifier (format: `account_name.region.cloud_provider`)
    - Username and password with write permissions
    - Warehouse, database and destination schema
+
+2. **Role Configuration** (Optional but Recommended):
+   - Set `SNOWFLAKE_ROLE` to specify which role to assume when connecting
+   - This is especially important if your user has multiple roles or needs specific privileges
+   - Common roles: `ANALYST`, `DEVELOPER`, `SYSADMIN`, `ACCOUNTADMIN`
+   - Example: `SNOWFLAKE_ROLE=SYSADMIN`
+   
+   **Note**: If you're getting "insufficient privileges" errors, make sure:
+   - Your role has the necessary permissions to create tables and schemas
+   - The role has access to the specified warehouse, database, and schema
+   - You're using a role with appropriate privileges for your use case
 
 ## 🎯 Usage
 
