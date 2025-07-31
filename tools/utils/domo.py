@@ -112,7 +112,7 @@ class DomoHandler:
                 base_query = query
                 logger.info(f"Using custom query: {query}")
             else:
-                base_query = "SELECT * FROM table"
+                base_query = "SELECT * FROM table limit 1000"
                 logger.info("Using default query: SELECT * FROM table")
             
             # Get dataset info
@@ -528,6 +528,110 @@ class DomoHandler:
         except Exception as e:
             logger.error(f"❌ Failed to get datasets from Domo: {e}")
             return [] 
+
+    def get_all_dataflows(self, dataset_id_list: list[str]) -> pd.DataFrame:
+        """
+        Crawl Domo lineage and return, in tabular form, every dataflow that
+        uses the datasets provided.
+
+        (docstring original acortado por brevedad; conserva el resto tal cual)
+        """
+        logger.info("🔍 Fetching all dataflows from Domo using argo-domo CLI...")
+
+        import subprocess
+        import json
+        import pandas as pd
+        from collections import deque
+        from typing import Any, Dict
+
+        # ---------- helpers --------------------------------------------------
+        def _entities_from_raw(raw: Any) -> Dict[str, dict]:
+            """
+            Normaliza la respuesta lineage a un dict de entidades.
+            • Si llega como lista, usa el primer elemento y su clave 'entities'.
+            • Si llega como dict (nuevo formato), devuelve el dict mismo.
+            • Si llega vacío/desconocido, devuelve {}.
+            """
+            if isinstance(raw, list) and raw:
+                return raw[0].get("entities", {})
+            if isinstance(raw, dict):
+                return raw
+            return {}
+
+        # ---------- BFS sobre datasets --------------------------------------
+        datasets_to_process = deque(dataset_id_list)
+        processed_datasets = set(dataset_id_list)
+        all_dataflows: Dict[str, dict] = {}
+
+        while datasets_to_process:
+            dataset_id = datasets_to_process.popleft()
+            logger.info("⚙️  Processing lineage for dataset: %s", dataset_id)
+
+            try:
+                cmd = [
+                    "argo-domo", "lineage", "export",
+                    "DATA_SOURCE", dataset_id,
+                    "--format", "json"
+                ]
+                result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+
+                # NEW ──────────────────────────────────────────────────────
+                entities = _entities_from_raw(json.loads(result.stdout))
+                if not entities:
+                    logger.warning("No entities returned for dataset %s", dataset_id)
+                    continue
+                # ───────────────────────────────────────────────────────────
+
+                for node in entities.values():
+                    if node.get("type") != "DATAFLOW":
+                        continue
+
+                    df_id = node.get("id")
+                    if not df_id or df_id in all_dataflows:
+                        continue
+
+                    source_ids = [
+                        p["id"] for p in node.get("parents", [])
+                        if p.get("type") == "DATA_SOURCE"
+                    ]
+                    target_ids = [
+                        c["id"] for c in node.get("children", [])
+                        if c.get("type") == "DATA_SOURCE"
+                    ]
+
+                    all_dataflows[df_id] = {
+                        "id": df_id,
+                        "name": node.get("name"),           # puede ser None
+                        "sources": ",\n".join(source_ids),  # CHANGED: sin escape extra
+                        "targets": ",\n".join(target_ids)
+                    }
+
+                    # Encolar upstream datasets que aún no hayamos procesado
+                    for src_id in source_ids:
+                        if src_id not in processed_datasets:
+                            processed_datasets.add(src_id)
+                            datasets_to_process.append(src_id)
+
+            except FileNotFoundError:
+                logger.error("❌ 'argo-domo' command not found. Is it installed and in PATH?")
+                return pd.DataFrame(columns=["id", "name", "sources", "targets"])
+            except subprocess.CalledProcessError as e:
+                logger.error("❌ argo-domo failed for %s:\n%s", dataset_id, e.stderr)
+                continue
+            except json.JSONDecodeError:
+                logger.error("❌ Invalid JSON returned for dataset %s.", dataset_id)
+                continue
+            except Exception:
+                logger.exception("Unexpected error while processing dataset %s", dataset_id)
+                continue
+
+        if not all_dataflows:
+            logger.warning("No dataflows found for the given datasets.")
+            return pd.DataFrame(columns=["id", "name", "sources", "targets"])
+
+        df = pd.DataFrame(all_dataflows.values())
+        logger.info("✅ Found %d unique dataflows.", len(df))
+        return df
 
 
 def export_datasets_to_spreadsheet(spreadsheet_id: str, sheet_name: str = "Datasets", 

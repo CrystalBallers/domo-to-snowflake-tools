@@ -55,16 +55,9 @@ def sanitize_table_name(dataset_id: str, dataset_name: str = None, use_prefix: b
     Returns:
         str: Sanitized table name safe for Snowflake
     """
-    # Check environment variable if use_prefix is not specified
-    if use_prefix is None:
-        from utils.common import get_env_config
-        env_config = get_env_config()
-        prefix_env = env_config.get("DOMO_TABLE_PREFIX", "DOMO_")
-        use_prefix = prefix_env.lower() not in ['false', 'none', '']
-        prefix = prefix_env if use_prefix else ""
-    else:
-        prefix = "DOMO_" if use_prefix else ""
-    
+    # Prefix is disabled globally as per user request.
+    prefix = ""
+
     # Start with prefix
     table_name = prefix
     

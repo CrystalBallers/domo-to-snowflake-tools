@@ -584,6 +584,483 @@ class DatasetComparator:
         
         print("="*80)
     
+    def compare_from_spreadsheet(self, spreadsheet_id: str, sheet_name: str = "Comparison",
+                                credentials_path: str = None) -> Dict[str, Any]:
+        """
+        Compare multiple datasets from Google Sheets configuration.
+        
+        Expected columns in spreadsheet:
+        - Dataset ID: Domo dataset ID
+        - Table Name: Snowflake table name
+        - Key Columns: Comma-separated list of key columns
+        - Sample Size: (Optional) Number of rows to sample
+        - Transform Columns: (Optional) True/False for column transformation
+        - Status: (Optional) Track comparison status
+        
+        Args:
+            spreadsheet_id: Google Sheets spreadsheet ID
+            sheet_name: Sheet name containing comparison configurations
+            credentials_path: Path to Google Sheets credentials file
+            
+        Returns:
+            Dictionary with comparison results summary
+        """
+        try:
+            self.logger.info(f"🚀 Starting spreadsheet-based comparisons...")
+            self.logger.info(f"📋 Spreadsheet ID: {spreadsheet_id}")
+            self.logger.info(f"📄 Sheet name: {sheet_name}")
+            
+            # Import GoogleSheets here to avoid circular imports
+            from .utils.gsheets import GoogleSheets, READ_WRITE_SCOPES
+            
+            if not credentials_path:
+                credentials_path = os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE")
+            
+            if not credentials_path:
+                raise Exception("Google Sheets credentials not provided")
+            
+            if not os.path.exists(credentials_path):
+                raise Exception(f"Google Sheets credentials file not found: {credentials_path}")
+            
+            # Initialize Google Sheets client
+            gsheets_client = GoogleSheets(
+                credentials_path=credentials_path,
+                scopes=READ_WRITE_SCOPES
+            )
+            
+            # Read comparison configurations
+            self.logger.info(f"📖 Reading comparison configurations from {sheet_name}...")
+            data = gsheets_client.read_range(spreadsheet_id, f"{sheet_name}!A:Z")
+            
+            if not data or len(data) < 2:
+                raise Exception(f"No data found in sheet '{sheet_name}' or missing headers")
+            
+            # Convert to DataFrame
+            import pandas as pd
+            headers = data[0]
+            rows = data[1:]
+            df = pd.DataFrame(rows, columns=headers)
+            
+            # Remove empty rows
+            df = df.dropna(how='all')
+            
+            self.logger.info(f"📊 Found {len(df)} comparison configurations")
+            
+            # Look for required columns with flexible naming
+            dataset_id_column = None
+            table_name_column = None
+            key_columns_column = None
+            sample_size_column = None
+            transform_columns_column = None
+            status_column = None
+            
+            # Find Dataset ID column
+            possible_dataset_id_columns = ['Dataset ID', 'dataset_id', 'Domo Dataset ID', 'domo_dataset_id', 'ID', 'id']
+            for col in possible_dataset_id_columns:
+                if col in df.columns:
+                    dataset_id_column = col
+                    break
+            
+            # Find Table Name column
+            possible_table_columns = ['Table Name', 'table_name', 'Snowflake Table', 'snowflake_table', 'Table', 'table']
+            for col in possible_table_columns:
+                if col in df.columns:
+                    table_name_column = col
+                    break
+            
+            # Find Key Columns column
+            possible_key_columns = ['Key Columns', 'key_columns', 'Keys', 'keys', 'Join Columns', 'join_columns']
+            for col in possible_key_columns:
+                if col in df.columns:
+                    key_columns_column = col
+                    break
+            
+            # Find Sample Size column (optional)
+            possible_sample_columns = ['Sample Size', 'sample_size', 'Sample', 'sample']
+            for col in possible_sample_columns:
+                if col in df.columns:
+                    sample_size_column = col
+                    break
+            
+            # Find Transform Columns column (optional)
+            possible_transform_columns = ['Transform Columns', 'transform_columns', 'Transform', 'transform']
+            for col in possible_transform_columns:
+                if col in df.columns:
+                    transform_columns_column = col
+                    break
+            
+            # Find Status column (optional)
+            possible_status_columns = ['Status', 'status', 'comparison_status', 'Comparison Status', 'state']
+            for col in possible_status_columns:
+                if col in df.columns:
+                    status_column = col
+                    break
+            
+            # Validate required columns
+            if dataset_id_column is None:
+                raise Exception("Required column 'Dataset ID' not found in spreadsheet")
+            
+            if table_name_column is None:
+                raise Exception("Required column 'Table Name' not found in spreadsheet")
+            
+            if key_columns_column is None:
+                raise Exception("Required column 'Key Columns' not found in spreadsheet")
+            
+            # Filter rows where Status is not "Completed" (if status column exists)
+            if status_column and status_column in df.columns:
+                df[status_column] = df[status_column].fillna('Pending')
+                df[status_column] = df[status_column].astype(str)
+                pending_df = df[~df[status_column].str.contains('Completed|Complete', case=False, na=False)]
+                self.logger.info(f"📋 Found {len(pending_df)} comparisons pending (excluding completed)")
+            else:
+                pending_df = df
+                self.logger.info(f"📋 No status column found, processing all {len(pending_df)} comparisons")
+            
+            if len(pending_df) == 0:
+                self.logger.info("✅ No comparisons pending")
+                return {"success": 0, "failed": 0, "total": 0, "errors": []}
+            
+            # Setup connections once
+            if not self.setup_connections():
+                raise Exception("Failed to setup connections")
+            
+            # Process comparisons
+            successful_comparisons = []
+            failed_comparisons = []
+            errors = []
+            
+            for index, row in pending_df.iterrows():
+                dataset_id = row[dataset_id_column]
+                table_name = row[table_name_column]
+                key_columns_str = row[key_columns_column]
+                
+                # Validate required fields
+                if pd.isna(dataset_id) or str(dataset_id).strip() == '':
+                    error_msg = f"Row {index + 2}: Empty Dataset ID"
+                    self.logger.warning(f"⚠️  {error_msg}")
+                    errors.append(error_msg)
+                    failed_comparisons.append(f"Row {index + 2}")
+                    continue
+                
+                if pd.isna(table_name) or str(table_name).strip() == '':
+                    error_msg = f"Row {index + 2}: Empty Table Name"
+                    self.logger.warning(f"⚠️  {error_msg}")
+                    errors.append(error_msg)
+                    failed_comparisons.append(f"Row {index + 2}")
+                    continue
+                
+                if pd.isna(key_columns_str) or str(key_columns_str).strip() == '':
+                    error_msg = f"Row {index + 2}: Empty Key Columns"
+                    self.logger.warning(f"⚠️  {error_msg}")
+                    errors.append(error_msg)
+                    failed_comparisons.append(f"Row {index + 2}")
+                    continue
+                
+                # Parse key columns (comma-separated)
+                key_columns = [col.strip() for col in str(key_columns_str).split(',') if col.strip()]
+                
+                # Parse optional fields
+                sample_size = None
+                if sample_size_column and not pd.isna(row.get(sample_size_column)):
+                    try:
+                        sample_size = int(row[sample_size_column])
+                    except (ValueError, TypeError):
+                        self.logger.warning(f"⚠️  Row {index + 2}: Invalid sample size, using auto-calculation")
+                
+                transform_columns = False
+                if transform_columns_column and not pd.isna(row.get(transform_columns_column)):
+                    transform_value = str(row[transform_columns_column]).lower()
+                    transform_columns = transform_value in ['true', '1', 'yes', 'y', 'enabled']
+                
+                self.logger.info(f"🔄 Comparing dataset {dataset_id} vs table {table_name}")
+                
+                try:
+                    # Generate comparison report
+                    report = self.generate_report(
+                        domo_dataset_id=str(dataset_id),
+                        snowflake_table=str(table_name),
+                        key_columns=key_columns,
+                        sample_size=sample_size,
+                        transform_names=transform_columns
+                    )
+                    
+                    # Check if comparison was successful
+                    if report.get('errors'):
+                        error_msg = f"Dataset {dataset_id}: Comparison failed with errors"
+                        self.logger.error(f"❌ {error_msg}")
+                        errors.extend([f"Dataset {dataset_id}: {err['error']}" for err in report['errors']])
+                        failed_comparisons.append(str(dataset_id))
+                    else:
+                        success_msg = f"Dataset {dataset_id}: Comparison completed"
+                        if report.get('overall_match'):
+                            self.logger.info(f"✅ {success_msg} - Perfect match!")
+                        else:
+                            self.logger.warning(f"⚠️  {success_msg} - Discrepancies found")
+                        successful_comparisons.append(str(dataset_id))
+                        
+                        # Update status in spreadsheet if status column exists
+                        if status_column:
+                            try:
+                                status_text = "Perfect Match" if report.get('overall_match') else "Discrepancies Found"
+                                cell_range = f"{sheet_name}!{chr(65 + df.columns.get_loc(status_column))}{index + 2}"
+                                gsheets_client.write_range(spreadsheet_id, cell_range, [[status_text]])
+                            except Exception as e:
+                                self.logger.warning(f"⚠️  Could not update status for row {index + 2}: {e}")
+                    
+                except Exception as e:
+                    error_msg = f"Dataset {dataset_id}: {str(e)}"
+                    self.logger.error(f"❌ {error_msg}")
+                    errors.append(error_msg)
+                    failed_comparisons.append(str(dataset_id))
+            
+            # Summary
+            total_comparisons = len(successful_comparisons) + len(failed_comparisons)
+            
+            self.logger.info("="*80)
+            self.logger.info("📊 SPREADSHEET COMPARISON SUMMARY")
+            self.logger.info("="*80)
+            self.logger.info(f"✅ Successful comparisons: {len(successful_comparisons)}")
+            self.logger.info(f"❌ Failed comparisons: {len(failed_comparisons)}")
+            self.logger.info(f"📋 Total comparisons: {total_comparisons}")
+            
+            if successful_comparisons:
+                self.logger.info(f"📈 Success rate: {len(successful_comparisons)/total_comparisons*100:.1f}%")
+            
+            if errors:
+                self.logger.error("\n❌ Errors encountered:")
+                for error in errors[:10]:  # Show first 10 errors
+                    self.logger.error(f"   • {error}")
+                if len(errors) > 10:
+                    self.logger.error(f"   ... and {len(errors) - 10} more errors")
+            
+            return {
+                "success": len(successful_comparisons),
+                "failed": len(failed_comparisons),
+                "total": total_comparisons,
+                "errors": errors,
+                "successful_datasets": successful_comparisons,
+                "failed_datasets": failed_comparisons
+            }
+            
+        except Exception as e:
+            self.logger.error(f"❌ Spreadsheet comparison failed: {e}")
+            return {
+                "success": 0,
+                "failed": 0,
+                "total": 0,
+                "errors": [str(e)]
+            }
+    
+    def compare_from_inventory(self, credentials_path: str = None) -> Dict[str, Any]:
+        """
+        Compare datasets from the existing inventory spreadsheet.
+        
+        Uses the same spreadsheet and sheet as the inventory system with columns:
+        - Output ID: Domo dataset ID
+        - Model Name: Snowflake table name  
+        - Key Columns: Comma-separated list of key columns
+        
+        Args:
+            credentials_path: Path to Google Sheets credentials file
+            
+        Returns:
+            Dictionary with comparison results summary
+        """
+        try:
+            # Get spreadsheet configuration from environment
+            spreadsheet_id = os.getenv("MIGRATION_SPREADSHEET_ID")
+            sheet_name = os.getenv("INVENTORY_SHEET_NAME", "Inventory")
+            
+            if not spreadsheet_id:
+                raise Exception("MIGRATION_SPREADSHEET_ID environment variable not set")
+            
+            self.logger.info(f"🚀 Starting inventory-based comparisons...")
+            self.logger.info(f"📋 Using inventory spreadsheet: {spreadsheet_id}")
+            self.logger.info(f"📄 Using inventory sheet: {sheet_name}")
+            
+            # Import GoogleSheets here to avoid circular imports
+            from .utils.gsheets import GoogleSheets, READ_WRITE_SCOPES
+            
+            if not credentials_path:
+                credentials_path = os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE")
+            
+            if not credentials_path:
+                raise Exception("Google Sheets credentials not provided")
+            
+            if not os.path.exists(credentials_path):
+                raise Exception(f"Google Sheets credentials file not found: {credentials_path}")
+            
+            # Initialize Google Sheets client
+            gsheets_client = GoogleSheets(
+                credentials_path=credentials_path,
+                scopes=READ_WRITE_SCOPES
+            )
+            
+            # Read inventory data
+            self.logger.info(f"📖 Reading inventory data from {sheet_name}...")
+            data = gsheets_client.read_range(spreadsheet_id, f"{sheet_name}!A:Z")
+            
+            if not data or len(data) < 2:
+                raise Exception(f"No data found in sheet '{sheet_name}' or missing headers")
+            
+            # Convert to DataFrame
+            import pandas as pd
+            headers = data[0]
+            rows = data[1:]
+            df = pd.DataFrame(rows, columns=headers)
+            
+            # Remove empty rows
+            df = df.dropna(how='all')
+            
+            self.logger.info(f"📊 Found {len(df)} inventory entries")
+            
+            # Look for required columns
+            dataset_id_column = None
+            table_name_column = None
+            key_columns_column = None
+            
+            # Find Output ID column (Domo dataset ID)
+            possible_dataset_id_columns = ['Output ID', 'output_id', 'Dataset ID', 'dataset_id', 'Domo Dataset ID']
+            for col in possible_dataset_id_columns:
+                if col in df.columns:
+                    dataset_id_column = col
+                    break
+            
+            # Find Model Name column (Snowflake table name)
+            possible_table_columns = ['Model Name', 'model_name', 'Table Name', 'table_name', 'Snowflake Table']
+            for col in possible_table_columns:
+                if col in df.columns:
+                    table_name_column = col
+                    break
+            
+            # Find Key Columns column
+            possible_key_columns = ['Key Columns', 'key_columns', 'Keys', 'keys']
+            for col in possible_key_columns:
+                if col in df.columns:
+                    key_columns_column = col
+                    break
+            
+            # Validate required columns
+            if dataset_id_column is None:
+                raise Exception("Required column 'Output ID' not found in inventory spreadsheet")
+            
+            if table_name_column is None:
+                raise Exception("Required column 'Model Name' not found in inventory spreadsheet")
+            
+            if key_columns_column is None:
+                raise Exception("Required column 'Key Columns' not found in inventory spreadsheet")
+            
+            # Filter out empty entries
+            valid_df = df[
+                df[dataset_id_column].notna() & 
+                df[table_name_column].notna() & 
+                df[key_columns_column].notna() &
+                (df[dataset_id_column].astype(str).str.strip() != '') &
+                (df[table_name_column].astype(str).str.strip() != '') &
+                (df[key_columns_column].astype(str).str.strip() != '')
+            ]
+            
+            self.logger.info(f"📋 Found {len(valid_df)} valid entries for comparison (with Output ID, Model Name, and Key Columns)")
+            
+            if len(valid_df) == 0:
+                self.logger.info("✅ No valid entries found for comparison")
+                return {"success": 0, "failed": 0, "total": 0, "errors": []}
+            
+            # Setup connections once
+            if not self.setup_connections():
+                raise Exception("Failed to setup connections")
+            
+            # Process comparisons
+            successful_comparisons = []
+            failed_comparisons = []
+            errors = []
+            
+            for index, row in valid_df.iterrows():
+                dataset_id = str(row[dataset_id_column]).strip()
+                table_name = str(row[table_name_column]).strip()
+                key_columns_str = str(row[key_columns_column]).strip()
+                
+                # Parse key columns (comma-separated)
+                key_columns = [col.strip() for col in key_columns_str.split(',') if col.strip()]
+                
+                if not key_columns:
+                    error_msg = f"Row {index + 2}: Invalid Key Columns format"
+                    self.logger.warning(f"⚠️  {error_msg}")
+                    errors.append(error_msg)
+                    failed_comparisons.append(f"Row {index + 2}")
+                    continue
+                
+                self.logger.info(f"🔄 Comparing dataset {dataset_id} vs table {table_name}")
+                self.logger.info(f"🔑 Using key columns: {', '.join(key_columns)}")
+                
+                try:
+                    # Generate comparison report
+                    report = self.generate_report(
+                        domo_dataset_id=dataset_id,
+                        snowflake_table=table_name,
+                        key_columns=key_columns,
+                        sample_size=None,  # Use auto-calculation
+                        transform_names=False  # Don't transform by default for inventory
+                    )
+                    
+                    # Check if comparison was successful
+                    if report.get('errors'):
+                        error_msg = f"Dataset {dataset_id}: Comparison failed with errors"
+                        self.logger.error(f"❌ {error_msg}")
+                        errors.extend([f"Dataset {dataset_id}: {err['error']}" for err in report['errors']])
+                        failed_comparisons.append(dataset_id)
+                    else:
+                        success_msg = f"Dataset {dataset_id}: Comparison completed"
+                        if report.get('overall_match'):
+                            self.logger.info(f"✅ {success_msg} - Perfect match!")
+                        else:
+                            self.logger.warning(f"⚠️  {success_msg} - Discrepancies found")
+                        successful_comparisons.append(dataset_id)
+                    
+                except Exception as e:
+                    error_msg = f"Dataset {dataset_id}: {str(e)}"
+                    self.logger.error(f"❌ {error_msg}")
+                    errors.append(error_msg)
+                    failed_comparisons.append(dataset_id)
+            
+            # Summary
+            total_comparisons = len(successful_comparisons) + len(failed_comparisons)
+            
+            self.logger.info("="*80)
+            self.logger.info("📊 INVENTORY COMPARISON SUMMARY")
+            self.logger.info("="*80)
+            self.logger.info(f"✅ Successful comparisons: {len(successful_comparisons)}")
+            self.logger.info(f"❌ Failed comparisons: {len(failed_comparisons)}")
+            self.logger.info(f"📋 Total comparisons: {total_comparisons}")
+            
+            if successful_comparisons:
+                self.logger.info(f"📈 Success rate: {len(successful_comparisons)/total_comparisons*100:.1f}%")
+            
+            if errors:
+                self.logger.error("\n❌ Errors encountered:")
+                for error in errors[:10]:  # Show first 10 errors
+                    self.logger.error(f"   • {error}")
+                if len(errors) > 10:
+                    self.logger.error(f"   ... and {len(errors) - 10} more errors")
+            
+            return {
+                "success": len(successful_comparisons),
+                "failed": len(failed_comparisons),
+                "total": total_comparisons,
+                "errors": errors,
+                "successful_datasets": successful_comparisons,
+                "failed_datasets": failed_comparisons
+            }
+            
+        except Exception as e:
+            self.logger.error(f"❌ Inventory comparison failed: {e}")
+            return {
+                "success": 0,
+                "failed": 0,
+                "total": 0,
+                "errors": [str(e)]
+            }
+    
     def cleanup(self):
         """Clean up resources."""
         if self.snowflake_handler:

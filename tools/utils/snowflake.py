@@ -257,9 +257,12 @@ class SnowflakeHandler:
         try:
             cursor = self.conn.cursor()
             
+            # Escape table name for SQL operations
+            escaped_table_name = f'"{table_name.upper()}"'
+            
             # Handle table existence
             if if_exists == 'replace':
-                cursor.execute(f"DROP TABLE IF EXISTS {table_name.upper()}")
+                cursor.execute(f"DROP TABLE IF EXISTS {escaped_table_name}")
                 logger.info(f"Dropped existing table: {table_name}")
             
             # Create table if it doesn't exist
@@ -271,6 +274,8 @@ class SnowflakeHandler:
             # Prepare data for insertion
             df_clean = df.fill_null('NULL')
             columns = list(df_clean.columns)
+            # Escape column names for INSERT statement
+            escaped_columns = [f'"{col}"' for col in columns]
             placeholders = ', '.join(['%s'] * len(columns))
             
             # Insert data in batches
@@ -281,7 +286,7 @@ class SnowflakeHandler:
                 batch = df_clean.slice(i, batch_size)
                 values = [tuple(row) for row in batch.iter_rows()]
                 
-                insert_sql = f"INSERT INTO {table_name.upper()} ({', '.join(columns)}) VALUES ({placeholders})"
+                insert_sql = f"INSERT INTO {escaped_table_name} ({', '.join(escaped_columns)}) VALUES ({placeholders})"
                 cursor.executemany(insert_sql, values)
                 
                 logger.info(f"Inserted batch {i//batch_size + 1}/{(total_rows + batch_size - 1)//batch_size}")
@@ -320,7 +325,9 @@ class SnowflakeHandler:
             else:
                 sf_type = "VARCHAR(16777216)"  # Snowflake max varchar size
             
-            columns.append(f"{col_name} {sf_type}")
+            # Escape column names to handle reserved keywords and special characters
+            escaped_col_name = f'"{col_name}"'
+            columns.append(f"{escaped_col_name} {sf_type}")
         
         columns_sql = ', '.join(columns)
         return f"CREATE TABLE {table_name.upper()} ({columns_sql})"
@@ -342,7 +349,9 @@ class SnowflakeHandler:
         
         try:
             cursor = self.conn.cursor()
-            cursor.execute(f"SELECT COUNT(*) FROM {table_name.upper()}")
+            # Escape table name to handle special characters
+            escaped_table_name = f'"{table_name.upper()}"'
+            cursor.execute(f"SELECT COUNT(*) FROM {escaped_table_name}")
             actual_rows = cursor.fetchone()[0]
             cursor.close()
             

@@ -348,7 +348,15 @@ def handle_compare_command(args) -> int:
     Returns:
         int: Exit code (0 for success, 1 for failure)
     """
-    # Validate required arguments
+    # Handle spreadsheet mode
+    if args.from_spreadsheet:
+        return handle_compare_from_spreadsheet(args)
+    
+    # Handle inventory mode
+    if args.from_inventory:
+        return handle_compare_from_inventory(args)
+    
+    # Validate required arguments for single comparison
     if not args.domo_dataset_id:
         logger.error("❌ Domo dataset ID is required")
         logger.error("Use --domo-dataset-id to specify the dataset to compare")
@@ -451,6 +459,122 @@ def handle_compare_command(args) -> int:
             pass  # Ignore cleanup errors
 
 
+def handle_compare_from_spreadsheet(args) -> int:
+    """
+    Handle the compare subcommand for comparing datasets from Google Sheets.
+    
+    Args:
+        args: Parsed command line arguments
+        
+    Returns:
+        int: Exit code (0 for success, 1 for failure)
+    """
+    logger.info("🚀 Starting spreadsheet-based comparisons...")
+    
+    # Validate spreadsheet arguments
+    if not args.spreadsheet_id:
+        logger.error("❌ Spreadsheet ID is required for spreadsheet-based comparisons")
+        logger.error("Set COMPARISON_SPREADSHEET_ID environment variable or use --spreadsheet-id")
+        return 1
+    
+    try:
+        # Initialize the comparator
+        comparator = DatasetComparator()
+        
+        # Run comparisons from spreadsheet
+        results = comparator.compare_from_spreadsheet(
+            spreadsheet_id=args.spreadsheet_id,
+            sheet_name=args.sheet_name,
+            credentials_path=args.credentials
+        )
+        
+        # Determine exit code based on results
+        if 'errors' in results and results['errors']:
+            logger.error("❌ Spreadsheet comparison failed due to errors:")
+            for error in results['errors'][:5]:  # Show first 5 errors
+                logger.error(f"   - {error}")
+            if len(results['errors']) > 5:
+                logger.error(f"   ... and {len(results['errors']) - 5} more errors")
+            return 1
+        elif results['failed'] == 0:
+            logger.info("🎉 All spreadsheet comparisons completed successfully!")
+            return 0
+        else:
+            logger.warning(f"⚠️  Spreadsheet comparisons completed with {results['failed']} failures!")
+            return 0  # Not an error, just differences found
+        
+    except KeyboardInterrupt:
+        logger.info("⚠️  Spreadsheet comparison cancelled by user")
+        return 1
+    except Exception as e:
+        logger.error(f"❌ Spreadsheet comparison failed: {e}")
+        logger.error("💡 Suggestions:")
+        logger.error("   - Verify that the spreadsheet ID is correct")
+        logger.error("   - Verify that the sheet name exists")
+        logger.error("   - Check that required columns exist (Dataset ID, Table Name, Key Columns)")
+        logger.error("   - Verify your Google Sheets credentials")
+        return 1
+    finally:
+        try:
+            comparator.cleanup()
+        except:
+            pass  # Ignore cleanup errors
+
+
+def handle_compare_from_inventory(args) -> int:
+    """
+    Handle the compare subcommand for comparing datasets from inventory spreadsheet.
+    
+    Args:
+        args: Parsed command line arguments
+        
+    Returns:
+        int: Exit code (0 for success, 1 for failure)
+    """
+    logger.info("🚀 Starting inventory-based comparisons...")
+    logger.info("📋 Using existing inventory spreadsheet configuration")
+    
+    try:
+        # Initialize the comparator
+        comparator = DatasetComparator()
+        
+        # Run comparisons from inventory
+        results = comparator.compare_from_inventory(
+            credentials_path=args.credentials
+        )
+        
+        # Determine exit code based on results
+        if 'errors' in results and results['errors']:
+            logger.error("❌ Inventory comparison failed due to errors:")
+            for error in results['errors'][:5]:  # Show first 5 errors
+                logger.error(f"   - {error}")
+            if len(results['errors']) > 5:
+                logger.error(f"   ... and {len(results['errors']) - 5} more errors")
+            return 1
+        elif results['failed'] == 0:
+            logger.info("🎉 All inventory comparisons completed successfully!")
+            return 0
+        else:
+            logger.warning(f"⚠️  Inventory comparisons completed with {results['failed']} failures!")
+            return 0  # Not an error, just differences found
+        
+    except KeyboardInterrupt:
+        logger.info("⚠️  Inventory comparison cancelled by user")
+        return 1
+    except Exception as e:
+        logger.error(f"❌ Inventory comparison failed: {e}")
+        logger.error("💡 Suggestions:")
+        logger.error("   - Verify that MIGRATION_SPREADSHEET_ID environment variable is set")
+        logger.error("   - Check that inventory sheet has required columns (Output ID, Model Name, Key Columns)")
+        logger.error("   - Verify your Google Sheets credentials")
+        return 1
+    finally:
+        try:
+            comparator.cleanup()
+        except:
+            pass  # Ignore cleanup errors
+
+
 def create_parser() -> argparse.ArgumentParser:
     """
     Create the main argument parser with subcommands.
@@ -493,6 +617,15 @@ Examples:
     # Compare with custom sample size and column transformation
     python main.py compare --domo-dataset-id 12345 --snowflake-table sales_data --key-columns id --sample-size 5000 --transform-columns
     
+    # Compare multiple datasets from Google Sheets
+    python main.py compare --from-spreadsheet
+    
+    # Compare from custom spreadsheet and sheet
+    python main.py compare --from-spreadsheet --spreadsheet-id YOUR_SHEET_ID --sheet-name Comparisons
+    
+    # Compare datasets from existing inventory spreadsheet
+    python main.py compare --from-inventory
+    
     # Test comparison connections
     python main.py compare --test-connection
     
@@ -502,6 +635,11 @@ Examples:
 Environment Variables:
     EXPORT_DIR: Default export directory
     GOOGLE_SHEETS_CREDENTIALS_FILE: Path to Google Sheets credentials file
+    MIGRATION_SPREADSHEET_ID: Default spreadsheet ID for migrations and inventory
+    COMPARISON_SPREADSHEET_ID: Default spreadsheet ID for comparisons
+    MIGRATION_SHEET_NAME: Default sheet name for migrations (default: Migration)
+    COMPARISON_SHEET_NAME: Default sheet name for comparisons (default: Comparison)
+    INVENTORY_SHEET_NAME: Default sheet name for inventory (default: Inventory)
     DOMO_DEVELOPER_TOKEN: Domo API developer token
     DOMO_INSTANCE: Domo instance name
     SNOWFLAKE_ACCOUNT: Snowflake account identifier
@@ -687,6 +825,36 @@ Environment Variables:
         "--test-connection",
         action="store_true",
         help="Test Domo and Snowflake connections for comparison"
+    )
+    
+    compare_parser.add_argument(
+        "--from-spreadsheet",
+        action="store_true",
+        help="Compare datasets from Google Sheets Comparison tab"
+    )
+    
+    compare_parser.add_argument(
+        "--from-inventory",
+        action="store_true",
+        help="Compare datasets from existing Inventory spreadsheet (uses Output ID, Model Name, Key Columns)"
+    )
+    
+    compare_parser.add_argument(
+        "--credentials",
+        default=os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE"),
+        help="Path to Google Sheets credentials JSON file"
+    )
+    
+    compare_parser.add_argument(
+        "--spreadsheet-id",
+        default=os.getenv("COMPARISON_SPREADSHEET_ID"),
+        help="Google Sheets spreadsheet ID for comparisons (uses default if not specified)"
+    )
+    
+    compare_parser.add_argument(
+        "--sheet-name",
+        default=os.getenv("COMPARISON_SHEET_NAME", "Comparison"),
+        help="Comparison sheet tab name (default: Comparison)"
     )
     
     return parser

@@ -14,6 +14,9 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
+# Configure logger
+logger = logging.getLogger(__name__)
+
 
 class ColumnMetadata(TypedDict):
     """Metadata for a Domo column."""
@@ -89,7 +92,6 @@ def check_env_vars(required_vars: Optional[List[str]] = None) -> bool:
     Returns:
         True if all required variables are set, False otherwise
     """
-    logger = logging.getLogger(__name__)
     
     if required_vars is None:
         required_vars = [
