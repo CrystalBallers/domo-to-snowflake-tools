@@ -535,69 +535,33 @@ class DomoHandler:
 
     def get_all_dataflows(self, dataset_id_list: list[str]) -> pd.DataFrame:
         """
-        Crawl Domo lineage and return, in tabular form, every dataflow that
-        uses the datasets provided.
-
-        Overview
-        --------
-        Starting from each *dataset ID* in ``dataset_id_list`` the method:
-
-        1. **Export lineage** – runs
-
-            argo-domo lineage export DATA_SOURCE <dataset_id> --format json \
-            > lineage_dataset.json
-
-        to download the full entity graph (*datasets* and *dataflows*).
-
-        2. **Identify the dataflow** whose ``parents`` (inputs) or
-        ``children`` (outputs) array contains the current dataset.
-
-        3. **Recurse upstream** – for every *input* dataset discovered in
-        step&nbsp;2, repeat step&nbsp;1 so no related dataflow is missed.
-
-        4. **Aggregate results** into a ``pandas.DataFrame`` with one row
-        per dataflow and the columns described below.
-
-        Output schema
-        -------------
-        ======  ===========================  =========================================
-        Column  Description                  Source in the lineage JSON
-        ------  ---------------------------  -----------------------------------------
-        id      Dataflow ID                  key name under ``entities`` (e.g. DATAFLOW598)
-        sources Source Dataset IDs           IDs found in the dataflow’s ``parents`` list
-        targets Output Dataset IDs           IDs found in the dataflow’s ``children`` list
-        ======  ===========================  =========================================
-
-        ``sources`` and ``targets`` are returned as a single string where
-        IDs are separated by commas and newlines so they can be pasted
-        directly into a spreadsheet or CSV.
-
-        Example CSV
-        -----------
-        ::
-
-            Dataflow ID,Source Dataset IDs,Output Dataset IDs
-            123,"id1,id2","id3"
-            456,"id4","id5,id6"
-            789,"id7","id8"
-
-        Parameters
-        ----------
-        dataset_id_list : list[str]
-            List of dataset UUIDs that seed the lineage crawl.
-
-        Returns
-        -------
-        pandas.DataFrame
-            Three-column table shown in *Example CSV* above.
+        Lineage crawl starting from the datasets in ``dataset_id_list``.
+        Returns a DataFrame with columns:
+            • Dataflow ID
+            • Source Dataset IDs  (comma + newline-separated)
+            • Output Dataset IDs  (comma + newline-separated)
         """
 
         logger.info("🔍 Fetching all dataflows from Domo")
 
-        # Codigo para ejecutar mediante subprocess argo-domo lineage export DATA_SOURCE <datasource-id> --format json > lineage.json 
-        # para cada dataset en dataset_id_list
-        for dataset_id in dataset_id_list:
-            logger.info(f"🔍 Fetching dataflows for dataset {dataset_id}")
+        visited_datasets: set[str] = set()
+        # tmp dict to deduplicate and merge inputs/outputs per dataflow
+        dataflows_tmp = {
+                "Dataflow ID": [],
+                "Source Dataset IDs": [],
+                "Output Dataset IDs": []
+        }
+    
+
+        queue: deque[str] = deque(dataset_id_list)
+
+        while queue:
+            dataset_id = queue.popleft()
+            if dataset_id in visited_datasets:
+                continue
+            visited_datasets.add(dataset_id)
+
+            logger.info(f"🔍 Fetching lineage for dataset {dataset_id}")
 
             cmd = [
                 "argo-domo",
@@ -610,82 +574,56 @@ class DomoHandler:
             ]
 
             try:
-                proc = subprocess.run(
-                    cmd,
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
+                proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
                 lineage = json.loads(proc.stdout)
             except subprocess.CalledProcessError as exc:
-                logger.error(
-                    f"❌ argo-domo export failed for {dataset_id}: {exc.stderr}"
-                )
+                logger.error(f"❌ argo-domo export failed for {dataset_id}: {exc.stderr}")
                 continue
             except json.JSONDecodeError:
                 logger.error(f"❌ Unable to parse JSON for {dataset_id}")
                 continue
 
-           
-
-            entities = lineage.get("entities", {})
-
-            # Ahora accede al dataflow que tiene el dataset_id, para ello, dentro de cada entity, 
-            # accede a los children y a los parents, y busca el dataflow que tiene dentro de los children
-            # al dataset_id
-            
-            dataflows = []
+            # entities is a dict, iterate over its values
+            entities = lineage.get("entities", {}).values()
 
             for entity in entities:
-                if entity.get("type") == "DATAFLOW":
-                    if dataset_id in entity.get("children", []):
-                        dataflow_id = entity.get("id")
+                if entity.get("type") != "DATAFLOW":
+                    continue
 
-                        # Ahora fijate que el children es una lista de diccionarios
-                        # y que cada diccionario tiene un id, vamos a generar Output Dataset IDs
-                        # que son todos los Ids de los children, separados por comas y newlines
-                        output_dataset_ids = "\n".join([child.get("id") for child in entity.get("children", [])])
+                # collect parent / child dataset IDs
+                parent_ids = [
+                    p.get("id")
+                    for p in entity.get("parents", [])
+                    if p.get("type") == "DATA_SOURCE"
+                ]
+                child_ids = [
+                    c.get("id")
+                    for c in entity.get("children", [])
+                    if c.get("type") == "DATA_SOURCE"
+                ]
 
-                        # Ahora fijate que el parents es una lista de diccionarios
-                        # y que cada diccionario tiene un id, vamos a generar Source Dataset IDs
-                        # que son todos los Ids de los parents, separados por comas y newlines
-                        source_dataset_ids = "\n".join([parent.get("id") for parent in entity.get("parents", [])])
-                        
-                        # Ahora tenemos que crear un dataframe con los siguientes campos:
-                        # Dataflow ID, Source Dataset IDs, Output Dataset IDs
-                        # y añadirlo a la lista de dataflows
-                        dataflows.append({
-                            "Dataflow ID": dataflow_id,
-                            "Source Dataset IDs": source_dataset_ids,
-                            "Output Dataset IDs": output_dataset_ids
-                        })
+                # keep only dataflows that actually touch the current dataset
+                if dataset_id not in child_ids:
+                    continue
 
+                df_id = entity["id"]
+                # rec = dataflows_tmp[df_id]
 
+        
+                dataflows_tmp["Dataflow ID"].append(entity["id"])
+                dataflows_tmp["Source Dataset IDs"].append(f",\n".join(map(str, parent_ids)))
+                dataflows_tmp["Output Dataset IDs"].append(f",\n".join(map(str, child_ids)))
 
-      "children": [
-        {
-          "type": "DATA_SOURCE",
-          "id": "7d84cecd-9237-4932-bd0f-9240c72a1d14",
-          "complete": true
-        }
+        dataflows_df = pd.DataFrame(dataflows_tmp)
 
+        # Merge Source Dataset IDs and Output Dataset IDs into a single when Dataflow ID is the same
+        dataflows_df = dataflows_df.groupby("Dataflow ID").agg({
+            "Source Dataset IDs": lambda x: x.str.cat(sep=",\n"),
+            "Output Dataset IDs": lambda x: x.str.cat(sep=",\n")
+        }).reset_index()
 
-                "DATAFLOW465": {
-                "type": "DATAFLOW",
-                "id": "465",
-                "ancestorCounts": {
-                    "DATA_SOURCE": 9562,
-                    "DATAFLOW": 2160
-                },
-                "complete": true,
-                "children": [
-                    {
-                    "type": "DATA_SOURCE",
-                    "id": "7d84cecd-9237-4932-bd0f-9240c72a1d14",
-                    "complete": true
-                    }
-
-
+        logger.info(f"✅ Collected {len(dataflows_df)} dataflows")
+        return dataflows_df
 
 
 def export_datasets_to_spreadsheet(spreadsheet_id: str, sheet_name: str = "Datasets", 
