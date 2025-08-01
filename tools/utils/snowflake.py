@@ -423,6 +423,67 @@ class SnowflakeHandler:
             if 'cursor' in locals() and cursor:
                 cursor.close()
 
+    def get_table_columns(self, database: str, schema: str, table_name: str, role: str = "DBT_ROLE") -> list[str]:
+        """
+        Get all column names from a specific table in Snowflake.
+        
+        Args:
+            database: Database name
+            schema: Schema name  
+            table_name: Table name
+            role: Snowflake role to use (default: "DBT_ROLE")
+            
+        Returns:
+            list[str]: List of column names, empty list if error or table not found
+        """
+        if not self.conn:
+            logger.error("❌ No active Snowflake connection.")
+            return []
+        
+        try:
+            cursor = self.conn.cursor()
+            
+            # Set the role first
+            cursor.execute(f"USE ROLE {role}")
+            logger.debug(f"Set role to: {role}")
+            
+            # Ensure warehouse is active before running queries
+            warehouse = os.getenv("SNOWFLAKE_WAREHOUSE")
+            if warehouse:
+                cursor.execute(f"USE WAREHOUSE {warehouse}")
+                logger.debug(f"Activated warehouse: {warehouse}")
+            
+            # Query to get column information from INFORMATION_SCHEMA
+            query = f"""
+            SELECT COLUMN_NAME 
+            FROM {database}.INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_SCHEMA = '{schema.upper()}' 
+            AND TABLE_NAME = '{table_name.upper()}'
+            ORDER BY ORDINAL_POSITION
+            """
+            
+            logger.info(f"Getting columns for table: {database}.{schema}.{table_name} using role: {role}")
+            cursor.execute(query)
+            
+            # Fetch all column names
+            results = cursor.fetchall()
+            columns = [row[0] for row in results]
+            
+            cursor.close()
+            
+            if columns:
+                logger.info(f"✅ Found {len(columns)} columns in {table_name}")
+                logger.debug(f"Columns: {columns}")
+            else:
+                logger.warning(f"⚠️  No columns found for table {database}.{schema}.{table_name}")
+                logger.warning("   Table may not exist or you may not have permissions")
+            
+            return columns
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get columns for table {table_name}: {e}")
+            return []
+
     def cleanup(self):
         """Close Snowflake connection."""
         if self.conn:
