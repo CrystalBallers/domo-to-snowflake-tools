@@ -1,32 +1,86 @@
--- ERROR: Could not retrieve columns for table DW_REPORTS.raw_domo.COBALT_MAIN_BRAND_SUB_CAT_YM_MARKETIQ using role: DBT_ROLE
--- 
--- This file could not be generated because the table schema could not be retrieved.
--- 
--- Possible causes:
--- 1. Table DW_REPORTS.raw_domo.COBALT_MAIN_BRAND_SUB_CAT_YM_MARKETIQ does not exist
--- 2. Insufficient permissions to access the table with role: DBT_ROLE
--- 3. Snowflake connection failed
--- 4. Warehouse not available or not specified
--- 5. Role DBT_ROLE does not have access to the table
--- 
--- Please verify the table exists and you have proper permissions with role: DBT_ROLE, then regenerate this file.
-
-/*
-TABLE: DW_REPORTS.raw_domo.COBALT_MAIN_BRAND_SUB_CAT_YM_MARKETIQ
-DATASET_ID: 6be4db2f-db04-49a8-96fd-3cef4b42704b
-ROLE_USED: DBT_ROLE
-GENERATED_AT: 2025-07-31 23:02:32
-STATUS: FAILED
-*/
-
--- Uncomment and modify the following template when the table is available:
-/*
 with
-    source as (select * from {{ source("raw_domo", "COBALT_MAIN_BRAND_SUB_CAT_YM_MARKETIQ") }})
+    source as (select * from {{ source("TEMP_ARGO_RAW", "COBALT_MAIN_BRAND_SUB_CAT_YM_MARKETIQ") }})
 
 select
-    -- Add your columns here when table schema is available
-    *
+    "ANNUALIZED" as annualized,
+    "ASP_2021" as asp_2021,
+    "ASP_2022" as asp_2022,
+    "ASP_2023" as asp_2023,
+    "ASP_2024" as asp_2024,
+    "ASP_2025" as asp_2025,
+    "BRAND" as brand,
+    "BRAND_RANK_IN_CAT_12M_SALES" as brand_rank_in_cat_12m_sales,
+    "BRAND_RANK_IN_SUB_12M_SALES" as brand_rank_in_sub_12m_sales,
+    "BRAND_YM_SALES" as brand_ym_sales,
+    "BRAND_YM_UNITS" as brand_ym_units,
+    "CATEGORY_NAME" as category_name,
+    "CAT_YM_SALES" as cat_ym_sales,
+    "CAT_YM_UNITS" as cat_ym_units,
+    "COBALT_END_DATE" as cobalt_end_date,
+    "COUNT" as count,
+    "DATERANGE" as daterange,
+    "END_DATE" as end_date,
+    "FRAGRANCE" as fragrance,
+    "HAIR" as hair,
+    "HIGHCHAIR" as highchair,
+    "L12_ANCHOR" as l12_anchor,
+    "L12_FLAG" as l12_flag,
+    "L12_RANGE" as l12_range,
+    "L12_SALES" as l12_sales,
+    "L12_UNITS" as l12_units,
+    "L24_ANCHOR" as l24_anchor,
+    "L24_SALES" as l24_sales,
+    "L24_UNITS" as l24_units,
+    "LAST_SUB_CATEGORY_NAME" as last_sub_category_name,
+    "MAKEUP" as makeup,
+    "MONTH" as month,
+    "P12_FLAG" as p12_flag,
+    "P12_RANGE" as p12_range,
+    "P12_SALES" as p12_sales,
+    "P12_UNITS" as p12_units,
+    "PM_DATE" as pm_date,
+    "PYM_DATE" as pym_date,
+    "PY_YTD_ANCHOR" as py_ytd_anchor,
+    "SALES" as sales,
+    "SALES_1P" as sales_1p,
+    "SALES_2021" as sales_2021,
+    "SALES_2022" as sales_2022,
+    "SALES_2023" as sales_2023,
+    "SALES_2024" as sales_2024,
+    "SALES_2025" as sales_2025,
+    "SALES_3P" as sales_3p,
+    "SALES_3P_PCT" as sales_3p_pct,
+    "SKINCARE" as skincare,
+    "START_DATE" as start_date,
+    "SUBCATEGORIES" as subcategories,
+    "SUBCAT_CATEGORY_RANK" as subcat_category_rank,
+    "SUB_CAT_NAME_1" as sub_cat_name_1,
+    "SUB_CAT_NAME_10" as sub_cat_name_10,
+    "SUB_CAT_NAME_11" as sub_cat_name_11,
+    "SUB_CAT_NAME_12" as sub_cat_name_12,
+    "SUB_CAT_NAME_13" as sub_cat_name_13,
+    "SUB_CAT_NAME_2" as sub_cat_name_2,
+    "SUB_CAT_NAME_3" as sub_cat_name_3,
+    "SUB_CAT_NAME_4" as sub_cat_name_4,
+    "SUB_CAT_NAME_5" as sub_cat_name_5,
+    "SUB_CAT_NAME_6" as sub_cat_name_6,
+    "SUB_CAT_NAME_7" as sub_cat_name_7,
+    "SUB_CAT_NAME_8" as sub_cat_name_8,
+    "SUB_CAT_NAME_9" as sub_cat_name_9,
+    "SUB_RANK_IN_BRAND_12M_SALES" as sub_rank_in_brand_12m_sales,
+    "SUB_YM_SALES" as sub_ym_sales,
+    "SUB_YM_UNITS" as sub_ym_units,
+    "SUNSCREEN" as sunscreen,
+    "UNIQUE_ASINS" as unique_asins,
+    "UNIQUE_CATEGORY_NAME" as unique_category_name,
+    "UNIQUE_SUBCATEGORIES" as unique_subcategories,
+    "UNITS" as units,
+    "UNITS_2021" as units_2021,
+    "UNITS_2022" as units_2022,
+    "UNITS_2023" as units_2023,
+    "UNITS_2024" as units_2024,
+    "UNITS_2025" as units_2025,
+    "Vitamins & Supplements" as vitamins__supplements,
+    "YEAR" as year
 
 from source
-*/

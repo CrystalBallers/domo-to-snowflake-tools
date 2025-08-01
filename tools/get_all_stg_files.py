@@ -52,7 +52,7 @@ def get_stg_files_data():
         return pd.DataFrame()
 
 
-def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, schema: str = "raw_domo", output_dir: str = "sql/stg/", role: str = "DBT_ROLE"):
+def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, schema: str = "raw_domo", output_dir: str = "sql/stg/", role: str = "DBT_ROLE", warehouse: str = None):
     """
     Iterates through each row of the DataFrame and generates staging SQL files.
     Gets real column names from Snowflake for each table.
@@ -63,6 +63,7 @@ def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, sc
         schema: Snowflake schema name (default: "raw_domo")
         output_dir: Directory where to save the SQL files
         role: Snowflake role to use (default: "DBT_ROLE")
+        warehouse: Snowflake warehouse to use (if None, uses environment variable)
     """
     if df.empty:
         print("❌ DataFrame is empty. Cannot generate files.")
@@ -122,7 +123,7 @@ def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, sc
         
         if snowflake_handler:
             print(f"   🔍 Getting columns from Snowflake table: {database}.{schema}.{name} using role: {role}")
-            columns = snowflake_handler.get_table_columns(database, schema, name, role)
+            columns = snowflake_handler.get_table_columns(database, schema, name, role, warehouse)
             
             if not columns:
                 print(f"   ❌ Failed to get columns from Snowflake table: {database}.{schema}.{name}")

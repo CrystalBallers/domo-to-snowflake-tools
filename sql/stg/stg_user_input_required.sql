@@ -1,32 +1,20 @@
--- ERROR: Could not retrieve columns for table DW_REPORTS.raw_domo.USER_INPUT_REQUIRED using role: DBT_ROLE
--- 
--- This file could not be generated because the table schema could not be retrieved.
--- 
--- Possible causes:
--- 1. Table DW_REPORTS.raw_domo.USER_INPUT_REQUIRED does not exist
--- 2. Insufficient permissions to access the table with role: DBT_ROLE
--- 3. Snowflake connection failed
--- 4. Warehouse not available or not specified
--- 5. Role DBT_ROLE does not have access to the table
--- 
--- Please verify the table exists and you have proper permissions with role: DBT_ROLE, then regenerate this file.
-
-/*
-TABLE: DW_REPORTS.raw_domo.USER_INPUT_REQUIRED
-DATASET_ID: 22309d4a-185c-4534-af8f-7c479bcd2e13
-ROLE_USED: DBT_ROLE
-GENERATED_AT: 2025-07-31 23:02:45
-STATUS: FAILED
-*/
-
--- Uncomment and modify the following template when the table is available:
-/*
 with
-    source as (select * from {{ source("raw_domo", "USER_INPUT_REQUIRED") }})
+    source as (select * from {{ source("TEMP_ARGO_RAW", "USER_INPUT_REQUIRED") }})
 
 select
-    -- Add your columns here when table schema is available
-    *
+    "clients.name" as clientsname,
+    "amazon_seller_id" as amazon_seller_id,
+    "country_id" as country_id,
+    "sku" as sku,
+    "USER.Reporting Category" as userreporting_category,
+    "USER.Pricing_Notes" as userpricing_notes,
+    "USER.enforce_CM%" as userenforce_cm,
+    "USER.Product Group" as userproduct_group,
+    "USER.unit-of-weight" as userunitofweight,
+    "USER.Package Weight" as userpackage_weight,
+    "USER.unit-of-dimension" as userunitofdimension,
+    "USER.Package Height" as userpackage_height,
+    "USER.Package Length" as userpackage_length,
+    "USER.Package Width" as userpackage_width
 
 from source
-*/

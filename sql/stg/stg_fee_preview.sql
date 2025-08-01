@@ -1,32 +1,45 @@
--- ERROR: Could not retrieve columns for table DW_REPORTS.raw_domo.FEE_PREVIEW using role: DBT_ROLE
--- 
--- This file could not be generated because the table schema could not be retrieved.
--- 
--- Possible causes:
--- 1. Table DW_REPORTS.raw_domo.FEE_PREVIEW does not exist
--- 2. Insufficient permissions to access the table with role: DBT_ROLE
--- 3. Snowflake connection failed
--- 4. Warehouse not available or not specified
--- 5. Role DBT_ROLE does not have access to the table
--- 
--- Please verify the table exists and you have proper permissions with role: DBT_ROLE, then regenerate this file.
-
-/*
-TABLE: DW_REPORTS.raw_domo.FEE_PREVIEW
-DATASET_ID: 875c55d8-ca5c-44a0-9d05-ffeb12e3a1a5
-ROLE_USED: DBT_ROLE
-GENERATED_AT: 2025-07-31 23:02:36
-STATUS: FAILED
-*/
-
--- Uncomment and modify the following template when the table is available:
-/*
 with
-    source as (select * from {{ source("raw_domo", "FEE_PREVIEW") }})
+    source as (select * from {{ source("TEMP_ARGO_RAW", "FEE_PREVIEW") }})
 
 select
-    -- Add your columns here when table schema is available
-    *
+    "amazon_seller_id" as amazon_seller_id,
+    "asin" as asin,
+    "brand" as brand,
+    "created_at" as created_at,
+    "currency" as currency,
+    "estimated_fba_fulfillment_fee_per_unit" as estimated_fba_fulfillment_fee_per_unit,
+    "estimated_fee_total" as estimated_fee_total,
+    "estimated_order_handling_fee_per_order" as estimated_order_handling_fee_per_order,
+    "estimated_pick_pack_fee_per_unit" as estimated_pick_pack_fee_per_unit,
+    "estimated_referral_fee_per_unit" as estimated_referral_fee_per_unit,
+    "estimated_variable_closing_fee" as estimated_variable_closing_fee,
+    "estimated_weight_handling_fee_per_unit" as estimated_weight_handling_fee_per_unit,
+    "expected_domestic_fulfilment_fee_per_unit" as expected_domestic_fulfilment_fee_per_unit,
+    "expected_efn_fulfilment_fee_per_unit_de" as expected_efn_fulfilment_fee_per_unit_de,
+    "expected_efn_fulfilment_fee_per_unit_es" as expected_efn_fulfilment_fee_per_unit_es,
+    "expected_efn_fulfilment_fee_per_unit_fr" as expected_efn_fulfilment_fee_per_unit_fr,
+    "expected_efn_fulfilment_fee_per_unit_it" as expected_efn_fulfilment_fee_per_unit_it,
+    "expected_efn_fulfilment_fee_per_unit_se" as expected_efn_fulfilment_fee_per_unit_se,
+    "expected_efn_fulfilment_fee_per_unit_uk" as expected_efn_fulfilment_fee_per_unit_uk,
+    "fnsku" as fnsku,
+    "fulfilled_by" as fulfilled_by,
+    "id" as id,
+    "item_weight" as item_weight,
+    "length_and_girth" as length_and_girth,
+    "longest_side" as longest_side,
+    "median_side" as median_side,
+    "product_group" as product_group,
+    "product_name" as product_name,
+    "product_size_tier" as product_size_tier,
+    "sales_price" as sales_price,
+    "shortest_side" as shortest_side,
+    "sku" as sku,
+    "unit_of_dimension" as unit_of_dimension,
+    "unit_of_weight" as unit_of_weight,
+    "updated_at" as updated_at,
+    "your_price" as your_price,
+    "country_id" as country_id,
+    "_BATCH_ID_" as _batch_id_,
+    "_BATCH_LAST_RUN_" as _batch_last_run_
 
 from source
-*/

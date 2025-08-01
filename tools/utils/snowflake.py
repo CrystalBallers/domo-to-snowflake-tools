@@ -423,7 +423,7 @@ class SnowflakeHandler:
             if 'cursor' in locals() and cursor:
                 cursor.close()
 
-    def get_table_columns(self, database: str, schema: str, table_name: str, role: str = "DBT_ROLE") -> list[str]:
+    def get_table_columns(self, database: str, schema: str, table_name: str, role: str = "DBT_ROLE", warehouse: str = None) -> list[str]:
         """
         Get all column names from a specific table in Snowflake.
         
@@ -432,6 +432,7 @@ class SnowflakeHandler:
             schema: Schema name  
             table_name: Table name
             role: Snowflake role to use (default: "DBT_ROLE")
+            warehouse: Warehouse to use (if None, uses environment variable)
             
         Returns:
             list[str]: List of column names, empty list if error or table not found
@@ -448,10 +449,10 @@ class SnowflakeHandler:
             logger.debug(f"Set role to: {role}")
             
             # Ensure warehouse is active before running queries
-            warehouse = os.getenv("SNOWFLAKE_WAREHOUSE")
-            if warehouse:
-                cursor.execute(f"USE WAREHOUSE {warehouse}")
-                logger.debug(f"Activated warehouse: {warehouse}")
+            warehouse_to_use = warehouse or os.getenv("SNOWFLAKE_WAREHOUSE")
+            if warehouse_to_use:
+                cursor.execute(f"USE WAREHOUSE {warehouse_to_use}")
+                logger.debug(f"Activated warehouse: {warehouse_to_use}")
             
             # Query to get column information from INFORMATION_SCHEMA
             query = f"""

@@ -1,32 +1,41 @@
--- ERROR: Could not retrieve columns for table DW_REPORTS.raw_domo.OBSOLETE_ATLANTA_FIREFLY_DAILY_PRODUCTS_DIM using role: DBT_ROLE
--- 
--- This file could not be generated because the table schema could not be retrieved.
--- 
--- Possible causes:
--- 1. Table DW_REPORTS.raw_domo.OBSOLETE_ATLANTA_FIREFLY_DAILY_PRODUCTS_DIM does not exist
--- 2. Insufficient permissions to access the table with role: DBT_ROLE
--- 3. Snowflake connection failed
--- 4. Warehouse not available or not specified
--- 5. Role DBT_ROLE does not have access to the table
--- 
--- Please verify the table exists and you have proper permissions with role: DBT_ROLE, then regenerate this file.
-
-/*
-TABLE: DW_REPORTS.raw_domo.OBSOLETE_ATLANTA_FIREFLY_DAILY_PRODUCTS_DIM
-DATASET_ID: 03b6a9cf-c31e-4279-b04f-105815932e39
-ROLE_USED: DBT_ROLE
-GENERATED_AT: 2025-07-31 23:02:41
-STATUS: FAILED
-*/
-
--- Uncomment and modify the following template when the table is available:
-/*
 with
-    source as (select * from {{ source("raw_domo", "OBSOLETE_ATLANTA_FIREFLY_DAILY_PRODUCTS_DIM") }})
+    source as (select * from {{ source("TEMP_ARGO_RAW", "OBSOLETE_ATLANTA_FIREFLY_DAILY_PRODUCTS_DIM") }})
 
 select
-    -- Add your columns here when table schema is available
-    *
+    "AMZ Brand" as amz_brand,
+    "AMZ CA Link" as amz_ca_link,
+    "AMZ UK Link" as amz_uk_link,
+    "AMZ US Link" as amz_us_link,
+    "ASIN" as asin,
+    "CA ASIN" as ca_asin,
+    "Category 1" as category_1,
+    "Category 2" as category_2,
+    "Category 3" as category_3,
+    "Expanded Units" as expanded_units,
+    "Height" as height,
+    "Length" as length,
+    "ProductKey" as productkey,
+    "RTI Link" as rti_link,
+    "Receiving Case Qty" as receiving_case_qty,
+    "Recom UPC Brand ID" as recom_upc_brand_id,
+    "Recom UPC Brand Name" as recom_upc_brand_name,
+    "Recom UPC Client ID" as recom_upc_client_id,
+    "Recom UPC Client Name" as recom_upc_client_name,
+    "Recom UPC ID" as recom_upc_id,
+    "SKU" as sku,
+    "SKU and Short Title" as sku_and_short_title,
+    "Short Title" as short_title,
+    "SubCategory 1" as subcategory_1,
+    "SubCategory 2" as subcategory_2,
+    "SubCategory 3" as subcategory_3,
+    "Title" as title,
+    "UK ASIN" as uk_asin,
+    "UPC" as upc,
+    "Vendor MPN" as vendor_mpn,
+    "VendorKey" as vendorkey,
+    "Weight" as weight,
+    "Width" as width,
+    "_BATCH_ID_" as _batch_id_,
+    "_BATCH_LAST_RUN_" as _batch_last_run_
 
 from source
-*/

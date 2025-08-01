@@ -1,32 +1,32 @@
--- ERROR: Could not retrieve columns for table DW_REPORTS.raw_domo.RAIDAR_AUDIT_TABLE using role: DBT_ROLE
--- 
--- This file could not be generated because the table schema could not be retrieved.
--- 
--- Possible causes:
--- 1. Table DW_REPORTS.raw_domo.RAIDAR_AUDIT_TABLE does not exist
--- 2. Insufficient permissions to access the table with role: DBT_ROLE
--- 3. Snowflake connection failed
--- 4. Warehouse not available or not specified
--- 5. Role DBT_ROLE does not have access to the table
--- 
--- Please verify the table exists and you have proper permissions with role: DBT_ROLE, then regenerate this file.
-
-/*
-TABLE: DW_REPORTS.raw_domo.RAIDAR_AUDIT_TABLE
-DATASET_ID: 0e748724-2530-41a5-b118-8c561b82ead0
-ROLE_USED: DBT_ROLE
-GENERATED_AT: 2025-07-31 23:02:42
-STATUS: FAILED
-*/
-
--- Uncomment and modify the following template when the table is available:
-/*
 with
-    source as (select * from {{ source("raw_domo", "RAIDAR_AUDIT_TABLE") }})
+    source as (select * from {{ source("TEMP_ARGO_RAW", "RAIDAR_AUDIT_TABLE") }})
 
 select
-    -- Add your columns here when table schema is available
-    *
+    "absolute_min_price" as absolute_min_price,
+    "allow_dpba" as allow_dpba,
+    "amazon_seller_id" as amazon_seller_id,
+    "asin" as asin,
+    "condition" as condition,
+    "country_id" as country_id,
+    "created_at" as created_at,
+    "created_by" as created_by,
+    "deleted_at" as deleted_at,
+    "deleted_by" as deleted_by,
+    "end_date" as end_date,
+    "enforce_cpt" as enforce_cpt,
+    "fulfillment_type" as fulfillment_type,
+    "id" as id,
+    "kick_start_amount" as kick_start_amount,
+    "list_price" as list_price,
+    "schedule_type" as schedule_type,
+    "sku" as sku,
+    "start_date" as start_date,
+    "strategy_id" as strategy_id,
+    "updated_at" as updated_at,
+    "updated_by" as updated_by,
+    "user_max_price" as user_max_price,
+    "vendor_credit" as vendor_credit,
+    "_BATCH_ID_" as _batch_id_,
+    "_BATCH_LAST_RUN_" as _batch_last_run_
 
 from source
-*/

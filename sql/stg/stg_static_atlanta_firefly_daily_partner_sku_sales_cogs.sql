@@ -1,32 +1,33 @@
--- ERROR: Could not retrieve columns for table DW_REPORTS.raw_domo.STATIC_ATLANTA_FIREFLY_DAILY_PARTNER_SKU_SALES_COGS using role: DBT_ROLE
--- 
--- This file could not be generated because the table schema could not be retrieved.
--- 
--- Possible causes:
--- 1. Table DW_REPORTS.raw_domo.STATIC_ATLANTA_FIREFLY_DAILY_PARTNER_SKU_SALES_COGS does not exist
--- 2. Insufficient permissions to access the table with role: DBT_ROLE
--- 3. Snowflake connection failed
--- 4. Warehouse not available or not specified
--- 5. Role DBT_ROLE does not have access to the table
--- 
--- Please verify the table exists and you have proper permissions with role: DBT_ROLE, then regenerate this file.
-
-/*
-TABLE: DW_REPORTS.raw_domo.STATIC_ATLANTA_FIREFLY_DAILY_PARTNER_SKU_SALES_COGS
-DATASET_ID: b61bdb3a-884f-4263-ae0c-3eb22a12c5d3
-ROLE_USED: DBT_ROLE
-GENERATED_AT: 2025-07-31 23:02:44
-STATUS: FAILED
-*/
-
--- Uncomment and modify the following template when the table is available:
-/*
 with
-    source as (select * from {{ source("raw_domo", "STATIC_ATLANTA_FIREFLY_DAILY_PARTNER_SKU_SALES_COGS") }})
+    source as (select * from {{ source("TEMP_ARGO_RAW", "STATIC_ATLANTA_FIREFLY_DAILY_PARTNER_SKU_SALES_COGS") }})
 
 select
-    -- Add your columns here when table schema is available
-    *
+    "ASIN" as asin,
+    "Calendar Date TY" as calendar_date_ty,
+    "Ext Ordered FBA COGS" as ext_ordered_fba_cogs,
+    "Ext Ordered FBA Commission" as ext_ordered_fba_commission,
+    "Ext Ordered FBA Fulfillment" as ext_ordered_fba_fulfillment,
+    "Ext Ordered FBA Sales" as ext_ordered_fba_sales,
+    "Ext Ordered FBA Units" as ext_ordered_fba_units,
+    "Ext Ordered NonFBA COGS" as ext_ordered_nonfba_cogs,
+    "Ext Ordered NonFBA Commission" as ext_ordered_nonfba_commission,
+    "Ext Ordered NonFBA Fulfillment" as ext_ordered_nonfba_fulfillment,
+    "Ext Ordered NonFBA Sales" as ext_ordered_nonfba_sales,
+    "Ext Ordered NonFBA Units" as ext_ordered_nonfba_units,
+    "Ext Shipped FBA COGS" as ext_shipped_fba_cogs,
+    "Ext Shipped FBA Commission" as ext_shipped_fba_commission,
+    "Ext Shipped FBA Fulfillment" as ext_shipped_fba_fulfillment,
+    "Ext Shipped FBA Sales" as ext_shipped_fba_sales,
+    "Ext Shipped FBA Units" as ext_shipped_fba_units,
+    "Ext Shipped NonFBA COGS" as ext_shipped_nonfba_cogs,
+    "Ext Shipped NonFBA Commission" as ext_shipped_nonfba_commission,
+    "Ext Shipped NonFBA Fulfillment" as ext_shipped_nonfba_fulfillment,
+    "Ext Shipped NonFBA Sales" as ext_shipped_nonfba_sales,
+    "Ext Shipped NonFBA Units" as ext_shipped_nonfba_units,
+    "Partner" as partner,
+    "PartnerSKUCalendarKey" as partnerskucalendarkey,
+    "SKU" as sku,
+    "_BATCH_ID_" as _batch_id_,
+    "_BATCH_LAST_RUN_" as _batch_last_run_
 
 from source
-*/

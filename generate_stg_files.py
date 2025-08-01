@@ -14,6 +14,7 @@ if __name__ == "__main__":
     DATABASE = "DW_REPORTS"  # Cambia por tu database
     SCHEMA = "TEMP_ARGO_RAW"      # Cambia por tu schema
     ROLE = "DBT_ROLE"        # Cambia por tu role
+    WAREHOUSE = "DBT_WH"      # Cambia por tu warehouse
     OUTPUT_DIR = "sql/stg/"  # Directorio donde guardar los archivos
     
     # ========================================
@@ -24,6 +25,7 @@ if __name__ == "__main__":
     print(f"📊 Database: {DATABASE}")
     print(f"📂 Schema: {SCHEMA}")
     print(f"👤 Role: {ROLE}")
+    print(f"🏠 Warehouse: {WAREHOUSE}")
     print(f"📁 Output: {OUTPUT_DIR}")
     print("=" * 50)
     
@@ -37,7 +39,8 @@ if __name__ == "__main__":
             database=DATABASE,
             schema=SCHEMA,
             output_dir=OUTPUT_DIR,
-            role=ROLE
+            role=ROLE,
+            warehouse=WAREHOUSE
         )
     else:
         print("❌ No data found to process.") 

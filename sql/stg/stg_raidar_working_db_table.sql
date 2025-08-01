@@ -1,32 +1,43 @@
--- ERROR: Could not retrieve columns for table DW_REPORTS.raw_domo.RAIDAR_WORKING_DB_TABLE using role: DBT_ROLE
--- 
--- This file could not be generated because the table schema could not be retrieved.
--- 
--- Possible causes:
--- 1. Table DW_REPORTS.raw_domo.RAIDAR_WORKING_DB_TABLE does not exist
--- 2. Insufficient permissions to access the table with role: DBT_ROLE
--- 3. Snowflake connection failed
--- 4. Warehouse not available or not specified
--- 5. Role DBT_ROLE does not have access to the table
--- 
--- Please verify the table exists and you have proper permissions with role: DBT_ROLE, then regenerate this file.
-
-/*
-TABLE: DW_REPORTS.raw_domo.RAIDAR_WORKING_DB_TABLE
-DATASET_ID: 5ea29fb3-eec3-4161-a2d4-63a05dd816dc
-ROLE_USED: DBT_ROLE
-GENERATED_AT: 2025-07-31 23:02:43
-STATUS: FAILED
-*/
-
--- Uncomment and modify the following template when the table is available:
-/*
 with
-    source as (select * from {{ source("raw_domo", "RAIDAR_WORKING_DB_TABLE") }})
+    source as (select * from {{ source("TEMP_ARGO_RAW", "RAIDAR_WORKING_DB_TABLE") }})
 
 select
-    -- Add your columns here when table schema is available
-    *
+    "country_id" as country_id,
+    "amazon_seller_id" as amazon_seller_id,
+    "strategy_id" as strategy_id,
+    "condition" as condition,
+    "absolute_min_price" as absolute_min_price,
+    "allow_dpba" as allow_dpba,
+    "alpha_price" as alpha_price,
+    "bravo_price" as bravo_price,
+    "delta_price" as delta_price,
+    "charlie_price" as charlie_price,
+    "echo_price" as echo_price,
+    "asin" as asin,
+    "sku" as sku,
+    "competitive_price_threshold" as competitive_price_threshold,
+    "enforce_cpt" as enforce_cpt,
+    "fulfillment_type" as fulfillment_type,
+    "kick_start_amount" as kick_start_amount,
+    "id" as id,
+    "created_at" as created_at,
+    "updated_at" as updated_at,
+    "vendor_credit" as vendor_credit,
+    "user_max_price" as user_max_price,
+    "schedule_type" as schedule_type,
+    "last_price_change_datetime" as last_price_change_datetime,
+    "updated_by" as updated_by,
+    "created_by" as created_by,
+    "deleted_at" as deleted_at,
+    "deleted_by" as deleted_by,
+    "list_price" as list_price,
+    "buybox_price" as buybox_price,
+    "our_best_alpha_price" as our_best_alpha_price,
+    "last_calculated_price" as last_calculated_price,
+    "last_calculated_price_time" as last_calculated_price_time,
+    "audit_id" as audit_id,
+    "has_dpba" as has_dpba,
+    "_BATCH_ID_" as _batch_id_,
+    "_BATCH_LAST_RUN_" as _batch_last_run_
 
 from source
-*/

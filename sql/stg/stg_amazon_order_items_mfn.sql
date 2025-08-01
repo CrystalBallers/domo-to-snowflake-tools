@@ -1,32 +1,52 @@
--- ERROR: Could not retrieve columns for table DW_REPORTS.raw_domo.AMAZON_ORDER_ITEMS_MFN using role: DBT_ROLE
--- 
--- This file could not be generated because the table schema could not be retrieved.
--- 
--- Possible causes:
--- 1. Table DW_REPORTS.raw_domo.AMAZON_ORDER_ITEMS_MFN does not exist
--- 2. Insufficient permissions to access the table with role: DBT_ROLE
--- 3. Snowflake connection failed
--- 4. Warehouse not available or not specified
--- 5. Role DBT_ROLE does not have access to the table
--- 
--- Please verify the table exists and you have proper permissions with role: DBT_ROLE, then regenerate this file.
-
-/*
-TABLE: DW_REPORTS.raw_domo.AMAZON_ORDER_ITEMS_MFN
-DATASET_ID: 11fc487e-fbd5-49c1-b635-c96a562f02d4
-ROLE_USED: DBT_ROLE
-GENERATED_AT: 2025-07-31 23:02:29
-STATUS: FAILED
-*/
-
--- Uncomment and modify the following template when the table is available:
-/*
 with
-    source as (select * from {{ source("raw_domo", "AMAZON_ORDER_ITEMS_MFN") }})
+    source as (select * from {{ source("TEMP_ARGO_RAW", "AMAZON_ORDER_ITEMS_MFN") }})
 
 select
-    -- Add your columns here when table schema is available
-    *
+    "asin" as asin,
+    "currency" as currency,
+    "id" as id,
+    "purchase_date" as purchase_date,
+    "quantity" as quantity,
+    "sku" as sku,
+    "url" as url,
+    "created_at" as created_at,
+    "amazon_order_id" as amazon_order_id,
+    "amazon_seller_id" as amazon_seller_id,
+    "expanded_units" as expanded_units,
+    "fulfillment_channel" as fulfillment_channel,
+    "gift_wrap_price" as gift_wrap_price,
+    "gift_wrap_tax" as gift_wrap_tax,
+    "is_business_order" as is_business_order,
+    "postal_code_id" as postal_code_id,
+    "is_buyer_requested_cancellation" as is_buyer_requested_cancellation,
+    "is_iba" as is_iba,
+    "price_designation" as price_designation,
+    "is_sold_by_ab" as is_sold_by_ab,
+    "item_price" as item_price,
+    "item_promotion_discount" as item_promotion_discount,
+    "order_channel" as order_channel,
+    "item_status" as item_status,
+    "product_id" as product_id,
+    "old_product_id" as old_product_id,
+    "merchant_order_id" as merchant_order_id,
+    "order_status" as order_status,
+    "product_name" as product_name,
+    "item_tax" as item_tax,
+    "last_updated_date" as last_updated_date,
+    "number_of_items" as number_of_items,
+    "promotion_ids" as promotion_ids,
+    "purchase_order_number" as purchase_order_number,
+    "sales_channel" as sales_channel,
+    "ship_city" as ship_city,
+    "ship_country" as ship_country,
+    "ship_postal_code" as ship_postal_code,
+    "ship_promotion_discount" as ship_promotion_discount,
+    "ship_service_level" as ship_service_level,
+    "ship_state" as ship_state,
+    "shipping_price" as shipping_price,
+    "shipping_tax" as shipping_tax,
+    "updated_at" as updated_at,
+    "_BATCH_ID_" as _batch_id_,
+    "_BATCH_LAST_RUN_" as _batch_last_run_
 
 from source
-*/

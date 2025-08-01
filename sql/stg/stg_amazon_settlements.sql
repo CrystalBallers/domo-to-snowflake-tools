@@ -1,32 +1,18 @@
--- ERROR: Could not retrieve columns for table DW_REPORTS.raw_domo.AMAZON_SETTLEMENTS using role: DBT_ROLE
--- 
--- This file could not be generated because the table schema could not be retrieved.
--- 
--- Possible causes:
--- 1. Table DW_REPORTS.raw_domo.AMAZON_SETTLEMENTS does not exist
--- 2. Insufficient permissions to access the table with role: DBT_ROLE
--- 3. Snowflake connection failed
--- 4. Warehouse not available or not specified
--- 5. Role DBT_ROLE does not have access to the table
--- 
--- Please verify the table exists and you have proper permissions with role: DBT_ROLE, then regenerate this file.
-
-/*
-TABLE: DW_REPORTS.raw_domo.AMAZON_SETTLEMENTS
-DATASET_ID: cb6672ff-5ff7-442d-b769-2552369b014a
-ROLE_USED: DBT_ROLE
-GENERATED_AT: 2025-07-31 23:02:31
-STATUS: FAILED
-*/
-
--- Uncomment and modify the following template when the table is available:
-/*
 with
-    source as (select * from {{ source("raw_domo", "AMAZON_SETTLEMENTS") }})
+    source as (select * from {{ source("TEMP_ARGO_RAW", "AMAZON_SETTLEMENTS") }})
 
 select
-    -- Add your columns here when table schema is available
-    *
+    "amazon_seller_id" as amazon_seller_id,
+    "created_at" as created_at,
+    "currency" as currency,
+    "deposit_date" as deposit_date,
+    "id" as id,
+    "settlement_end_date" as settlement_end_date,
+    "settlement_id" as settlement_id,
+    "settlement_start_date" as settlement_start_date,
+    "total_amount" as total_amount,
+    "updated_at" as updated_at,
+    "_BATCH_ID_" as _batch_id_,
+    "_BATCH_LAST_RUN_" as _batch_last_run_
 
 from source
-*/

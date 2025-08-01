@@ -1,32 +1,27 @@
--- ERROR: Could not retrieve columns for table DW_REPORTS.raw_domo.AMAZON_FBA_LONGTERM_STORAGE_FEE_CHARGES using role: DBT_ROLE
--- 
--- This file could not be generated because the table schema could not be retrieved.
--- 
--- Possible causes:
--- 1. Table DW_REPORTS.raw_domo.AMAZON_FBA_LONGTERM_STORAGE_FEE_CHARGES does not exist
--- 2. Insufficient permissions to access the table with role: DBT_ROLE
--- 3. Snowflake connection failed
--- 4. Warehouse not available or not specified
--- 5. Role DBT_ROLE does not have access to the table
--- 
--- Please verify the table exists and you have proper permissions with role: DBT_ROLE, then regenerate this file.
-
-/*
-TABLE: DW_REPORTS.raw_domo.AMAZON_FBA_LONGTERM_STORAGE_FEE_CHARGES
-DATASET_ID: 62cf28f4-3c5c-4e86-9d33-43a9347450dc
-ROLE_USED: DBT_ROLE
-GENERATED_AT: 2025-07-31 23:02:25
-STATUS: FAILED
-*/
-
--- Uncomment and modify the following template when the table is available:
-/*
 with
-    source as (select * from {{ source("raw_domo", "AMAZON_FBA_LONGTERM_STORAGE_FEE_CHARGES") }})
+    source as (select * from {{ source("TEMP_ARGO_RAW", "AMAZON_FBA_LONGTERM_STORAGE_FEE_CHARGES") }})
 
 select
-    -- Add your columns here when table schema is available
-    *
+    "amazon_seller_id" as amazon_seller_id,
+    "amount_charged" as amount_charged,
+    "asin" as asin,
+    "condition" as condition,
+    "country" as country,
+    "created_at" as created_at,
+    "currency" as currency,
+    "fnsku" as fnsku,
+    "id" as id,
+    "marketplace_id" as marketplace_id,
+    "per_unit_volume" as per_unit_volume,
+    "product_name" as product_name,
+    "qty_charged" as qty_charged,
+    "rate_surcharge" as rate_surcharge,
+    "sku" as sku,
+    "snapshot_date" as snapshot_date,
+    "surcharge_age_tier" as surcharge_age_tier,
+    "updated_at" as updated_at,
+    "volume_unit" as volume_unit,
+    "_BATCH_ID_" as _batch_id_,
+    "_BATCH_LAST_RUN_" as _batch_last_run_
 
 from source
-*/

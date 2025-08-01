@@ -1,32 +1,10 @@
--- ERROR: Could not retrieve columns for table DW_REPORTS.raw_domo.EXCLUDE_FROM_NS_VID_OFFERSXLSX using role: DBT_ROLE
--- 
--- This file could not be generated because the table schema could not be retrieved.
--- 
--- Possible causes:
--- 1. Table DW_REPORTS.raw_domo.EXCLUDE_FROM_NS_VID_OFFERSXLSX does not exist
--- 2. Insufficient permissions to access the table with role: DBT_ROLE
--- 3. Snowflake connection failed
--- 4. Warehouse not available or not specified
--- 5. Role DBT_ROLE does not have access to the table
--- 
--- Please verify the table exists and you have proper permissions with role: DBT_ROLE, then regenerate this file.
-
-/*
-TABLE: DW_REPORTS.raw_domo.EXCLUDE_FROM_NS_VID_OFFERSXLSX
-DATASET_ID: 99f5123f-075b-4d2a-9d5c-e0b2f6050b00
-ROLE_USED: DBT_ROLE
-GENERATED_AT: 2025-07-31 23:02:35
-STATUS: FAILED
-*/
-
--- Uncomment and modify the following template when the table is available:
-/*
 with
-    source as (select * from {{ source("raw_domo", "EXCLUDE_FROM_NS_VID_OFFERSXLSX") }})
+    source as (select * from {{ source("TEMP_ARGO_RAW", "EXCLUDE_FROM_NS_VID_OFFERSXLSX") }})
 
 select
-    -- Add your columns here when table schema is available
-    *
+    "amazon_seller_id" as amazon_seller_id,
+    "country_id" as country_id,
+    "msku" as msku,
+    "Exclude" as exclude
 
 from source
-*/

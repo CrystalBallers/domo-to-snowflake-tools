@@ -1,32 +1,34 @@
--- ERROR: Could not retrieve columns for table DW_REPORTS.raw_domo.AMAZON_INBOUND_SHIPMENT_ITEMS using role: DBT_ROLE
--- 
--- This file could not be generated because the table schema could not be retrieved.
--- 
--- Possible causes:
--- 1. Table DW_REPORTS.raw_domo.AMAZON_INBOUND_SHIPMENT_ITEMS does not exist
--- 2. Insufficient permissions to access the table with role: DBT_ROLE
--- 3. Snowflake connection failed
--- 4. Warehouse not available or not specified
--- 5. Role DBT_ROLE does not have access to the table
--- 
--- Please verify the table exists and you have proper permissions with role: DBT_ROLE, then regenerate this file.
-
-/*
-TABLE: DW_REPORTS.raw_domo.AMAZON_INBOUND_SHIPMENT_ITEMS
-DATASET_ID: be21639f-7d3b-4ba4-81e1-0f7d2be8e981
-ROLE_USED: DBT_ROLE
-GENERATED_AT: 2025-07-31 23:02:28
-STATUS: FAILED
-*/
-
--- Uncomment and modify the following template when the table is available:
-/*
 with
-    source as (select * from {{ source("raw_domo", "AMAZON_INBOUND_SHIPMENT_ITEMS") }})
+    source as (select * from {{ source("TEMP_ARGO_RAW", "AMAZON_INBOUND_SHIPMENT_ITEMS") }})
 
 select
-    -- Add your columns here when table schema is available
-    *
+    "id" as id,
+    "shipment_id" as shipment_id,
+    "shipment_name" as shipment_name,
+    "destination_fulfillment_center_id" as destination_fulfillment_center_id,
+    "label_prep_type" as label_prep_type,
+    "shipment_status" as shipment_status,
+    "are_cases_required" as are_cases_required,
+    "confirmed_need_by_date" as confirmed_need_by_date,
+    "box_contents_source" as box_contents_source,
+    "box_content_total_units" as box_content_total_units,
+    "box_content_fee_per_unit" as box_content_fee_per_unit,
+    "box_content_total_fee" as box_content_total_fee,
+    "amazon_seller_id" as amazon_seller_id,
+    "created_at" as created_at,
+    "updated_at" as updated_at,
+    "active" as active,
+    "shipment_address_id" as shipment_address_id,
+    "closed_at" as closed_at,
+    "seller_sku" as seller_sku,
+    "fulfillment_network_sku" as fulfillment_network_sku,
+    "quantity_shipped" as quantity_shipped,
+    "quantity_received" as quantity_received,
+    "quantity_in_case" as quantity_in_case,
+    "prep_details" as prep_details,
+    "release_date" as release_date,
+    "product_id" as product_id,
+    "_BATCH_ID_" as _batch_id_,
+    "_BATCH_LAST_RUN_" as _batch_last_run_
 
 from source
-*/

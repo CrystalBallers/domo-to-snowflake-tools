@@ -1,32 +1,36 @@
--- ERROR: Could not retrieve columns for table DW_REPORTS.raw_domo.AMAZON_HIGH_RETURN_RATE_FEES using role: DBT_ROLE
--- 
--- This file could not be generated because the table schema could not be retrieved.
--- 
--- Possible causes:
--- 1. Table DW_REPORTS.raw_domo.AMAZON_HIGH_RETURN_RATE_FEES does not exist
--- 2. Insufficient permissions to access the table with role: DBT_ROLE
--- 3. Snowflake connection failed
--- 4. Warehouse not available or not specified
--- 5. Role DBT_ROLE does not have access to the table
--- 
--- Please verify the table exists and you have proper permissions with role: DBT_ROLE, then regenerate this file.
-
-/*
-TABLE: DW_REPORTS.raw_domo.AMAZON_HIGH_RETURN_RATE_FEES
-DATASET_ID: 43858d3f-0595-415b-bfb5-e059fb5a256d
-ROLE_USED: DBT_ROLE
-GENERATED_AT: 2025-07-31 23:02:27
-STATUS: FAILED
-*/
-
--- Uncomment and modify the following template when the table is available:
-/*
 with
-    source as (select * from {{ source("raw_domo", "AMAZON_HIGH_RETURN_RATE_FEES") }})
+    source as (select * from {{ source("TEMP_ARGO_RAW", "AMAZON_HIGH_RETURN_RATE_FEES") }})
 
 select
-    -- Add your columns here when table schema is available
-    *
+    "id" as id,
+    "created_at" as created_at,
+    "updated_at" as updated_at,
+    "amazon_seller_id" as amazon_seller_id,
+    "asin" as asin,
+    "asin_fee_category" as asin_fee_category,
+    "fnsku" as fnsku,
+    "product_name" as product_name,
+    "longest_side" as longest_side,
+    "median_side" as median_side,
+    "shortest_side" as shortest_side,
+    "measurement_units" as measurement_units,
+    "unit_weight" as unit_weight,
+    "dimensional_weight" as dimensional_weight,
+    "shipping_weight" as shipping_weight,
+    "weight_units" as weight_units,
+    "sku_sizetier" as sku_sizetier,
+    "month_of_shipment" as month_of_shipment,
+    "asin_shipped_units" as asin_shipped_units,
+    "asin_return_threshold_percent" as asin_return_threshold_percent,
+    "asin_return_threshold_units" as asin_return_threshold_units,
+    "asin_returned_units" as asin_returned_units,
+    "sku_returned_units_NSP_exempted" as sku_returned_units_nsp_exempted,
+    "sku_returned_units_charged" as sku_returned_units_charged,
+    "sku_fee_per_unit" as sku_fee_per_unit,
+    "sku_returns_fee" as sku_returns_fee,
+    "month_of_charge" as month_of_charge,
+    "currency" as currency,
+    "_BATCH_ID_" as _batch_id_,
+    "_BATCH_LAST_RUN_" as _batch_last_run_
 
 from source
-*/

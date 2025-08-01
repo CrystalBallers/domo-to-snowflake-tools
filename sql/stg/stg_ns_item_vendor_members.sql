@@ -1,32 +1,25 @@
--- ERROR: Could not retrieve columns for table DW_REPORTS.raw_domo.NS_ITEM_VENDOR_MEMBERS using role: DBT_ROLE
--- 
--- This file could not be generated because the table schema could not be retrieved.
--- 
--- Possible causes:
--- 1. Table DW_REPORTS.raw_domo.NS_ITEM_VENDOR_MEMBERS does not exist
--- 2. Insufficient permissions to access the table with role: DBT_ROLE
--- 3. Snowflake connection failed
--- 4. Warehouse not available or not specified
--- 5. Role DBT_ROLE does not have access to the table
--- 
--- Please verify the table exists and you have proper permissions with role: DBT_ROLE, then regenerate this file.
-
-/*
-TABLE: DW_REPORTS.raw_domo.NS_ITEM_VENDOR_MEMBERS
-DATASET_ID: 4eb515c9-6d8f-4143-b117-ec6b25ed97d0
-ROLE_USED: DBT_ROLE
-GENERATED_AT: 2025-07-31 23:02:39
-STATUS: FAILED
-*/
-
--- Uncomment and modify the following template when the table is available:
-/*
 with
-    source as (select * from {{ source("raw_domo", "NS_ITEM_VENDOR_MEMBERS") }})
+    source as (select * from {{ source("TEMP_ARGO_RAW", "NS_ITEM_VENDOR_MEMBERS") }})
 
 select
-    -- Add your columns here when table schema is available
-    *
+    "Type" as type,
+    "Internal ID" as internal_id,
+    "Name" as name,
+    "Display Name" as display_name,
+    "Vendor" as vendor,
+    "Vendor Price (Entered)" as vendor_price_entered,
+    "Vendor Price Currency" as vendor_price_currency,
+    "Member Item : Internal ID" as member_item__internal_id,
+    "Member Item" as member_item,
+    "Member Quantity" as member_quantity,
+    "Member Item : Vendor" as member_item__vendor,
+    "Member Item : Vendor Price (Entered)" as member_item__vendor_price_entered,
+    "Member Item : Vendor Price Currency" as member_item__vendor_price_currency,
+    "Vendor : Internal ID" as vendor__internal_id,
+    "Vendor: ID" as vendor_id,
+    "Vendor : Name" as vendor__name,
+    "id" as id,
+    "_BATCH_ID_" as _batch_id_,
+    "_BATCH_LAST_RUN_" as _batch_last_run_
 
 from source
-*/

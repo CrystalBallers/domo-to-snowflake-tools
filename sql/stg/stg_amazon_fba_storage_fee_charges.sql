@@ -1,32 +1,45 @@
--- ERROR: Could not retrieve columns for table DW_REPORTS.raw_domo.AMAZON_FBA_STORAGE_FEE_CHARGES using role: DBT_ROLE
--- 
--- This file could not be generated because the table schema could not be retrieved.
--- 
--- Possible causes:
--- 1. Table DW_REPORTS.raw_domo.AMAZON_FBA_STORAGE_FEE_CHARGES does not exist
--- 2. Insufficient permissions to access the table with role: DBT_ROLE
--- 3. Snowflake connection failed
--- 4. Warehouse not available or not specified
--- 5. Role DBT_ROLE does not have access to the table
--- 
--- Please verify the table exists and you have proper permissions with role: DBT_ROLE, then regenerate this file.
-
-/*
-TABLE: DW_REPORTS.raw_domo.AMAZON_FBA_STORAGE_FEE_CHARGES
-DATASET_ID: e9e5dae3-16ff-4e08-8b23-9cde379eeb31
-ROLE_USED: DBT_ROLE
-GENERATED_AT: 2025-07-31 23:02:26
-STATUS: FAILED
-*/
-
--- Uncomment and modify the following template when the table is available:
-/*
 with
-    source as (select * from {{ source("raw_domo", "AMAZON_FBA_STORAGE_FEE_CHARGES") }})
+    source as (select * from {{ source("TEMP_ARGO_RAW", "AMAZON_FBA_STORAGE_FEE_CHARGES") }})
 
 select
-    -- Add your columns here when table schema is available
-    *
+    "id" as id,
+    "created_at" as created_at,
+    "updated_at" as updated_at,
+    "amazon_seller_id" as amazon_seller_id,
+    "marketplace_id" as marketplace_id,
+    "asin" as asin,
+    "fnsku" as fnsku,
+    "product_name" as product_name,
+    "fulfillment_center" as fulfillment_center,
+    "country_code" as country_code,
+    "longest_side" as longest_side,
+    "median_side" as median_side,
+    "shortest_side" as shortest_side,
+    "measurement_units" as measurement_units,
+    "weight" as weight,
+    "weight_units" as weight_units,
+    "item_volume" as item_volume,
+    "volume_units" as volume_units,
+    "product_size_tier" as product_size_tier,
+    "average_quantity_on_hand" as average_quantity_on_hand,
+    "average_quantity_pending_removal" as average_quantity_pending_removal,
+    "estimated_total_item_volume" as estimated_total_item_volume,
+    "month_of_charge" as month_of_charge,
+    "storage_utilization_ratio" as storage_utilization_ratio,
+    "storage_utilization_ratio_units" as storage_utilization_ratio_units,
+    "base_rate" as base_rate,
+    "utilization_surcharge_rate" as utilization_surcharge_rate,
+    "currency" as currency,
+    "estimated_monthly_storage_fee" as estimated_monthly_storage_fee,
+    "dangerous_goods_storage_type" as dangerous_goods_storage_type,
+    "eligible_for_inventory_discount" as eligible_for_inventory_discount,
+    "qualifies_for_inventory_discount" as qualifies_for_inventory_discount,
+    "total_incentive_fee_amount" as total_incentive_fee_amount,
+    "breakdown_incentive_fee_amount" as breakdown_incentive_fee_amount,
+    "average_quantity_customer_orders" as average_quantity_customer_orders,
+    "storage_rate" as storage_rate,
+    "is_last_month_of_charge" as is_last_month_of_charge,
+    "_BATCH_ID_" as _batch_id_,
+    "_BATCH_LAST_RUN_" as _batch_last_run_
 
 from source
-*/
