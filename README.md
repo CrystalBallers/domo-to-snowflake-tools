@@ -2,8 +2,67 @@
 
 A comprehensive suite of tools for migrating data from Domo to Snowflake, with additional functionalities for managing inventories from Google Sheets.
 
+## ⚡ Quick Start
+
+### **1. Installation & Setup**
+```bash
+# Clone the repository
+git clone <repository-url>
+cd Domo-to-snowflake-migration
+
+# Create virtual environment (recommended)
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### **2. Configuration**
+Create a `.env` file with your credentials:
+```bash
+# Copy example file
+cp .env.example .env
+
+# Edit with your actual credentials
+nano .env  # or your preferred editor
+```
+
+**Required environment variables:**
+- `GOOGLE_SHEETS_CREDENTIALS_FILE` - Path to your service account JSON
+- `DOMO_DEVELOPER_TOKEN` - Your Domo API token
+- `DOMO_INSTANCE` - Your Domo instance name
+- `SNOWFLAKE_*` - Your Snowflake connection details
+
+### **3. Test Everything Works**
+```bash
+# Test Google Sheets connection
+python main.py inventory --test-connection
+
+# Test Domo and Snowflake connections  
+python main.py migrate --test-connection
+
+# Check project health
+python tools/scripts/project_maintenance.py check
+```
+
+### **4. Your First Migration**
+```bash
+# Export inventory from Google Sheets to SQL files
+python main.py inventory --export-dir results/sql/translated
+
+# Migrate a single dataset (test)
+python main.py migrate --dataset-id YOUR_DATASET_ID --target-table test_table
+
+# Migrate from Google Sheets (production)
+python main.py migrate --from-spreadsheet
+```
+
+**🎯 That's it!** Check [Usage Examples](#-usage-examples) below for more detailed workflows.
+
 ## 📋 Table of Contents
 
+- [Quick Start](#-quick-start)
 - [Features](#-features)
 - [Prerequisites](#-prerequisites)
 - [Installation](#-installation)
@@ -12,6 +71,7 @@ A comprehensive suite of tools for migrating data from Domo to Snowflake, with a
 - [Available Commands](#-available-commands)
 - [Usage Examples](#-usage-examples)
 - [Project Structure](#-project-structure)
+- [Documentation](#-documentation)
 - [Troubleshooting](#-troubleshooting)
 - [Contributing](#-contributing)
 
@@ -108,7 +168,7 @@ SNOWFLAKE_SCHEMA=your_schema
 SNOWFLAKE_ROLE=your_role_name  # Optional: Role to assume (e.g., ANALYST, DEVELOPER)
 
 # Optional
-EXPORT_DIR=exported_sql  # Default directory for SQL exports
+EXPORT_DIR=results/sql/translated  # Default directory for SQL exports
 DOMO_TABLE_PREFIX=DOMO_  # Prefix for Snowflake table names (set to empty string to disable)
 ```
 
@@ -179,7 +239,7 @@ python main.py inventory [options]
 ```
 
 **Options:**
-- `--export-dir`: Directory to save SQL files (default: `exported_sql`)
+- `--export-dir`: Directory to save SQL files (default: `results/sql/translated`)
 - `--credentials`: Path to Google Sheets credentials file
 - `--test-connection`: Test connection and show preview
 
@@ -222,7 +282,7 @@ python main.py datasets [options]
 
 Examples:
     # Export inventory dataflows to SQL
-    python main.py inventory --export-dir exported_sql
+    python main.py inventory --export-dir results/sql/translated
     
     # Test Google Sheets connection
     python main.py inventory --test-connection
@@ -295,8 +355,30 @@ Domo-to-snowflake-migration/
 │       ├── domo.py            # Domo API client
 │       ├── snowflake.py       # Snowflake client
 │       └── gsheets.py         # Google Sheets client
-└── exported_sql/              # Output directory (created automatically)
+└── results/sql/translated/     # Output directory (created automatically)
 ```
+
+## 📚 Documentation
+
+Our documentation is organized by audience and complexity:
+
+### **📖 For All Users**
+- **[README.md](README.md)** (this file) - Main documentation with quick start and essential usage
+- **[Usage Examples](#-usage-examples)** - Common use cases and workflows
+
+### **🤖 For Advanced Users**
+- **[Advanced Automation](docs/AUTOMATION.md)** - CI/CD integration, cron jobs, monitoring
+- **[Quick Reference](docs/QUICK_REFERENCE.md)** - Power user commands and productivity tips
+
+### **👨‍💻 For Developers**
+- **[Contributing Guide](docs/CONTRIBUTING.md)** - Development standards, coding conventions, testing
+- **[Project Structure](#-project-structure)** - Understanding the codebase organization
+
+### **🆘 For Troubleshooting**
+- **[Troubleshooting](#-troubleshooting)** - Common issues and solutions
+- **[Configuration](#-configuration)** - Environment setup and credentials
+
+**💡 Tip:** Start with the Quick Start section above, then dive into specific documentation as needed.
 
 ## 🔧 Advanced Configuration
 
@@ -470,7 +552,7 @@ The inventory command generates:
    Total dataflows: 25
    ✅ Real translations: 5
    ⚠️  Placeholder files: 20
-   📁 Output directory: /path/to/exported_sql
+   📁 Output directory: /path/to/results/sql/translated
 ```
 
 ### Migration Results

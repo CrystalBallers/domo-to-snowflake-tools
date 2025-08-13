@@ -444,8 +444,8 @@ def migrate_from_spreadsheet(spreadsheet_id: str, sheet_name: str = "Migration",
                 dataset_id_column = col
                 break
         
-        # Look for Name column
-        possible_name_columns = ['Name', 'name', 'Dataset Name', 'dataset_name', 'Title', 'title']
+        # Look for Name column (prefer 'Model Name' if available to use as Snowflake table base)
+        possible_name_columns = ['Model Name', 'model_name']
         for col in possible_name_columns:
             if col in df.columns:
                 name_column = col
@@ -511,7 +511,8 @@ def migrate_from_spreadsheet(spreadsheet_id: str, sheet_name: str = "Migration",
                 logger.info(f"🔄 Migrating dataset {dataset_id} ({dataset_name})")
                 
                 try:
-                    # Generate target table name
+                    # Generate target table name using the dataset_name resolved above.
+                    # With the change above, if the sheet contains 'Model Name', it will be used here.
                     target_table = sanitize_table_name(dataset_id, dataset_name)
                     
                     # Migrate the dataset

@@ -52,7 +52,7 @@ def get_stg_files_data():
         return pd.DataFrame()
 
 
-def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, schema: str = "raw_domo", output_dir: str = "sql/stg/", role: str = "DBT_ROLE", warehouse: str = None):
+def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, schema: str = "TEMP_ARGO_RAW", output_dir: str = "sql/stg/", role: str = "DBT_ROLE", warehouse: str = None):
     """
     Iterates through each row of the DataFrame and generates staging SQL files.
     Gets real column names from Snowflake for each table.

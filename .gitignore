@@ -91,5 +91,18 @@ exported_sql/
 !schema.sql
 !migrations/*.sql
 
+# Results directory - generated outputs
+results/
 
+# Comparison reports
 comparison_detailed_report_*
+comparison_report_*
+stg_*
+int_*
+
+# Lineage data
+lineage_data/
+lineage.json
+
+# Large CSV files
+dataflows_encontrados*.csv

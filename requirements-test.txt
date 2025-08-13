@@ -1,0 +1,60 @@
+# Testing dependencies for Domo to Snowflake Migration Tools
+# Install with: pip install -r requirements-test.txt
+
+# Core testing framework
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-mock>=3.10.0
+pytest-xdist>=3.0.0
+pytest-timeout>=2.1.0
+
+# Test utilities
+mock>=4.0.0
+responses>=0.20.0
+freezegun>=1.2.0
+factory-boy>=3.2.0
+
+# Data testing
+pandas>=1.5.0
+polars>=0.19.0
+
+# Coverage reporting
+coverage>=7.0.0
+
+# Code quality and linting (for test development)
+flake8>=5.0.0
+black>=22.0.0
+isort>=5.10.0
+
+# Documentation testing
+sphinx>=5.0.0
+docutils>=0.17.0
+
+# Performance testing
+pytest-benchmark>=4.0.0
+
+# Parallel testing
+pytest-parallel>=0.1.0
+
+# HTML reporting
+pytest-html>=3.1.0
+
+# Environment management for tests
+python-dotenv>=0.19.0
+
+# Mock external services
+requests-mock>=1.9.0
+moto>=4.0.0
+
+# Database testing utilities
+sqlalchemy>=1.4.0
+
+# Google Sheets testing
+google-api-python-client>=2.0.0
+google-auth>=2.0.0
+
+# Snowflake testing
+snowflake-connector-python>=3.0.0
+
+# Optional: For testing with real services (development only)
+# pydomo>=0.4.0  # Uncomment for full Domo API testing

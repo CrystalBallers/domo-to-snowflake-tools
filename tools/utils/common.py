@@ -203,6 +203,14 @@ def get_env_config() -> Dict[str, Optional[str]]:
         'DOMO_CLIENT_ID': os.getenv('DOMO_CLIENT_ID'),
         'DOMO_CLIENT_SECRET': os.getenv('DOMO_CLIENT_SECRET'),
         'DOMO_TABLE_PREFIX': os.getenv('DOMO_TABLE_PREFIX', 'DOMO_'),
+        
+        # Google Sheets configuration
+        'GOOGLE_SHEETS_CREDENTIALS_FILE': os.getenv('GOOGLE_SHEETS_CREDENTIALS_FILE'),
+        'MIGRATION_SPREADSHEET_ID': os.getenv('MIGRATION_SPREADSHEET_ID'),
+        'COMPARISON_SPREADSHEET_ID': os.getenv('COMPARISON_SPREADSHEET_ID'),
+        'MIGRATION_SHEET_NAME': os.getenv('MIGRATION_SHEET_NAME', 'Migration'),
+        'COMPARISON_SHEET_NAME': os.getenv('COMPARISON_SHEET_NAME', 'QA - Test'),
+        'INTERMEDIATE_MODELS_SHEET_NAME': os.getenv('INTERMEDIATE_MODELS_SHEET_NAME', 'Inventory'),
     }
 
 

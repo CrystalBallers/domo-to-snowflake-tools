@@ -9,10 +9,10 @@ Dependencies:
     pip install google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2 pandas
 
 Usage:
-    python inventory_exporter.py --export-dir exported_sql
+    python inventory_exporter.py --export-dir results/sql/translated
     
     Or set environment variable:
-    export EXPORT_DIR=exported_sql
+    export EXPORT_DIR=results/sql/translated
     python inventory_exporter.py
 """
 
@@ -41,7 +41,7 @@ logger = logging.getLogger(__name__)
 
 # Google Sheets configuration
 SPREADSHEET_ID = os.getenv("MIGRATION_SPREADSHEET_ID", "1Y_CpIXW9RCxnlwwvP-tAL5B9UmvQlgu6DbpEnHgSgVA")
-INVENTORY_SHEET_NAME = os.getenv("INVENTORY_SHEET_NAME", "Inventory")
+INVENTORY_SHEET_NAME = os.getenv("INTERMEDIATE_MODELS_SHEET_NAME", "Inventory")
 DATAFLOW_COLUMN_NAME = "Dataflow ID"
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly']
 
@@ -408,7 +408,7 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    python inventory_exporter.py --export-dir exported_sql
+    python inventory_exporter.py --export-dir results/sql/translated
     python inventory_exporter.py --export-dir /path/to/output --credentials /path/to/creds.json
     
 Environment Variables:
@@ -419,8 +419,8 @@ Environment Variables:
     
     parser.add_argument(
         "--export-dir",
-        default=os.getenv("EXPORT_DIR", "exported_sql"),
-        help="Directory to save SQL files (default: exported_sql)"
+        default=os.getenv("EXPORT_DIR", "results/sql/translated"),
+        help="Directory to save SQL files (default: results/sql/translated)"
     )
     
     parser.add_argument(

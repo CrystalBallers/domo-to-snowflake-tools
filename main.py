@@ -471,10 +471,15 @@ def handle_compare_from_spreadsheet(args) -> int:
     """
     logger.info("🚀 Starting spreadsheet-based comparisons...")
     
+    # Get spreadsheet ID from args or environment
+    from tools.utils.common import get_env_config
+    env_config = get_env_config()
+    spreadsheet_id = args.spreadsheet_id or env_config.get("MIGRATION_SPREADSHEET_ID")
+    
     # Validate spreadsheet arguments
-    if not args.spreadsheet_id:
+    if not spreadsheet_id:
         logger.error("❌ Spreadsheet ID is required for spreadsheet-based comparisons")
-        logger.error("Set COMPARISON_SPREADSHEET_ID environment variable or use --spreadsheet-id")
+        logger.error("Set MIGRATION_SPREADSHEET_ID environment variable or use --spreadsheet-id")
         return 1
     
     try:
@@ -483,7 +488,7 @@ def handle_compare_from_spreadsheet(args) -> int:
         
         # Run comparisons from spreadsheet
         results = comparator.compare_from_spreadsheet(
-            spreadsheet_id=args.spreadsheet_id,
+            spreadsheet_id=spreadsheet_id,
             sheet_name=args.sheet_name,
             credentials_path=args.credentials
         )
@@ -511,7 +516,7 @@ def handle_compare_from_spreadsheet(args) -> int:
         logger.error("💡 Suggestions:")
         logger.error("   - Verify that the spreadsheet ID is correct")
         logger.error("   - Verify that the sheet name exists")
-        logger.error("   - Check that required columns exist (Dataset ID, Table Name, Key Columns)")
+        logger.error("   - Check that required columns exist (Output ID, Table Name, Key Columns)")
         logger.error("   - Verify your Google Sheets credentials")
         return 1
     finally:
@@ -588,7 +593,7 @@ def create_parser() -> argparse.ArgumentParser:
         epilog="""
 Examples:
     # Export inventory dataflows to SQL
-    python main.py inventory --export-dir exported_sql
+    python main.py inventory --export-dir results/sql/translated
     
     # Test Google Sheets connection
     python main.py inventory --test-connection
@@ -621,7 +626,7 @@ Examples:
     python main.py compare --from-spreadsheet
     
     # Compare from custom spreadsheet and sheet
-    python main.py compare --from-spreadsheet --spreadsheet-id YOUR_SHEET_ID --sheet-name Comparisons
+    python main.py compare --from-spreadsheet --spreadsheet-id YOUR_SHEET_ID --sheet-name "QA - Test"
     
     # Compare datasets from existing inventory spreadsheet
     python main.py compare --from-inventory
@@ -638,8 +643,8 @@ Environment Variables:
     MIGRATION_SPREADSHEET_ID: Default spreadsheet ID for migrations and inventory
     COMPARISON_SPREADSHEET_ID: Default spreadsheet ID for comparisons
     MIGRATION_SHEET_NAME: Default sheet name for migrations (default: Migration)
-    COMPARISON_SHEET_NAME: Default sheet name for comparisons (default: Comparison)
-    INVENTORY_SHEET_NAME: Default sheet name for inventory (default: Inventory)
+    COMPARISON_SHEET_NAME: Default sheet name for comparisons (default: QA - Test)
+    INTERMEDIATE_MODELS_SHEET_NAME: Default sheet name for inventory (default: Inventory)
     DOMO_DEVELOPER_TOKEN: Domo API developer token
     DOMO_INSTANCE: Domo instance name
     SNOWFLAKE_ACCOUNT: Snowflake account identifier
@@ -663,8 +668,8 @@ Environment Variables:
     
     inventory_parser.add_argument(
         "--export-dir",
-        default=os.getenv("EXPORT_DIR", "exported_sql"),
-        help="Directory to save SQL files (default: exported_sql)"
+        default=os.getenv("EXPORT_DIR", "results/sql/translated"),
+        help="Directory to save SQL files (default: results/sql/translated)"
     )
     
     inventory_parser.add_argument(
@@ -793,20 +798,17 @@ Environment Variables:
     
     compare_parser.add_argument(
         "--domo-dataset-id",
-        required=True,
-        help="Domo dataset ID to compare"
+        help="Domo output ID to compare"
     )
     
     compare_parser.add_argument(
         "--snowflake-table",
-        required=True,
         help="Snowflake table name to compare"
     )
     
     compare_parser.add_argument(
         "--key-columns",
         nargs='+',
-        required=True,
         help="One or more key columns to use for comparison"
     )
     
@@ -848,14 +850,14 @@ Environment Variables:
     
     compare_parser.add_argument(
         "--spreadsheet-id",
-        default=os.getenv("COMPARISON_SPREADSHEET_ID"),
+        default=os.getenv("MIGRATION_SPREADSHEET_ID"),
         help="Google Sheets spreadsheet ID for comparisons (uses default if not specified)"
     )
     
     compare_parser.add_argument(
         "--sheet-name",
-        default=os.getenv("COMPARISON_SHEET_NAME", "Comparison"),
-        help="Comparison sheet tab name (default: Comparison)"
+        default=os.getenv("COMPARISON_SHEET_NAME", "QA - Test"),
+        help="Comparison sheet tab name (default: QA - Test)"
     )
     
     return parser

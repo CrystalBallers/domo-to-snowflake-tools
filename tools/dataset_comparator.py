@@ -6,6 +6,7 @@ comprehensive comparisons between Domo datasets and Snowflake tables.
 """
 
 import os
+import re
 import logging
 import math
 from typing import List, Dict, Any, Optional
@@ -279,7 +280,7 @@ class DatasetComparator:
     
     def compare_data_samples(self, domo_dataset_id: str, snowflake_table: str, 
                            key_columns: List[str], sample_size: Optional[int] = None, 
-                           transform_names: bool = False) -> Dict[str, Any]:
+                           transform_names: bool = False, schema_comparison: Dict[str, Any] = None) -> Dict[str, Any]:
         """
         Compare data samples using datacompy.
         
@@ -289,6 +290,7 @@ class DatasetComparator:
             key_columns: List of key columns for comparison
             sample_size: Number of rows to sample (auto-calculated if None)
             transform_names: Whether to apply column name transformation
+            schema_comparison: Schema comparison results to include in report
             
         Returns:
             Dictionary with data comparison results
@@ -321,7 +323,7 @@ class DatasetComparator:
             domo_df_polars = self.domo_handler.extract_data(
                 dataset_id=domo_dataset_id, 
                 query=sample_query,
-                enable_auto_type_conversion=False  # Keep original types for comparison
+                enable_auto_type_conversion=True  # Keep original types for comparison
             )
             
             if domo_df_polars is None or domo_df_polars.is_empty():
@@ -343,7 +345,7 @@ class DatasetComparator:
         
         # Get Snowflake sample
         try:
-            key_cols_str = ', '.join([f'"{col}"' for col in key_columns])
+            key_cols_str = ', '.join(key_columns)
             sf_query = f"SELECT * FROM {snowflake_table} ORDER BY {key_cols_str} LIMIT {sample_size}"
             sf_result = self.snowflake_handler.execute_query(sf_query)
             
@@ -368,7 +370,9 @@ class DatasetComparator:
             
             # Save detailed report
             timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
-            report_filename = f"comparison_report_{timestamp}.txt"
+            # Use the provided Snowflake table name as base (now expected to be the Model Name)
+            safe_base = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(snowflake_table).strip()) or "report"
+            report_filename = f"{safe_base}_{timestamp}.txt"
             
             with open(report_filename, 'w', encoding='utf-8') as f:
                 f.write(f"COMPARISON REPORT\n")
@@ -378,7 +382,49 @@ class DatasetComparator:
                 f.write(f"Transform Applied: {transform_names}\n")
                 f.write(f"Timestamp: {pd.Timestamp.now().isoformat()}\n")
                 f.write("="*80 + "\n")
-                f.write(comparison.report())
+                
+                # Get the datacompy report and modify it to include column names
+                datacompy_report = comparison.report()
+                
+                # Add column names information to the Column Summary section
+                if schema_comparison and not schema_comparison.get('error'):
+                    # Get the actual column names from the DataFrames being compared
+                    domo_cols_set = set(domo_df.columns)
+                    sf_cols_set = set(sf_df.columns)
+                    
+                    # Calculate the actual differences based on the DataFrames being compared
+                    missing_in_sf = list(domo_cols_set - sf_cols_set)
+                    extra_in_sf = list(sf_cols_set - domo_cols_set)
+                    
+                    # Debug: print what we have
+                    self.logger.info(f"DataFrame comparison debug:")
+                    self.logger.info(f"  Domo columns: {list(domo_cols_set)}")
+                    self.logger.info(f"  Snowflake columns: {list(sf_cols_set)}")
+                    self.logger.info(f"  Missing in Snowflake: {missing_in_sf}")
+                    self.logger.info(f"  Extra in Snowflake: {extra_in_sf}")
+                    
+                    # Find the Column Summary section and add column names
+                    lines = datacompy_report.split('\n')
+                    modified_lines = []
+                    
+                    for i, line in enumerate(lines):
+                        modified_lines.append(line)
+                        
+                        # After "Number of columns in Domo but not in Snowflake" line, add the column names
+                        if "Number of columns in Domo but not in Snowflake:" in line and missing_in_sf:
+                            missing_cols = ', '.join(missing_in_sf)
+                            modified_lines.append(f"Missing columns: {missing_cols}")
+                        
+                        # After "Number of columns in Snowflake but not in Domo" line, add the column names
+                        elif "Number of columns in Snowflake but not in Domo:" in line and extra_in_sf:
+                            extra_cols = ', '.join(extra_in_sf)
+                            modified_lines.append(f"Extra columns: {extra_cols}")
+                    
+                    # Write the modified report
+                    f.write('\n'.join(modified_lines))
+                else:
+                    # Write the original report if no schema comparison available
+                    f.write(datacompy_report)
             
             self.logger.info(f"📄 Detailed report saved to: {report_filename}")
             
@@ -455,7 +501,7 @@ class DatasetComparator:
         schema_comparison = self.compare_schemas(domo_dataset_id, snowflake_table, transform_names)
         row_count_comparison = self.compare_row_counts(domo_dataset_id, snowflake_table)
         data_comparison = self.compare_data_samples(domo_dataset_id, snowflake_table, 
-                                                   key_columns, sample_size, transform_names)
+                                                   key_columns, sample_size, transform_names, schema_comparison)
         
         # Determine overall match
         overall_match = False
@@ -584,13 +630,13 @@ class DatasetComparator:
         
         print("="*80)
     
-    def compare_from_spreadsheet(self, spreadsheet_id: str, sheet_name: str = "Comparison",
+    def compare_from_spreadsheet(self, spreadsheet_id: str, sheet_name: str = "QA - Test",
                                 credentials_path: str = None) -> Dict[str, Any]:
         """
         Compare multiple datasets from Google Sheets configuration.
         
         Expected columns in spreadsheet:
-        - Dataset ID: Domo dataset ID
+        - Output ID: Domo dataset ID
         - Table Name: Snowflake table name
         - Key Columns: Comma-separated list of key columns
         - Sample Size: (Optional) Number of rows to sample
@@ -654,15 +700,15 @@ class DatasetComparator:
             transform_columns_column = None
             status_column = None
             
-            # Find Dataset ID column
-            possible_dataset_id_columns = ['Dataset ID', 'dataset_id', 'Domo Dataset ID', 'domo_dataset_id', 'ID', 'id']
+            # Find Output ID column
+            possible_dataset_id_columns = ['Output ID', 'output_id', 'Dataset ID', 'dataset_id', 'Domo Dataset ID', 'domo_dataset_id', 'ID', 'id']
             for col in possible_dataset_id_columns:
                 if col in df.columns:
                     dataset_id_column = col
                     break
             
-            # Find Table Name column
-            possible_table_columns = ['Table Name', 'table_name', 'Snowflake Table', 'snowflake_table', 'Table', 'table']
+            # Find Table Name column (accept 'Model Name' as preferred)
+            possible_table_columns = ['Model Name', 'model_name']
             for col in possible_table_columns:
                 if col in df.columns:
                     table_name_column = col
@@ -698,7 +744,7 @@ class DatasetComparator:
             
             # Validate required columns
             if dataset_id_column is None:
-                raise Exception("Required column 'Dataset ID' not found in spreadsheet")
+                raise Exception("Required column 'Output ID' not found in spreadsheet")
             
             if table_name_column is None:
                 raise Exception("Required column 'Table Name' not found in spreadsheet")
@@ -736,7 +782,7 @@ class DatasetComparator:
                 
                 # Validate required fields
                 if pd.isna(dataset_id) or str(dataset_id).strip() == '':
-                    error_msg = f"Row {index + 2}: Empty Dataset ID"
+                    error_msg = f"Row {index + 2}: Empty Output ID"
                     self.logger.warning(f"⚠️  {error_msg}")
                     errors.append(error_msg)
                     failed_comparisons.append(f"Row {index + 2}")
@@ -868,8 +914,10 @@ class DatasetComparator:
         """
         try:
             # Get spreadsheet configuration from environment
-            spreadsheet_id = os.getenv("MIGRATION_SPREADSHEET_ID")
-            sheet_name = os.getenv("INVENTORY_SHEET_NAME", "Inventory")
+            from .utils.common import get_env_config
+            env_config = get_env_config()
+            spreadsheet_id = env_config.get("MIGRATION_SPREADSHEET_ID")
+            sheet_name = env_config.get("INTERMEDIATE_MODELS_SHEET_NAME", "Inventory")
             
             if not spreadsheet_id:
                 raise Exception("MIGRATION_SPREADSHEET_ID environment variable not set")

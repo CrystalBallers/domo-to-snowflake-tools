@@ -625,6 +625,71 @@ class DomoHandler:
         logger.info(f"✅ Collected {len(dataflows_df)} dataflows")
         return dataflows_df
 
+    def get_dataset_schema(self, dataset_id: str) -> dict:
+        """
+        Get the schema of a dataset.
+        
+        Args:
+            dataset_id: The dataset ID
+            
+        Returns:
+            dict: The dataset schema with columns information
+        """
+        try:
+            if not self.dataset_api:
+                logger.error("Dataset API not initialized. Call setup_auth() first.")
+                return {"columns": []}
+            
+            # Get dataset info including schema
+            dataset_info = self.dataset_api.get_dataset(dataset_id)
+            schema = dataset_info.get('schema', {})
+            
+            logger.info(f"Retrieved schema for dataset {dataset_id}")
+            return schema
+            
+        except Exception as e:
+            logger.error(f"Error getting schema for dataset {dataset_id}: {e}")
+            return {"columns": []}
+
+    def query_dataset(self, dataset_id: str, query: str) -> dict:
+        """
+        Execute a simple SQL query on a dataset.
+        
+        Args:
+            dataset_id: The dataset ID
+            query: The SQL query to execute
+            
+        Returns:
+            dict: Query result with columns and rows
+        """
+        try:
+            if not self.dataset_api:
+                logger.error("Dataset API not initialized. Call setup_auth() first.")
+                return {"datasource": "", "columns": [], "rows": []}
+            
+            # For simple queries (like COUNT), use extract_data with the query
+            df = self.extract_data(dataset_id, query, chunk_size=1000)
+            
+            if df is None:
+                return {"datasource": "", "columns": [], "rows": []}
+            
+            # Convert polars DataFrame to the expected format
+            columns = df.columns
+            rows = df.rows()
+            
+            result = {
+                "datasource": dataset_id,
+                "columns": columns,
+                "rows": rows
+            }
+            
+            logger.info(f"Query executed successfully on dataset {dataset_id}")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error querying dataset {dataset_id}: {e}")
+            return {"datasource": "", "columns": [], "rows": []}
+
 
 def export_datasets_to_spreadsheet(spreadsheet_id: str, sheet_name: str = "Datasets", 
                                  credentials_path: str = None) -> bool:
@@ -730,68 +795,3 @@ def export_datasets_to_spreadsheet(spreadsheet_id: str, sheet_name: str = "Datas
     except Exception as e:
         logger.error(f"❌ Failed to export datasets to spreadsheet: {e}")
         return False 
-
-    def get_dataset_schema(self, dataset_id: str) -> dict:
-        """
-        Get the schema of a dataset.
-        
-        Args:
-            dataset_id: The dataset ID
-            
-        Returns:
-            dict: The dataset schema with columns information
-        """
-        try:
-            if not self.dataset_api:
-                logger.error("Dataset API not initialized. Call setup_auth() first.")
-                return {"columns": []}
-            
-            # Get dataset info including schema
-            dataset_info = self.dataset_api.get_dataset(dataset_id)
-            schema = dataset_info.get('schema', {})
-            
-            logger.info(f"Retrieved schema for dataset {dataset_id}")
-            return schema
-            
-        except Exception as e:
-            logger.error(f"Error getting schema for dataset {dataset_id}: {e}")
-            return {"columns": []}
-
-    def query_dataset(self, dataset_id: str, query: str) -> dict:
-        """
-        Execute a simple SQL query on a dataset.
-        
-        Args:
-            dataset_id: The dataset ID
-            query: The SQL query to execute
-            
-        Returns:
-            dict: Query result with columns and rows
-        """
-        try:
-            if not self.dataset_api:
-                logger.error("Dataset API not initialized. Call setup_auth() first.")
-                return {"datasource": "", "columns": [], "rows": []}
-            
-            # For simple queries (like COUNT), use extract_data with the query
-            df = self.extract_data(dataset_id, query, chunk_size=1000)
-            
-            if df is None:
-                return {"datasource": "", "columns": [], "rows": []}
-            
-            # Convert polars DataFrame to the expected format
-            columns = df.columns
-            rows = df.rows()
-            
-            result = {
-                "datasource": dataset_id,
-                "columns": columns,
-                "rows": rows
-            }
-            
-            logger.info(f"Query executed successfully on dataset {dataset_id}")
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error querying dataset {dataset_id}: {e}")
-            return {"datasource": "", "columns": [], "rows": []} 
