@@ -748,7 +748,16 @@ class DatasetComparator:
             import pandas as pd
             headers = data[0]
             rows = data[1:]
-            df = pd.DataFrame(rows, columns=headers)
+            
+            # Normalize row lengths to match header length
+            num_cols = len(headers)
+            normalized_rows = []
+            for row in rows:
+                # Ensure each row has the same number of columns as headers
+                normalized_row = row + [''] * (num_cols - len(row)) if len(row) < num_cols else row[:num_cols]
+                normalized_rows.append(normalized_row)
+            
+            df = pd.DataFrame(normalized_rows, columns=headers)
             
             # Remove empty rows
             df = df.dropna(how='all')
@@ -851,26 +860,17 @@ class DatasetComparator:
                 table_name = row[table_name_column]
                 key_columns_str = row[key_columns_column]
                 
-                # Validate required fields
+                # Validate required fields - skip incomplete rows instead of treating as errors
                 if pd.isna(dataset_id) or str(dataset_id).strip() == '':
-                    error_msg = f"Row {index + 2}: Empty Output ID"
-                    self.logger.warning(f"⚠️  {error_msg}")
-                    errors.append(error_msg)
-                    failed_comparisons.append(f"Row {index + 2}")
+                    self.logger.info(f"⏭️  Skipping row {index + 2}: Empty Output ID")
                     continue
                 
                 if pd.isna(table_name) or str(table_name).strip() == '':
-                    error_msg = f"Row {index + 2}: Empty Table Name"
-                    self.logger.warning(f"⚠️  {error_msg}")
-                    errors.append(error_msg)
-                    failed_comparisons.append(f"Row {index + 2}")
+                    self.logger.info(f"⏭️  Skipping row {index + 2}: Empty Table Name")
                     continue
                 
                 if pd.isna(key_columns_str) or str(key_columns_str).strip() == '':
-                    error_msg = f"Row {index + 2}: Empty Key Columns"
-                    self.logger.warning(f"⚠️  {error_msg}")
-                    errors.append(error_msg)
-                    failed_comparisons.append(f"Row {index + 2}")
+                    self.logger.info(f"⏭️  Skipping row {index + 2}: Empty Key Columns")
                     continue
                 
                 # Parse key columns (comma-separated)
@@ -1056,7 +1056,16 @@ class DatasetComparator:
             import pandas as pd
             headers = data[0]
             rows = data[1:]
-            df = pd.DataFrame(rows, columns=headers)
+            
+            # Normalize row lengths to match header length
+            num_cols = len(headers)
+            normalized_rows = []
+            for row in rows:
+                # Ensure each row has the same number of columns as headers
+                normalized_row = row + [''] * (num_cols - len(row)) if len(row) < num_cols else row[:num_cols]
+                normalized_rows.append(normalized_row)
+            
+            df = pd.DataFrame(normalized_rows, columns=headers)
             
             # Remove empty rows
             df = df.dropna(how='all')
@@ -1133,10 +1142,7 @@ class DatasetComparator:
                 key_columns = [col.strip() for col in key_columns_str.split(',') if col.strip()]
                 
                 if not key_columns:
-                    error_msg = f"Row {index + 2}: Invalid Key Columns format"
-                    self.logger.warning(f"⚠️  {error_msg}")
-                    errors.append(error_msg)
-                    failed_comparisons.append(f"Row {index + 2}")
+                    self.logger.info(f"⏭️  Skipping row {index + 2}: Invalid Key Columns format")
                     continue
                 
                 self.logger.info(f"🔄 Comparing dataset {dataset_id} vs table {table_name}")
