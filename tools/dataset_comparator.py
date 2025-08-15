@@ -693,7 +693,7 @@ class DatasetComparator:
         
         print("="*80)
     
-    def compare_from_spreadsheet(self, spreadsheet_id: str, sheet_name: str = "QA - Test",
+    def compare_from_spreadsheet(self, spreadsheet_id: str, sheet_name: str = None,
                                 credentials_path: str = None) -> Dict[str, Any]:
         """
         Compare multiple datasets from Google Sheets configuration.
@@ -708,13 +708,18 @@ class DatasetComparator:
         
         Args:
             spreadsheet_id: Google Sheets spreadsheet ID
-            sheet_name: Sheet name containing comparison configurations
+            sheet_name: Sheet name containing comparison configurations (uses COMPARISON_SHEET_NAME env var if None)
             credentials_path: Path to Google Sheets credentials file
             
         Returns:
             Dictionary with comparison results summary
         """
         try:
+            # Get sheet name from environment if not provided
+            if sheet_name is None:
+                env_config = get_env_config()
+                sheet_name = env_config.get("COMPARISON_SHEET_NAME", "QA - Test")
+            
             self.logger.info(f"🚀 Starting spreadsheet-based comparisons...")
             self.logger.info(f"📋 Spreadsheet ID: {spreadsheet_id}")
             self.logger.info(f"📄 Sheet name: {sheet_name}")
@@ -859,6 +864,10 @@ class DatasetComparator:
                 dataset_id = row[dataset_id_column]
                 table_name = row[table_name_column]
                 key_columns_str = row[key_columns_column]
+                
+                # Clean table name - remove .sql extension if present
+                if table_name and str(table_name).strip().lower().endswith('.sql'):
+                    table_name = str(table_name).strip()[:-4]  # Remove last 4 characters (.sql)
                 
                 # Validate required fields - skip incomplete rows instead of treating as errors
                 if pd.isna(dataset_id) or str(dataset_id).strip() == '':
@@ -1137,6 +1146,10 @@ class DatasetComparator:
                 dataset_id = str(row[dataset_id_column]).strip()
                 table_name = str(row[table_name_column]).strip()
                 key_columns_str = str(row[key_columns_column]).strip()
+                
+                # Clean table name - remove .sql extension if present
+                if table_name and table_name.lower().endswith('.sql'):
+                    table_name = table_name[:-4]  # Remove last 4 characters (.sql)
                 
                 # Parse key columns (comma-separated)
                 key_columns = [col.strip() for col in key_columns_str.split(',') if col.strip()]
