@@ -1278,9 +1278,9 @@ class DatasetComparator:
         
         # Overall status
         if report.get('overall_match'):
-            status = "✅ PERFECT MATCH"
+            status = "PERFECT MATCH"
         else:
-            status = "⚠️ DISCREPANCIES"
+            status = "DISCREPANCIES"
         
         # Wrap the entire summary generation in try-catch
         try:
@@ -1294,9 +1294,22 @@ class DatasetComparator:
                 
                 if domo_rows > 0:
                     error_pct = abs(sf_rows - domo_rows) / domo_rows * 100
-                    summary_lines.append(f"Rows: Domo {domo_rows:,} vs Snowflake {sf_rows:,} ({error_pct:.2f}% difference)")
+                    
+                    # Add visual indicator based on percentage difference
+                    if error_pct <= 1.0:
+                        row_indicator = "✅"
+                    elif error_pct <= 5.0:
+                        row_indicator = "⚠️"
+                    else:
+                        row_indicator = "❌"
+                    
+                    summary_lines.append(f"{row_indicator} Rows: Domo {domo_rows:,} vs Snowflake {sf_rows:,} ({error_pct:.2f}% difference)")
                 else:
-                    summary_lines.append(f"Rows: Domo {domo_rows:,} vs Snowflake {sf_rows:,}")
+                    # Handle zero rows case
+                    if sf_rows == 0:
+                        summary_lines.append(f"✅ Rows: Domo {domo_rows:,} vs Snowflake {sf_rows:,}")
+                    else:
+                        summary_lines.append(f"❌ Rows: Domo {domo_rows:,} vs Snowflake {sf_rows:,}")
             else:
                 failure_reasons.append(f"Row count comparison failed: {rows.get('error', 'No row data available') if rows else 'No row comparison data'}")
                 summary_lines.append(f"❌ Could not compare row counts")
@@ -1307,7 +1320,13 @@ class DatasetComparator:
                 domo_cols = len(comparison.df1.columns)
                 sf_cols = len(comparison.df2.columns)
                 
-                summary_lines.append(f"Columns: Domo {domo_cols} vs Snowflake {sf_cols}")
+                # Add visual indicator for column count comparison
+                if domo_cols == sf_cols:
+                    col_indicator = "✅"
+                else:
+                    col_indicator = "⚠️"
+                
+                summary_lines.append(f"{col_indicator} Columns: Domo {domo_cols} vs Snowflake {sf_cols}")
                 
                 # Get missing and extra columns directly from dataframes
                 domo_cols_set = set(comparison.df1.columns)
@@ -1338,11 +1357,17 @@ class DatasetComparator:
                     domo_cols = schema.get('domo_columns', 0)
                     sf_cols = schema.get('snowflake_columns', 0)
                 
+                # Add visual indicator for column count comparison
+                if domo_cols == sf_cols:
+                    col_indicator = "✅"
+                else:
+                    col_indicator = "⚠️"
+                
                 if domo_cols > 0:
                     col_error_pct = abs(sf_cols - domo_cols) / domo_cols * 100
-                    summary_lines.append(f"Columns: Domo {domo_cols} vs Snowflake {sf_cols} ({col_error_pct:.2f}% difference)")
+                    summary_lines.append(f"{col_indicator} Columns: Domo {domo_cols} vs Snowflake {sf_cols} ({col_error_pct:.2f}% difference)")
                 else:
-                    summary_lines.append(f"Columns: Domo {domo_cols} vs Snowflake {sf_cols}")
+                    summary_lines.append(f"{col_indicator} Columns: Domo {domo_cols} vs Snowflake {sf_cols}")
                 
                 # Data type errors
                 type_mismatches = schema.get('type_mismatches', [])
