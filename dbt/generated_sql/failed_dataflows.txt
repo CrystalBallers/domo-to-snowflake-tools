@@ -1,8 +1,0 @@
-Failed Dataflow Extractions
-=========================
-
-Generated: 2025-07-02T10:26:13.162795
-
-Dataflow #348
-Dataflow #565
-Dataflow #628
