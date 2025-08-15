@@ -1488,7 +1488,7 @@ class DatasetComparator:
                     # Show column differences if found
                     if columns_with_diffs:
                         if len(columns_with_diffs) <= 5:
-                            summary_lines.append(f"❌ Columns with Different Values: {', '.join(columns_with_diffs)}")
+                             summary_lines.append(f"❌ Columns with Different Values: {', '.join(columns_with_diffs)}")
                         else:
                             summary_lines.append(f"❌ Columns with Different Values: {', '.join(columns_with_diffs[:5])}")
                             summary_lines.append(f"... and {len(columns_with_diffs) - 5} more columns with differences")
