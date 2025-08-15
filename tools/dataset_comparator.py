@@ -103,7 +103,30 @@ class DatasetComparator:
         try:
             # Get Domo schema using DomoHandler
             domo_schema = self.domo_handler.get_dataset_schema(domo_dataset_id)
-            domo_columns = {col['name']: col['type'] for col in domo_schema['columns']}
+            self.logger.info(f"🔍 Raw Domo schema response: {domo_schema}")
+            
+            # Check if schema has columns
+            if 'columns' not in domo_schema:
+                self.logger.warning(f"⚠️ No 'columns' key in Domo schema. Available keys: {list(domo_schema.keys())}")
+                # Try alternative approach - extract columns from actual data
+                try:
+                    sample_df = self.domo_handler.extract_data(
+                        dataset_id=domo_dataset_id, 
+                        query="SELECT * FROM table LIMIT 1",
+                        enable_auto_type_conversion=True
+                    )
+                    if sample_df is not None and not sample_df.empty:
+                        # Create schema from DataFrame columns
+                        domo_columns = {col: 'UNKNOWN' for col in sample_df.columns}
+                        self.logger.info(f"✅ Extracted schema from data sample: {len(domo_columns)} columns")
+                    else:
+                        raise Exception("No data available to infer schema")
+                except Exception as fallback_error:
+                    self.logger.error(f"❌ Fallback schema extraction failed: {fallback_error}")
+                    raise Exception(f"Cannot get Domo schema: no 'columns' in response and data extraction failed")
+            else:
+                domo_columns = {col['name']: col['type'] for col in domo_schema['columns']}
+                self.logger.info(f"✅ Extracted {len(domo_columns)} columns from Domo schema")
             
             # Apply column name transformation if enabled
             if transform_names:
@@ -476,7 +499,8 @@ class DatasetComparator:
                 'extra_in_snowflake': len(comparison.df2_unq_rows),
                 'rows_with_differences': self._count_differing_rows(comparison),
                 'transform_applied': transform_names,
-                'report_file': report_filename
+                'report_file': report_filename,
+                'comparison_object': comparison  # Add comparison object for executive summary
             }
             
         except Exception as e:
@@ -781,6 +805,14 @@ class DatasetComparator:
                     status_column = col
                     break
             
+            # Find Notes column (optional)
+            notes_column = None
+            possible_notes_columns = ['Notes', 'notes', 'Note', 'note', 'Comments', 'comments']
+            for col in possible_notes_columns:
+                if col in df.columns:
+                    notes_column = col
+                    break
+            
             # Validate required columns
             if dataset_id_column is None:
                 raise Exception("Required column 'Output ID' not found in spreadsheet")
@@ -791,18 +823,18 @@ class DatasetComparator:
             if key_columns_column is None:
                 raise Exception("Required column 'Key Columns' not found in spreadsheet")
             
-            # Filter rows where Status is not "Completed" (if status column exists)
+            # Filter rows where Status is "Testing" (if status column exists)
             if status_column and status_column in df.columns:
                 df[status_column] = df[status_column].fillna('Pending')
                 df[status_column] = df[status_column].astype(str)
-                pending_df = df[~df[status_column].str.contains('Completed|Complete', case=False, na=False)]
-                self.logger.info(f"📋 Found {len(pending_df)} comparisons pending (excluding completed)")
+                testing_df = df[df[status_column].str.contains('Testing', case=False, na=False)]
+                self.logger.info(f"📋 Found {len(testing_df)} comparisons in 'Testing' status")
             else:
-                pending_df = df
-                self.logger.info(f"📋 No status column found, processing all {len(pending_df)} comparisons")
+                testing_df = df
+                self.logger.info(f"📋 No status column found, processing all {len(testing_df)} comparisons")
             
-            if len(pending_df) == 0:
-                self.logger.info("✅ No comparisons pending")
+            if len(testing_df) == 0:
+                self.logger.info("✅ No comparisons in 'Testing' status")
                 return {"success": 0, "failed": 0, "total": 0, "errors": []}
             
             # Setup connections once
@@ -814,7 +846,7 @@ class DatasetComparator:
             failed_comparisons = []
             errors = []
             
-            for index, row in pending_df.iterrows():
+            for index, row in testing_df.iterrows():
                 dataset_id = row[dataset_id_column]
                 table_name = row[table_name_column]
                 key_columns_str = row[key_columns_column]
@@ -883,14 +915,32 @@ class DatasetComparator:
                             self.logger.warning(f"⚠️  {success_msg} - Discrepancies found")
                         successful_comparisons.append(str(dataset_id))
                         
-                        # Update status in spreadsheet if status column exists
-                        if status_column:
+                        # Update notes in spreadsheet if notes column exists
+                        if notes_column:
                             try:
-                                status_text = "Perfect Match" if report.get('overall_match') else "Discrepancies Found"
-                                cell_range = f"{sheet_name}!{chr(65 + df.columns.get_loc(status_column))}{index + 2}"
-                                gsheets_client.write_range(spreadsheet_id, cell_range, [[status_text]])
+                                # Generate executive summary (try to get comparison object from report)
+                                comparison_obj = report.get('data_comparison', {}).get('comparison_object')
+                                executive_summary = self._generate_executive_summary(report, comparison_obj)
+                                
+                                # Get current notes content
+                                notes_cell_range = f"{sheet_name}!{chr(65 + df.columns.get_loc(notes_column))}{index + 2}"
+                                current_notes_result = gsheets_client.read_range(spreadsheet_id, notes_cell_range)
+                                current_notes = ""
+                                if current_notes_result and len(current_notes_result) > 0 and len(current_notes_result[0]) > 0:
+                                    current_notes = str(current_notes_result[0][0]).strip()
+                                
+                                # Append executive summary to existing notes
+                                if current_notes:
+                                    updated_notes = f"{current_notes}\n\n{executive_summary}"
+                                else:
+                                    updated_notes = executive_summary
+                                
+                                # Update the notes cell
+                                gsheets_client.write_range(spreadsheet_id, notes_cell_range, [[updated_notes]])
+                                self.logger.info(f"📝 Updated notes for dataset {dataset_id}")
+                                
                             except Exception as e:
-                                self.logger.warning(f"⚠️  Could not update status for row {index + 2}: {e}")
+                                self.logger.warning(f"⚠️  Could not update notes for row {index + 2}: {e}")
                     
                 except Exception as e:
                     error_msg = f"Dataset {dataset_id}: {str(e)}"
@@ -1147,6 +1197,348 @@ class DatasetComparator:
                 "total": 0,
                 "errors": [str(e)]
             }
+    
+    def _generate_executive_summary(self, report: Dict[str, Any], comparison: Optional[datacompy.Compare] = None) -> str:
+        """
+        Generate detailed executive summary for comparison results.
+        
+        Args:
+            report: Complete comparison report dictionary
+            comparison: Optional datacompy Compare object for direct data access
+            
+        Returns:
+            String with detailed executive summary
+        """
+        timestamp = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
+        dataset_id = report.get('domo_dataset_id', 'N/A')
+        table_name = report.get('snowflake_table', 'N/A')
+        
+        # Debug: Check if comparison object is available
+        self.logger.info(f"🔍 Executive Summary Debug - Comparison object: {comparison is not None}")
+        if comparison:
+            self.logger.info(f"🔍 Has column_stats: {hasattr(comparison, 'column_stats')}")
+            if hasattr(comparison, 'column_stats'):
+                self.logger.info(f"🔍 Column_stats is not None: {comparison.column_stats is not None}")
+                if comparison.column_stats is not None:
+                    self.logger.info(f"🔍 Column_stats type: {type(comparison.column_stats)}")
+                    if isinstance(comparison.column_stats, list):
+                        self.logger.info(f"🔍 Column_stats length: {len(comparison.column_stats)}")
+                    elif hasattr(comparison.column_stats, 'shape'):
+                        self.logger.info(f"🔍 Column_stats shape: {comparison.column_stats.shape}")
+        
+        # Overall status
+        if report.get('errors'):
+            status = "❌ ERRORS"
+        elif report.get('overall_match'):
+            status = "✅ PERFECT MATCH"
+        else:
+            status = "⚠️ DISCREPANCIES"
+        
+        summary_lines = [f"[{timestamp}] {status}: {dataset_id} → {table_name}"]
+        
+        # Row count analysis
+        rows = report.get('row_count_comparison', {})
+        if rows:
+            domo_rows = rows.get('domo_rows', 0)
+            sf_rows = rows.get('snowflake_rows', 0)
+            
+            if domo_rows > 0:
+                error_pct = abs(sf_rows - domo_rows) / domo_rows * 100
+                summary_lines.append(f"Rows: Domo {domo_rows:,} vs Snowflake {sf_rows:,} ({error_pct:.2f}% difference)")
+            else:
+                summary_lines.append(f"Rows: Domo {domo_rows:,} vs Snowflake {sf_rows:,}")
+        
+        # Schema analysis - use datacompy comparison object if available, otherwise fallback to schema comparison
+        if comparison and hasattr(comparison, 'df1') and hasattr(comparison, 'df2'):
+            # Extract column information directly from datacompy comparison
+            domo_cols = len(comparison.df1.columns)
+            sf_cols = len(comparison.df2.columns)
+            
+            summary_lines.append(f"Columns: Domo {domo_cols} vs Snowflake {sf_cols}")
+            
+            # Get missing and extra columns directly from dataframes
+            domo_cols_set = set(comparison.df1.columns)
+            sf_cols_set = set(comparison.df2.columns)
+            missing_cols = list(domo_cols_set - sf_cols_set)
+            extra_cols = list(sf_cols_set - domo_cols_set)
+            
+            # Missing columns
+            if missing_cols:
+                if len(missing_cols) <= 5:
+                    summary_lines.append(f"❌ Missing Columns in Snowflake: {', '.join(missing_cols)}")
+                else:
+                    summary_lines.append(f"❌ Missing Columns in Snowflake: {', '.join(missing_cols[:5])}")
+                    summary_lines.append(f"... and {len(missing_cols) - 5} more missing columns")
+            
+            # Extra columns
+            if extra_cols:
+                if len(extra_cols) <= 5:
+                    summary_lines.append(f"⚠️ Extra Columns in Snowflake: {', '.join(extra_cols)}")
+                else:
+                    summary_lines.append(f"⚠️ Extra Columns in Snowflake: {', '.join(extra_cols[:5])}")
+                    summary_lines.append(f"... and {len(extra_cols) - 5} more extra columns")
+        
+        else:
+            # Fallback to schema comparison from report
+            schema = report.get('schema_comparison', {})
+            if not schema.get('error'):
+                domo_cols = schema.get('domo_columns', 0)
+                sf_cols = schema.get('snowflake_columns', 0)
+                
+                if domo_cols > 0:
+                    col_error_pct = abs(sf_cols - domo_cols) / domo_cols * 100
+                    summary_lines.append(f"Columns: Domo {domo_cols} vs Snowflake {sf_cols} ({col_error_pct:.2f}% difference)")
+                else:
+                    summary_lines.append(f"Columns: Domo {domo_cols} vs Snowflake {sf_cols}")
+                
+                # Data type errors
+                type_mismatches = schema.get('type_mismatches', [])
+                if type_mismatches:
+                    summary_lines.append(f"❌ Data Type Errors: {len(type_mismatches)} columns")
+                    mismatch_details = []
+                    for mismatch in type_mismatches[:5]:  # Show first 5
+                        col_name = mismatch.get('column', 'unknown')
+                        domo_type = mismatch.get('domo_type', 'unknown')
+                        sf_type = mismatch.get('snowflake_type', 'unknown')
+                        mismatch_details.append(f"{col_name} (Domo: {domo_type} vs SF: {sf_type})")
+                    
+                    summary_lines.append(f"Type Mismatches: {', '.join(mismatch_details)}")
+                    if len(type_mismatches) > 5:
+                        summary_lines.append(f"... and {len(type_mismatches) - 5} more type mismatches")
+                
+                # Missing columns
+                missing_cols = schema.get('missing_in_snowflake', [])
+                if missing_cols:
+                    if len(missing_cols) <= 5:
+                        summary_lines.append(f"❌ Missing Columns in Snowflake: {', '.join(missing_cols)}")
+                    else:
+                        summary_lines.append(f"❌ Missing Columns in Snowflake: {', '.join(missing_cols[:5])}")
+                        summary_lines.append(f"... and {len(missing_cols) - 5} more missing columns")
+                
+                # Extra columns
+                extra_cols = schema.get('extra_in_snowflake', [])
+                if extra_cols:
+                    if len(extra_cols) <= 5:
+                        summary_lines.append(f"⚠️ Extra Columns in Snowflake: {', '.join(extra_cols)}")
+                    else:
+                        summary_lines.append(f"⚠️ Extra Columns in Snowflake: {', '.join(extra_cols[:5])}")
+                        summary_lines.append(f"... and {len(extra_cols) - 5} more extra columns")
+        
+        # Data comparison analysis - use datacompy comparison object if available
+        if comparison:
+            # Extract data differences directly from datacompy comparison
+            try:
+                missing_in_sf = len(comparison.df1_unq_rows) if hasattr(comparison, 'df1_unq_rows') else 0
+                extra_in_sf = len(comparison.df2_unq_rows) if hasattr(comparison, 'df2_unq_rows') else 0
+                common_rows = len(comparison.intersect_rows) if hasattr(comparison, 'intersect_rows') else 0
+                
+                # Calculate rows with differences (common rows that don't match)
+                total_compared = missing_in_sf + extra_in_sf + common_rows
+                matching_rows = common_rows if comparison.matches() else 0
+                rows_with_differences = common_rows - matching_rows if not comparison.matches() else 0
+                
+                # Report differences
+                if missing_in_sf > 0:
+                    summary_lines.append(f"❌ Rows Missing in Snowflake: {missing_in_sf}")
+                
+                if extra_in_sf > 0:
+                    summary_lines.append(f"⚠️ Extra Rows in Snowflake: {extra_in_sf}")
+                
+                # Get columns with unequal values using datacompy's column statistics  
+                columns_with_diffs = []
+                self.logger.info(f"🔍 Extracting columns with unequal values from datacompy comparison...")
+                
+                try:
+                    # Method 1: Parse the comparison report to get accurate match percentages
+                    comparison_report = str(comparison.report())
+                    lines = comparison_report.split('\n')
+                    
+                    # Look for lines that show column match percentages
+                    for line in lines:
+                        if ' / ' in line and '(' in line and '%) match' in line:
+                            # Extract column name and percentage
+                            # Format: "column_name: X / Y (Z.ZZ%) match"
+                            try:
+                                parts = line.split(':')
+                                if len(parts) >= 2:
+                                    col_name = parts[0].strip()
+                                    match_info = parts[1].strip()
+                                    
+                                    # Extract percentage
+                                    if '(' in match_info and '%) match' in match_info:
+                                        percentage_part = match_info.split('(')[1].split('%)')[0]
+                                        percentage = float(percentage_part)
+                                        
+                                        # Only include columns with less than 100% match
+                                        if percentage < 100.0:
+                                            columns_with_diffs.append(col_name)
+                                            self.logger.info(f"🔍 Column '{col_name}' has {percentage:.2f}% match (< 100%)")
+                                        else:
+                                            self.logger.debug(f"🔍 Column '{col_name}' has {percentage:.2f}% match (perfect)")
+                            except Exception as parse_error:
+                                self.logger.debug(f"⚠️ Could not parse line: {line} - {parse_error}")
+                    
+                    self.logger.info(f"🔍 Found {len(columns_with_diffs)} columns with unequal values: {columns_with_diffs}")
+                    
+                    # Method 2: Fallback using column_stats if parsing failed
+                    if not columns_with_diffs and hasattr(comparison, 'column_stats') and comparison.column_stats is not None:
+                        try:
+                            self.logger.info(f"🔍 Fallback: Using column_stats: {type(comparison.column_stats)}")
+                            
+                            if isinstance(comparison.column_stats, list):
+                                # If column_stats is a list of dictionaries
+                                columns_with_diffs = [
+                                    stat['column'] for stat in comparison.column_stats 
+                                    if stat.get('unequal_cnt', 0) > 0
+                                ]
+                                self.logger.info(f"🔍 Found {len(columns_with_diffs)} columns with unequal_cnt > 0: {columns_with_diffs}")
+                        except Exception as e:
+                            self.logger.warning(f"❌ Could not extract differing columns from column_stats: {e}")
+                
+                except Exception as e:
+                    self.logger.warning(f"❌ Could not extract columns with unequal values: {e}")
+                    self.logger.warning(f"❌ Exception type: {type(e).__name__}")
+                
+                # Method 2: Fallback - Parse the comparison report text
+                if not columns_with_diffs:
+                    try:
+                        self.logger.info(f"🔍 Fallback: Parsing comparison report text...")
+                        comparison_report = str(comparison.report())
+                        self.logger.info(f"🔍 Generated comparison report, length: {len(comparison_report)}")
+                        
+                        # Look for "Columns with Unequal Values or Types" section
+                        if "Columns with Unequal Values or Types" in comparison_report:
+                            lines = comparison_report.split('\n')
+                            unequal_cols = []
+                            in_unequal_section = False
+                            
+                            for line in lines:
+                                if "Columns with Unequal Values or Types" in line:
+                                    in_unequal_section = True
+                                    continue
+                                elif in_unequal_section:
+                                    if line.strip() == "" or line.startswith("Sample Rows") or line.startswith("---"):
+                                        break
+                                    elif line.strip() and not line.startswith("Column ") and not line.startswith("----"):
+                                        # Extract column name (first word before space)
+                                        parts = line.strip().split()
+                                        if parts and not parts[0] in ['Column', '----']:
+                                            col_name = parts[0]
+                                            if col_name and col_name not in unequal_cols:
+                                                unequal_cols.append(col_name)
+                            
+                            columns_with_diffs = unequal_cols
+                            self.logger.info(f"🔍 Extracted columns from report text: {columns_with_diffs}")
+                        else:
+                            self.logger.warning(f"⚠️ 'Columns with Unequal Values or Types' section not found in report")
+                    except Exception as e:
+                        self.logger.warning(f"⚠️ Could not parse comparison report: {e}")
+                
+                # Method 3: Last resort - Use intersect columns if there are differences
+                if not columns_with_diffs and rows_with_differences > 0:
+                    try:
+                        if hasattr(comparison, 'intersect_columns'):
+                            intersect_cols = list(comparison.intersect_columns())
+                            self.logger.info(f"🔍 Last resort: Using intersect columns: {len(intersect_cols)} columns")
+                            columns_with_diffs = intersect_cols[:10]  # Limit to first 10
+                        elif hasattr(comparison, 'df1') and hasattr(comparison, 'df2'):
+                            # Get common columns manually
+                            common_cols = list(set(comparison.df1.columns) & set(comparison.df2.columns))
+                            columns_with_diffs = common_cols[:10]  # Limit to first 10
+                            self.logger.info(f"🔍 Last resort: Using common columns: {columns_with_diffs}")
+                    except Exception as e:
+                        self.logger.warning(f"⚠️ Last resort method failed: {e}")
+                
+                if columns_with_diffs:
+                    if len(columns_with_diffs) <= 5:
+                        summary_lines.append(f"❌ Columns with Different Values: {', '.join(columns_with_diffs)}")
+                    else:
+                        summary_lines.append(f"❌ Columns with Different Values: {', '.join(columns_with_diffs[:5])}")
+                        summary_lines.append(f"... and {len(columns_with_diffs) - 5} more columns with differences")
+                elif rows_with_differences > 0:
+                    # Fallback: if we can't get column names but know there are differences
+                    self.logger.warning(f"⚠️ Falling back to row count - could not extract column names")
+                    summary_lines.append(f"❌ Rows with Different Values: {rows_with_differences} (column details unavailable)")
+                
+            except Exception as e:
+                self.logger.warning(f"⚠️ Could not extract data differences from comparison object: {e}")
+                # Fallback to report data
+                data = report.get('data_comparison', {})
+                if not data.get('error'):
+                    if data.get('missing_in_snowflake', 0) > 0:
+                        summary_lines.append(f"❌ Rows Missing in Snowflake: {data['missing_in_snowflake']}")
+                    
+                    if data.get('extra_in_snowflake', 0) > 0:
+                        summary_lines.append(f"⚠️ Extra Rows in Snowflake: {data['extra_in_snowflake']}")
+                    
+                    if data.get('rows_with_differences', 0) > 0:
+                        summary_lines.append(f"❌ Rows with Different Values: {data['rows_with_differences']}")
+        else:
+            # Fallback to data comparison from report
+            data = report.get('data_comparison', {})
+            if not data.get('error'):
+                # Rows with differences
+                if data.get('missing_in_snowflake', 0) > 0:
+                    summary_lines.append(f"❌ Rows Missing in Snowflake: {data['missing_in_snowflake']}")
+                
+                if data.get('extra_in_snowflake', 0) > 0:
+                    summary_lines.append(f"⚠️ Extra Rows in Snowflake: {data['extra_in_snowflake']}")
+                
+                # Try to extract column details from report file if available
+                if data.get('rows_with_differences', 0) > 0:
+                    report_file = data.get('report_file')
+                    if report_file:
+                        try:
+                            # Read the detailed report to extract columns with unequal values
+                            with open(report_file, 'r', encoding='utf-8') as f:
+                                content = f.read()
+                            
+                            # Look for "Columns with Unequal Values or Types" section
+                            if "Columns with Unequal Values or Types" in content:
+                                lines = content.split('\n')
+                                unequal_cols = []
+                                in_unequal_section = False
+                                
+                                for line in lines:
+                                    if "Columns with Unequal Values or Types" in line:
+                                        in_unequal_section = True
+                                        continue
+                                    elif in_unequal_section:
+                                        if line.strip() == "" or line.startswith("Sample Rows") or line.startswith("---"):
+                                            break
+                                        elif line.strip() and not line.startswith("Column ") and not line.startswith("----"):
+                                            # Extract column name (first word before space)
+                                            parts = line.strip().split()
+                                            if parts and not parts[0] in ['Column', '----']:
+                                                col_name = parts[0]
+                                                if col_name and col_name not in unequal_cols:
+                                                    unequal_cols.append(col_name)
+                                
+                                if unequal_cols:
+                                    if len(unequal_cols) <= 5:
+                                        summary_lines.append(f"❌ Columns with Different Values: {', '.join(unequal_cols)}")
+                                    else:
+                                        summary_lines.append(f"❌ Columns with Different Values: {', '.join(unequal_cols[:5])}")
+                                        summary_lines.append(f"... and {len(unequal_cols) - 5} more columns with differences")
+                                else:
+                                    # If we can't extract columns but know there are differences
+                                    summary_lines.append("❌ Columns with Different Values detected (see detailed report)")
+                            else:
+                                # If section not found but we know there are differences
+                                summary_lines.append("❌ Columns with Different Values detected (see detailed report)")
+                        
+                        except Exception as e:
+                            # If we can't read the file, just note that there are differences
+                            summary_lines.append("❌ Columns with Different Values detected (see detailed report)")
+                    else:
+                        summary_lines.append("❌ Columns with Different Values detected (see detailed report)")
+        
+        # Add report file reference
+        report_data = report.get('data_comparison', {})
+        if report_data.get('report_file'):
+            summary_lines.append(f"📄 Detailed Report: {report_data['report_file']}")
+        
+        return '\n'.join(summary_lines)
     
     def cleanup(self):
         """Clean up resources."""
