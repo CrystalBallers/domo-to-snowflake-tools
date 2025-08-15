@@ -1414,17 +1414,75 @@ class DatasetComparator:
                     if extra_in_sf > 0:
                         summary_lines.append(f"⚠️ Extra Rows in Snowflake: {extra_in_sf}")
                     
-                    # Get columns with different values - simplified approach
+                    # Get columns with different values - more specific approach
                     columns_with_diffs = []
+                    self.logger.info(f"🔍 Starting column difference analysis...")
                     try:
-                        # Use column_stats if available
+                        # Use column_stats if available, but be more specific about what we count
                         if hasattr(comparison, 'column_stats') and comparison.column_stats is not None:
+                            self.logger.info(f"🔍 Column_stats available, type: {type(comparison.column_stats)}")
                             if isinstance(comparison.column_stats, list):
-                                columns_with_diffs = [
-                                    stat['column'] for stat in comparison.column_stats 
-                                    if stat.get('unequal_cnt', 0) > 0
-                                ]
-                    except Exception:
+                                self.logger.info(f"🔍 Processing list with {len(comparison.column_stats)} elements")
+                                
+                                # Debug: Show first few entries
+                                if len(comparison.column_stats) > 0:
+                                    self.logger.info(f"🔍 First column_stat entry: {comparison.column_stats[0]}")
+                                
+                                # Count all columns with problems (will be overwritten below)
+                                pass
+                                
+                                # Get common columns
+                                common_cols = set(comparison.df1.columns) & set(comparison.df2.columns)
+                                self.logger.info(f"🔍 Common columns count: {len(common_cols)}")
+                                
+                                # Only count columns that have actual value differences, not just type mismatches
+                                # Filter for columns that have real data differences (not just type differences)
+                                columns_with_diffs = []
+                                for stat in comparison.column_stats:
+                                    col_name = stat.get('column')
+                                    unequal_cnt = stat.get('unequal_cnt', 0)
+                                    max_diff = stat.get('max_diff', 0)
+                                    null_diff = stat.get('null_diff', 0)
+                                    
+                                    # Only include if:
+                                    # 1. Column is in common columns
+                                    # 2. Has unequal values > 0 
+                                    # 3. AND either has max_diff > 0 OR null_diff > 0 (real value differences)
+                                    if (col_name in common_cols and 
+                                        unequal_cnt > 0 and 
+                                        (max_diff > 0 or null_diff > 0)):
+                                        columns_with_diffs.append(col_name)
+                                        self.logger.info(f"🔍 Column '{col_name}': unequal={unequal_cnt}, max_diff={max_diff}, null_diff={null_diff}")
+                                    elif col_name in common_cols and unequal_cnt > 0:
+                                        self.logger.info(f"🔍 SKIPPED '{col_name}': unequal={unequal_cnt}, max_diff={max_diff}, null_diff={null_diff} (type-only difference)")
+                                
+                                # Log more details about what we found
+                                all_unequal_cols = [s for s in comparison.column_stats if s.get('unequal_cnt', 0) > 0]
+                                type_only_diffs = len(all_unequal_cols) - len(columns_with_diffs)
+                                
+                                self.logger.info(f"🔍 SUMMARY:")
+                                self.logger.info(f"  📊 Total columns with unequal_cnt > 0: {len(all_unequal_cols)}")
+                                self.logger.info(f"  📊 Columns with type-only differences: {type_only_diffs}")
+                                self.logger.info(f"  📊 Columns with real value differences: {len(columns_with_diffs)}")
+                                self.logger.info(f"🔍 Final filtered columns with differences: {columns_with_diffs}")
+                                
+                            elif hasattr(comparison.column_stats, 'shape'):  # DataFrame case
+                                self.logger.info(f"🔍 Processing DataFrame with shape: {comparison.column_stats.shape}")
+                                # Filter for common columns only and real value differences
+                                common_cols = set(comparison.df1.columns) & set(comparison.df2.columns)
+                                mask = (
+                                    (comparison.column_stats['unequal_cnt'] > 0) & 
+                                    (comparison.column_stats['column'].isin(common_cols)) &
+                                    ((comparison.column_stats['max_diff'] > 0) | (comparison.column_stats['null_diff'] > 0))
+                                )
+                                columns_with_diffs = comparison.column_stats[mask]['column'].tolist()
+                                self.logger.info(f"🔍 DataFrame filtered columns with real differences: {len(columns_with_diffs)}")
+                        else:
+                            self.logger.info(f"🔍 Column_stats not available or None")
+                    except Exception as e:
+                        self.logger.error(f"❌ Error analyzing column differences: {e}")
+                        import traceback
+                        self.logger.error(f"❌ Traceback: {traceback.format_exc()}")
                         pass  # Ignore errors, will use fallback
                     
                     # Show column differences if found
