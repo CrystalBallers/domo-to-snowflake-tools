@@ -9,7 +9,8 @@ import os
 import re
 import logging
 import math
-from typing import List, Dict, Any, Optional
+import random
+from typing import List, Dict, Any, Optional, Tuple
 import pandas as pd
 import datacompy
 
@@ -303,7 +304,8 @@ class DatasetComparator:
     
     def compare_data_samples(self, domo_dataset_id: str, snowflake_table: str, 
                            key_columns: List[str], sample_size: Optional[int] = None, 
-                           transform_names: bool = False, schema_comparison: Dict[str, Any] = None) -> Dict[str, Any]:
+                           transform_names: bool = False, schema_comparison: Dict[str, Any] = None, 
+                           sampling_method: str = "random") -> Dict[str, Any]:
         """
         Compare data samples using datacompy.
         
@@ -314,6 +316,7 @@ class DatasetComparator:
             sample_size: Number of rows to sample (auto-calculated if None)
             transform_names: Whether to apply column name transformation
             schema_comparison: Schema comparison results to include in report
+            sampling_method: Sampling method ('random' for smart random with fallback, 'ordered' for direct ordered)
             
         Returns:
             Dictionary with data comparison results
@@ -336,45 +339,95 @@ class DatasetComparator:
             self.add_error("Sample Size Calculation", "Could not get total row count", str(e))
             sample_size = sample_size or 1000
         
-        # Get Domo sample using DomoHandler (more robust)
-        try:
-            # Build query for sample
-            key_cols_str = ', '.join(key_columns)
-            sample_query = f"SELECT * FROM table ORDER BY {key_cols_str} LIMIT {sample_size}"
-            
-            # Use DomoHandler for data extraction (now returns pandas directly)
-            domo_df = self.domo_handler.extract_data(
-                dataset_id=domo_dataset_id, 
-                query=sample_query,
-                enable_auto_type_conversion=True  # Keep original types for comparison
-            )
-            
-            if domo_df is None or domo_df.empty:
-                raise Exception("No data returned from Domo")
-            
-            # Apply column transformation if enabled
-            if transform_names:
-                original_columns = domo_df.columns.tolist()
-                transformed_columns = [transform_column_name(col) for col in original_columns]
-                domo_df.columns = transformed_columns
-                key_columns = [transform_column_name(col) for col in key_columns]
+        # Get synchronized samples based on chosen sampling method
+        if sampling_method == "ordered":
+            # Direct ordered sampling - skip random sampling entirely
+            self.logger.info("🎯 Using direct ordered sampling (no random attempt)")
+            actual_sampling_method = "Ordered Sampling"
+            try:
+                # Get Domo sample using ordered method
+                key_cols_str = ', '.join(key_columns)
+                sample_query = f"SELECT * FROM table ORDER BY {key_cols_str} LIMIT {sample_size}"
                 
-        except Exception as e:
-            self.add_error("Domo Sample", "Could not get Domo sample", str(e))
-            return self._get_error_data_result(sample_size)
+                domo_df = self.domo_handler.extract_data(
+                    dataset_id=domo_dataset_id, 
+                    query=sample_query,
+                    enable_auto_type_conversion=True
+                )
+                
+                if domo_df is None or domo_df.empty:
+                    raise Exception("No data returned from Domo")
+                
+                # Get Snowflake sample using ordered method  
+                sf_query = f"SELECT * FROM {snowflake_table} ORDER BY {key_cols_str} LIMIT {sample_size}"
+                sf_df = self.snowflake_handler.execute_query(sf_query)
+                
+                if sf_df is None or sf_df.empty:
+                    raise Exception("No data returned from Snowflake")
+                    
+            except Exception as ordered_error:
+                self.add_error("Data Sampling", "Both random and ordered sampling failed", str(ordered_error))
+                return {'error': f"All sampling methods failed: {ordered_error}"}
+        else:
+            # Random sampling with fallback (default behavior)
+            actual_sampling_method = "Random Sampling"
+            try:
+                # Use the new smart random sampling approach
+                domo_df, sf_df = self._get_smart_random_samples(
+                    domo_dataset_id, snowflake_table, key_columns, sample_size
+                )
+                
+            except Exception as e:
+                self.logger.error(f"❌ Smart random sampling failed: {e}")
+                self.logger.info("🔄 Falling back to ordered sampling...")
+                actual_sampling_method = "Ordered Sampling"
+                
+                # Fallback to original deterministic sampling
+                try:
+                    # Get Domo sample using original method
+                    key_cols_str = ', '.join(key_columns)
+                    sample_query = f"SELECT * FROM table ORDER BY {key_cols_str} LIMIT {sample_size}"
+                    
+                    domo_df = self.domo_handler.extract_data(
+                        dataset_id=domo_dataset_id, 
+                        query=sample_query,
+                        enable_auto_type_conversion=True
+                    )
+                    
+                    if domo_df is None or domo_df.empty:
+                        raise Exception("No data returned from Domo")
+                    
+                    # Get Snowflake sample using original method  
+                    sf_query = f"SELECT * FROM {snowflake_table} ORDER BY {key_cols_str} LIMIT {sample_size}"
+                    sf_df = self.snowflake_handler.execute_query(sf_query)
+                    
+                    if sf_df is None or sf_df.empty:
+                        raise Exception("Failed to get Snowflake sample")
+                    
+                    self.logger.info("✅ Fallback sampling completed")
+                    
+                except Exception as fallback_error:
+                    self.add_error("Sample Extraction", "Both smart and fallback sampling failed", str(fallback_error))
+                    return self._get_error_data_result(sample_size)
         
-        # Get Snowflake sample
-        try:
-            key_cols_str = ', '.join(key_columns)
-            sf_query = f"SELECT * FROM {snowflake_table} ORDER BY {key_cols_str} LIMIT {sample_size}"
-            sf_df = self.snowflake_handler.execute_query(sf_query)
+        # Apply column transformation if enabled (applies to both sampling methods)
+        if transform_names:
+            self.logger.info("🔄 Applying column name transformation...")
             
-            if sf_df is None or sf_df.empty:
-                raise Exception("Failed to get Snowflake sample")
-                
-        except Exception as e:
-            self.add_error("Snowflake Sample", "Could not get Snowflake sample", str(e))
-            return self._get_error_data_result(sample_size, len(domo_df))
+            # Transform Domo columns
+            original_domo_columns = domo_df.columns.tolist()
+            transformed_domo_columns = [transform_column_name(col) for col in original_domo_columns]
+            domo_df.columns = transformed_domo_columns
+            
+            # Transform Snowflake columns (may have different case)
+            original_sf_columns = sf_df.columns.tolist()
+            transformed_sf_columns = [transform_column_name(col) for col in original_sf_columns]
+            sf_df.columns = transformed_sf_columns
+            
+            # Transform key columns for datacompy
+            key_columns = [transform_column_name(col) for col in key_columns]
+            
+            self.logger.info(f"🔄 Column transformation applied to both DataFrames")
         
         # Use datacompy for comparison
         try:
@@ -500,7 +553,8 @@ class DatasetComparator:
                 'rows_with_differences': self._count_differing_rows(comparison),
                 'transform_applied': transform_names,
                 'report_file': report_filename,
-                'comparison_object': comparison  # Add comparison object for executive summary
+                'comparison_object': comparison,  # Add comparison object for executive summary
+                'sampling_method': actual_sampling_method  # Track which sampling method was actually used
             }
             
         except Exception as e:
@@ -533,9 +587,263 @@ class DatasetComparator:
             'error': True
         }
     
+    def _get_all_unique_keys(self, domo_dataset_id: str, key_columns: List[str]) -> pd.DataFrame:
+        """
+        Obtiene todas las combinaciones únicas de keys del dataset de Domo.
+        
+        Args:
+            domo_dataset_id: ID del dataset de Domo
+            key_columns: Lista de columnas que actúan como keys
+            
+        Returns:
+            DataFrame con todas las combinaciones únicas de keys
+        """
+        key_cols_str = ', '.join(key_columns)
+        all_keys_query = f"SELECT DISTINCT {key_cols_str} FROM table"
+        
+        self.logger.info(f"📋 Getting all unique key combinations for columns: {key_columns}")
+        
+        all_keys_df = self.domo_handler.extract_data(
+            dataset_id=domo_dataset_id,
+            query=all_keys_query,
+            enable_auto_type_conversion=False  # Keep original types for exact matching
+        )
+        
+        if all_keys_df is None or all_keys_df.empty:
+            raise Exception("Could not retrieve unique keys from Domo dataset")
+        
+        self.logger.info(f"📊 Found {len(all_keys_df)} unique key combinations")
+        return all_keys_df
+    
+    def _build_efficient_where_clause(self, sampled_keys_df: pd.DataFrame, key_columns: List[str]) -> str:
+        """
+        Construye una cláusula WHERE eficiente y compatible con MySQL.
+        
+        Args:
+            sampled_keys_df: DataFrame con las combinaciones de keys seleccionadas
+            key_columns: Lista de columnas que actúan como keys
+            
+        Returns:
+            String con la cláusula WHERE optimizada y compatible con MySQL
+        """
+        if sampled_keys_df.empty:
+            raise Exception("No sampled keys provided")
+        
+        if len(key_columns) == 1:
+            # Un solo key column: usar simple IN (muy eficiente)
+            col = key_columns[0]
+            values = sampled_keys_df[col].dropna().tolist()
+            
+            # Manejar diferentes tipos de datos
+            if all(isinstance(v, str) for v in values):
+                # String values: escapar comillas (no podemos usar backslash en f-strings)
+                escaped_values = []
+                for v in values:
+                    escaped_val = str(v).replace("'", "''")  # Escapar comillas simples
+                    escaped_values.append(f"'{escaped_val}'")
+            else:
+                # Numeric or other values
+                escaped_values = [str(v) for v in values]
+            
+            values_str = ', '.join(escaped_values)
+            where_clause = f"{col} IN ({values_str})"
+            
+        elif len(key_columns) == 2:
+            # Dos key columns: usar ORs para máxima compatibilidad con MySQL
+            # (IN con tuples puede fallar en algunas versiones de MySQL)
+            where_clause = self._build_or_where_clause(sampled_keys_df, key_columns)
+                
+        else:
+            # 3+ columns: usar approach de ORs (pero son pocas filas, así que está bien)
+            where_clause = self._build_or_where_clause(sampled_keys_df, key_columns)
+        
+        self.logger.info(f"🔍 Built efficient WHERE clause for {len(sampled_keys_df)} combinations")
+        self.logger.debug(f"WHERE clause (first 200 chars): {where_clause[:200]}...")
+        
+        return where_clause
+    
+    def _build_or_where_clause(self, sampled_keys_df: pd.DataFrame, key_columns: List[str]) -> str:
+        """
+        Construye cláusula WHERE usando ORs para casos complejos (fallback).
+        
+        Args:
+            sampled_keys_df: DataFrame con las combinaciones de keys seleccionadas  
+            key_columns: Lista de columnas que actúan como keys
+            
+        Returns:
+            String con la cláusula WHERE usando ORs
+        """
+        where_conditions = []
+        
+        for _, row in sampled_keys_df.iterrows():
+            row_conditions = []
+            
+            for col in key_columns:
+                value = row[col]
+                
+                # Manejar diferentes tipos de datos
+                if pd.isna(value) or value is None:
+                    row_conditions.append(f"{col} IS NULL")
+                elif isinstance(value, str):
+                    if value.strip() == '':
+                        row_conditions.append(f"({col} = '' OR {col} IS NULL)")
+                    else:
+                        escaped_value = str(value).replace("'", "''")
+                        row_conditions.append(f"{col} = '{escaped_value}'")
+                else:
+                    row_conditions.append(f"{col} = {value}")
+            
+            # Unir condiciones de esta fila con AND
+            row_condition = "(" + " AND ".join(row_conditions) + ")"
+            where_conditions.append(row_condition)
+        
+        # Unir todas las filas con OR
+        return " OR ".join(where_conditions)
+    
+    def _get_smart_random_samples(self, domo_dataset_id: str, snowflake_table: str, 
+                                 key_columns: List[str], sample_size: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Obtiene muestras aleatorias sincronizadas usando random determinístico en Python.
+        
+        Esta es la "solución ganadora": rápida, garantiza mismas filas, y reproducible.
+        
+        Args:
+            domo_dataset_id: ID del dataset de Domo
+            snowflake_table: Nombre de la tabla en Snowflake
+            key_columns: Lista de columnas que actúan como keys
+            sample_size: Número de filas a muestrear
+            
+        Returns:
+            Tuple[domo_df, snowflake_df] con exactamente las mismas filas
+        """
+        self.logger.info("🎲 Using smart random sampling (Python-controlled)")
+        
+        # Paso 1: Obtener TODAS las combinaciones únicas (UNA sola query rápida)
+        all_keys_df = self._get_all_unique_keys(domo_dataset_id, key_columns)
+        
+        if len(all_keys_df) <= sample_size:
+            # Si hay pocas keys únicas, usar todas
+            self.logger.info(f"📊 Only {len(all_keys_df)} unique keys available, using all")
+            sampled_keys_df = all_keys_df
+        else:
+            # Paso 2: Python hace el random sampling (DETERMINÍSTICO)
+            self.logger.info(f"🎲 Randomly sampling {sample_size} from {len(all_keys_df)} unique keys...")
+            
+            # Seed fijo para reproducibilidad (puedes cambiarlo por datetime si quieres variedad)
+            random.seed(42)
+            
+            # Random sampling en Python (muy rápido)
+            sampled_indices = random.sample(range(len(all_keys_df)), sample_size)
+            sampled_keys_df = all_keys_df.iloc[sampled_indices].reset_index(drop=True)
+        
+        self.logger.info(f"✅ Selected {len(sampled_keys_df)} key combinations for sampling")
+        
+        # Paso 3: Usar batching inteligente para evitar queries demasiado largos
+        max_batch_size = 10  # Muy pequeño para evitar errores de API de Domo
+        domo_dfs = []
+        sf_dfs = []
+        
+        if len(sampled_keys_df) > max_batch_size:
+            self.logger.info(f"🔄 Using batching: {len(sampled_keys_df)} keys split into batches of {max_batch_size}")
+            
+            # Dividir en batches
+            for i in range(0, len(sampled_keys_df), max_batch_size):
+                batch_end = min(i + max_batch_size, len(sampled_keys_df))
+                batch_keys_df = sampled_keys_df.iloc[i:batch_end].reset_index(drop=True)
+                
+                self.logger.info(f"📦 Processing batch {i//max_batch_size + 1}: {len(batch_keys_df)} keys (rows {i+1}-{batch_end})")
+                
+                # Procesar este batch
+                domo_batch_df, sf_batch_df = self._get_batch_data(
+                    domo_dataset_id, snowflake_table, key_columns, batch_keys_df
+                )
+                
+                if domo_batch_df is not None and not domo_batch_df.empty:
+                    domo_dfs.append(domo_batch_df)
+                if sf_batch_df is not None and not sf_batch_df.empty:
+                    sf_dfs.append(sf_batch_df)
+            
+            # Combinar todos los batches
+            if domo_dfs and sf_dfs:
+                domo_df = pd.concat(domo_dfs, ignore_index=True)
+                sf_df = pd.concat(sf_dfs, ignore_index=True)
+                self.logger.info(f"✅ Combined {len(domo_dfs)} batches: Domo {len(domo_df)} rows, Snowflake {len(sf_df)} rows")
+            else:
+                raise Exception("No data returned from any batch")
+                
+        else:
+            # Sample size pequeño, usar método original
+            self.logger.info(f"📦 Single batch processing: {len(sampled_keys_df)} keys")
+            domo_df, sf_df = self._get_batch_data(
+                domo_dataset_id, snowflake_table, key_columns, sampled_keys_df
+            )
+        
+        # Verificar que ambos DataFrames tienen datos
+        if domo_df is None or domo_df.empty:
+            raise Exception("No data returned from Domo with sampled keys")
+        if sf_df is None or sf_df.empty:
+            raise Exception("No data returned from Snowflake with sampled keys")
+            
+        
+        # Validar resultados finales
+        self.logger.info(f"✅ Smart random sampling completed:")
+        self.logger.info(f"   📊 Domo: {len(domo_df)} rows, {len(domo_df.columns)} columns") 
+        self.logger.info(f"   📊 Snowflake: {len(sf_df)} rows, {len(sf_df.columns)} columns")
+        
+        # Advertir si hay discrepancias significativas en el número de filas
+        expected_rows = len(sampled_keys_df)
+        if len(domo_df) < expected_rows * 0.8:
+            self.logger.warning(f"⚠️ Domo returned fewer rows than expected: {len(domo_df)} vs {expected_rows}")
+        if len(sf_df) < expected_rows * 0.8:
+            self.logger.warning(f"⚠️ Snowflake returned fewer rows than expected: {len(sf_df)} vs {expected_rows}")
+        
+        return domo_df, sf_df
+    
+    def _get_batch_data(self, domo_dataset_id: str, snowflake_table: str, 
+                       key_columns: List[str], batch_keys_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Obtiene datos para un batch específico de keys.
+        
+        Args:
+            domo_dataset_id: ID del dataset de Domo
+            snowflake_table: Nombre de la tabla en Snowflake
+            key_columns: Lista de columnas que actúan como keys
+            batch_keys_df: DataFrame con las combinaciones de keys para este batch
+            
+        Returns:
+            Tuple[domo_df, snowflake_df] para este batch
+        """
+        # Construir WHERE clause para este batch
+        where_clause = self._build_efficient_where_clause(batch_keys_df, key_columns)
+        
+        # Ejecutar query en Domo
+        self.logger.info(f"📥 Getting {len(batch_keys_df)} rows from Domo...")
+        domo_query = f"SELECT * FROM table WHERE {where_clause}"
+        domo_df = self.domo_handler.extract_data(
+            dataset_id=domo_dataset_id,
+            query=domo_query,
+            enable_auto_type_conversion=True
+        )
+        
+        if domo_df is None or domo_df.empty:
+            self.logger.warning(f"⚠️ No data returned from Domo for this batch")
+            domo_df = pd.DataFrame()
+        
+        # Ejecutar query en Snowflake
+        self.logger.info(f"📥 Getting {len(batch_keys_df)} rows from Snowflake...")
+        sf_query = f"SELECT * FROM {snowflake_table} WHERE {where_clause}"
+        sf_df = self.snowflake_handler.execute_query(sf_query)
+        
+        if sf_df is None or sf_df.empty:
+            self.logger.warning(f"⚠️ No data returned from Snowflake for this batch")
+            sf_df = pd.DataFrame()
+        
+        self.logger.info(f"✅ Batch completed: Domo {len(domo_df)} rows, Snowflake {len(sf_df)} rows")
+        return domo_df, sf_df
+    
     def generate_report(self, domo_dataset_id: str, snowflake_table: str, 
                        key_columns: List[str], sample_size: Optional[int] = None,
-                       transform_names: bool = False) -> Dict[str, Any]:
+                       transform_names: bool = False, sampling_method: str = "random") -> Dict[str, Any]:
         """
         Generate complete comparison report.
         
@@ -545,6 +853,7 @@ class DatasetComparator:
             key_columns: List of key columns for comparison
             sample_size: Number of rows to sample
             transform_names: Whether to apply column name transformation
+            sampling_method: Sampling method ('random' or 'ordered')
             
         Returns:
             Complete comparison report dictionary
@@ -564,7 +873,7 @@ class DatasetComparator:
         schema_comparison = self.compare_schemas(domo_dataset_id, snowflake_table, transform_names)
         row_count_comparison = self.compare_row_counts(domo_dataset_id, snowflake_table)
         data_comparison = self.compare_data_samples(domo_dataset_id, snowflake_table, 
-                                                   key_columns, sample_size, transform_names, schema_comparison)
+                                                   key_columns, sample_size, transform_names, schema_comparison, sampling_method)
         
         # Determine overall match
         overall_match = False
@@ -694,7 +1003,7 @@ class DatasetComparator:
         print("="*80)
     
     def compare_from_spreadsheet(self, spreadsheet_id: str, sheet_name: str = None,
-                                credentials_path: str = None) -> Dict[str, Any]:
+                                credentials_path: str = None, sampling_method: str = "random") -> Dict[str, Any]:
         """
         Compare multiple datasets from Google Sheets configuration.
         
@@ -710,6 +1019,7 @@ class DatasetComparator:
             spreadsheet_id: Google Sheets spreadsheet ID
             sheet_name: Sheet name containing comparison configurations (uses COMPARISON_SHEET_NAME env var if None)
             credentials_path: Path to Google Sheets credentials file
+            sampling_method: Sampling method ('random' or 'ordered')
             
         Returns:
             Dictionary with comparison results summary
@@ -907,7 +1217,8 @@ class DatasetComparator:
                         snowflake_table=str(table_name),
                         key_columns=key_columns,
                         sample_size=sample_size,
-                        transform_names=transform_columns
+                        transform_names=transform_columns,
+                        sampling_method=sampling_method
                     )
                     
                     # Check if comparison was successful
@@ -1007,7 +1318,7 @@ class DatasetComparator:
                 "errors": [str(e)]
             }
     
-    def compare_from_inventory(self, credentials_path: str = None) -> Dict[str, Any]:
+    def compare_from_inventory(self, credentials_path: str = None, sampling_method: str = "random") -> Dict[str, Any]:
         """
         Compare datasets from the existing inventory spreadsheet.
         
@@ -1018,6 +1329,7 @@ class DatasetComparator:
         
         Args:
             credentials_path: Path to Google Sheets credentials file
+            sampling_method: Sampling method ('random' or 'ordered')
             
         Returns:
             Dictionary with comparison results summary
@@ -1168,7 +1480,8 @@ class DatasetComparator:
                         snowflake_table=table_name,
                         key_columns=key_columns,
                         sample_size=None,  # Use auto-calculation
-                        transform_names=False  # Don't transform by default for inventory
+                        transform_names=False,  # Don't transform by default for inventory
+                        sampling_method=sampling_method
                     )
                     
                     # Check if comparison was successful
@@ -1244,6 +1557,16 @@ class DatasetComparator:
         dataset_id = report.get('domo_dataset_id', 'N/A')
         table_name = report.get('snowflake_table', 'N/A')
         
+        # Get database and schema from environment configuration
+        from .utils.common import get_env_config
+        env_config = get_env_config()
+        database = env_config.get('SNOWFLAKE_DATABASE', 'UNKNOWN_DB')
+        schema = env_config.get('SNOWFLAKE_SCHEMA', 'UNKNOWN_SCHEMA')
+        
+        # Build full table path with real database and schema
+        database_schema_table = f"{database}.{schema}.{table_name}"
+        sampling_method = report.get('data_comparison', {}).get('sampling_method', 'Unknown')
+        
         # Track failure reasons for debugging
         failure_reasons = []
         
@@ -1264,8 +1587,8 @@ class DatasetComparator:
         
         # Check for major errors
         if report.get('errors'):
-            error_summary = f"❌ COMPARISON FAILED [{timestamp}]\n"
-            error_summary += f"Dataset: {dataset_id} → {table_name}\n"
+            error_summary = f"[{timestamp}] {sampling_method} - COMPARISON FAILED:\n"
+            error_summary += f"{dataset_id} → {database_schema_table}\n"
             error_summary += f"❌ Errors encountered:\n"
             for error in report.get('errors', []):
                 error_summary += f"  • {error}\n"
@@ -1284,7 +1607,10 @@ class DatasetComparator:
         
         # Wrap the entire summary generation in try-catch
         try:
-            summary_lines = [f"[{timestamp}] {status}: {dataset_id} → {table_name}"]
+            summary_lines = [
+                f"[{timestamp}] {sampling_method} - {status}:",
+                f"{dataset_id} → {database_schema_table}"
+            ]
             
             # Row count analysis
             rows = report.get('row_count_comparison', {})
@@ -1519,8 +1845,8 @@ class DatasetComparator:
         
         except Exception as e:
             # If anything fails during summary generation, return error info
-            failure_summary = f"❌ SUMMARY GENERATION FAILED [{timestamp}]\n"
-            failure_summary += f"Dataset: {dataset_id} → {table_name}\n"
+            failure_summary = f"[{timestamp}] {sampling_method} - SUMMARY GENERATION FAILED:\n"
+            failure_summary += f"{dataset_id} → {database_schema_table}\n"
             failure_summary += f"💥 Unexpected error: {str(e)}\n"
             failure_summary += f"🔍 Error type: {type(e).__name__}\n"
             if failure_reasons:

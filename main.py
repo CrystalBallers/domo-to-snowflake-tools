@@ -409,6 +409,8 @@ def handle_compare_command(args) -> int:
     else:
         logger.info(f"🔄 Column Name Transformation: Disabled")
     
+    logger.info(f"🎲 Sampling Method: {args.sampling_method}")
+    
     try:
         # Initialize the comparator
         comparator = DatasetComparator()
@@ -424,7 +426,8 @@ def handle_compare_command(args) -> int:
             snowflake_table=args.snowflake_table,
             key_columns=args.key_columns,
             sample_size=args.sample_size,
-            transform_names=args.transform_columns
+            transform_names=args.transform_columns,
+            sampling_method=args.sampling_method
         )
         
         # Print the report
@@ -490,7 +493,8 @@ def handle_compare_from_spreadsheet(args) -> int:
         results = comparator.compare_from_spreadsheet(
             spreadsheet_id=spreadsheet_id,
             sheet_name=args.sheet_name,
-            credentials_path=args.credentials
+            credentials_path=args.credentials,
+            sampling_method=args.sampling_method
         )
         
         # Determine exit code based on results
@@ -545,7 +549,8 @@ def handle_compare_from_inventory(args) -> int:
         
         # Run comparisons from inventory
         results = comparator.compare_from_inventory(
-            credentials_path=args.credentials
+            credentials_path=args.credentials,
+            sampling_method=args.sampling_method
         )
         
         # Determine exit code based on results
@@ -822,6 +827,13 @@ Environment Variables:
         "--transform-columns",
         action="store_true",
         help="Transform column names for comparison (e.g., 'My Column' -> 'my_column')"
+    )
+    
+    compare_parser.add_argument(
+        "--sampling-method",
+        choices=["random", "ordered"],
+        default="random",
+        help="Sampling method: 'random' (tries smart random with fallback to ordered) or 'ordered' (direct ordered sampling). Default: random"
     )
     
     compare_parser.add_argument(
