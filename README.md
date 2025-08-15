@@ -69,7 +69,7 @@ source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ### 3. Clone, install and clean argo-utils-cli 
 ```bash
 git clone https://github.com/CrystalBallers/argo-utils-cli.git argo-utils-cli
-pip install -e ./argo-utils-cli && rm -rf argo-utils-cli
+pip install -e ./argo-utils-cli # (Not Yet) && rm -rf argo-utils-cli
 ```
 
 ### 4. Install Dependencies
