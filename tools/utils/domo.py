@@ -11,8 +11,7 @@ import os
 import logging
 import sys
 from typing import Optional
-import polars as pl
-import pandas as pd  # Still needed for to_dataframe conversion
+import pandas as pd
 from pathlib import Path
 
 import subprocess              
@@ -93,7 +92,7 @@ class DomoHandler:
             return False
     
     def extract_data(self, dataset_id: str, query: Optional[str] = None, 
-                    chunk_size: int = 1000000, enable_auto_type_conversion: bool = False) -> Optional[pl.DataFrame]:
+                    chunk_size: int = 1000000, enable_auto_type_conversion: bool = False) -> Optional[pd.DataFrame]:
         """
         Extract data from Domo dataset.
         
@@ -104,7 +103,7 @@ class DomoHandler:
             enable_auto_type_conversion: Whether to enable automatic type conversion (default: False)
             
         Returns:
-            Optional[pl.DataFrame]: Extracted data or None if failed
+            Optional[pd.DataFrame]: Extracted data or None if failed
         """
         if self.dataset_api is None:
             logger.error("Domo dataset API not initialized")
@@ -136,7 +135,7 @@ class DomoHandler:
             logger.error(f"Failed to extract data from Domo: {e}")
             return None
     
-    def _extract_single_chunk(self, dataset_id: str, query: str, enable_auto_type_conversion: bool = False) -> Optional[pl.DataFrame]:
+    def _extract_single_chunk(self, dataset_id: str, query: str, enable_auto_type_conversion: bool = False) -> Optional[pd.DataFrame]:
         """
         Extract data in a single chunk.
         
@@ -146,7 +145,7 @@ class DomoHandler:
             enable_auto_type_conversion: Whether to enable automatic type conversion
             
         Returns:
-            Optional[pl.DataFrame]: Extracted data or None if failed
+            Optional[pd.DataFrame]: Extracted data or None if failed
         """
         try:
             logger.info("Extracting data in single chunk...")
@@ -154,41 +153,24 @@ class DomoHandler:
             # Execute query
             result = self.dataset_api.query(dataset_id, query)
             
-            # Convert to DataFrame (pandas first, then to polars)
+            # Convert to DataFrame (pandas directly)
             pandas_df = to_dataframe(result)
             
             if pandas_df is not None and len(pandas_df) > 0:
-                # Convert pandas to polars with safe conversion
-                try:
-                    df = self._safe_pandas_to_polars(pandas_df)
-                    if df is not None:
-                        logger.info(f"✅ Extracted {len(df)} rows")
-                        # Use the provided auto-type conversion setting
-                        return self._clean_dataframe(df, enable_auto_type_conversion=enable_auto_type_conversion)
-                    else:
-                        logger.error("Failed to convert single chunk")
-                        return None
-                except Exception as conversion_error:
-                    logger.error(f"Failed to convert pandas to polars: {conversion_error}")
-                    # Try fallback method
-                    df = self._fallback_pandas_to_polars(pandas_df)
-                    if df is not None:
-                        logger.info(f"✅ Extracted {len(df)} rows (fallback method)")
-                        # Use the provided auto-type conversion setting
-                        return self._clean_dataframe(df, enable_auto_type_conversion=enable_auto_type_conversion)
-                    else:
-                        logger.error("Fallback conversion also failed")
-                        return None
+                # Clean DataFrame if needed using pandas operations
+                cleaned_df = self._clean_pandas_dataframe(pandas_df, enable_auto_type_conversion)
+                logger.info(f"✅ Extracted {len(cleaned_df)} rows")
+                return cleaned_df
             else:
                 logger.warning("No data returned from query")
-                return pl.DataFrame()
+                return pd.DataFrame()
                 
         except Exception as e:
             logger.error(f"Single chunk extraction failed: {e}")
             return None
     
     def _extract_with_pagination(self, dataset_id: str, base_query: str, chunk_size: int, 
-                                total_rows: int, enable_auto_type_conversion: bool = False) -> Optional[pl.DataFrame]:
+                                total_rows: int, enable_auto_type_conversion: bool = False) -> Optional[pd.DataFrame]:
         """
         Extract data using pagination for large datasets.
         
@@ -200,7 +182,7 @@ class DomoHandler:
             enable_auto_type_conversion: Whether to enable automatic type conversion
             
         Returns:
-            Optional[pl.DataFrame]: Extracted data or None if failed
+            Optional[pd.DataFrame]: Extracted data or None if failed
         """
         try:
             logger.info(f"Extracting data in chunks of {chunk_size} rows...")
@@ -218,29 +200,14 @@ class DomoHandler:
                 # Execute query
                 result = self.dataset_api.query(dataset_id, paginated_query)
                 
-                # Convert to DataFrame (pandas first, then to polars)
+                # Convert to DataFrame (pandas directly)
                 pandas_chunk_df = to_dataframe(result)
                 
                 if pandas_chunk_df is not None and len(pandas_chunk_df) > 0:
-                    # Convert pandas to polars with proper error handling
-                    try:
-                        chunk_df = self._safe_pandas_to_polars(pandas_chunk_df)
-                        if chunk_df is not None:
-                            all_data.append(chunk_df)
-                            logger.info(f"Extracted chunk: {len(chunk_df)} rows")
-                        else:
-                            logger.error(f"Failed to convert chunk at offset {offset}")
-                            break
-                    except Exception as conversion_error:
-                        logger.error(f"Failed to convert pandas to polars at offset {offset}: {conversion_error}")
-                        # Try a fallback approach
-                        chunk_df = self._fallback_pandas_to_polars(pandas_chunk_df)
-                        if chunk_df is not None:
-                            all_data.append(chunk_df)
-                            logger.info(f"Extracted chunk (fallback method): {len(chunk_df)} rows")
-                        else:
-                            logger.error(f"Fallback conversion also failed at offset {offset}")
-                            break
+                    # Clean chunk DataFrame
+                    chunk_df = self._clean_pandas_dataframe(pandas_chunk_df, enable_auto_type_conversion)
+                    all_data.append(chunk_df)
+                    logger.info(f"Extracted chunk: {len(chunk_df)} rows")
                 else:
                     logger.warning(f"No data in chunk at offset {offset}")
                     break
@@ -254,42 +221,41 @@ class DomoHandler:
             
             if all_data:
                 # Combine all chunks
-                combined_df = pl.concat(all_data, how="vertical")
+                combined_df = pd.concat(all_data, ignore_index=True)
                 logger.info(f"✅ Extracted {len(combined_df)} rows in {len(all_data)} chunks")
                 # Use the provided auto-type conversion setting
-                return self._clean_dataframe(combined_df, enable_auto_type_conversion=enable_auto_type_conversion)
+                return self._clean_pandas_dataframe(combined_df, enable_auto_type_conversion=enable_auto_type_conversion)
             else:
                 logger.warning("No data extracted from any chunk")
-                return pl.DataFrame()
+                return pd.DataFrame()
                 
         except Exception as e:
             logger.error(f"Pagination extraction failed: {e}")
             return None
     
-    def _clean_dataframe(self, df: pl.DataFrame, enable_auto_type_conversion: bool = False) -> pl.DataFrame:
+    def _clean_pandas_dataframe(self, df: pd.DataFrame, enable_auto_type_conversion: bool = False) -> pd.DataFrame:
         """
-        Clean and preprocess DataFrame.
+        Clean and preprocess pandas DataFrame.
         
         Args:
-            df: Raw DataFrame
+            df: Raw pandas DataFrame
             enable_auto_type_conversion: Whether to enable automatic type conversion (default: False)
             
         Returns:
-            pl.DataFrame: Cleaned DataFrame
+            pd.DataFrame: Cleaned DataFrame
         """
         try:
             logger.info("Cleaning DataFrame...")
             
             # Remove completely empty rows (all columns null)
-            # In Polars, we need to filter out rows where all values are null
-            df = df.filter(~pl.all_horizontal(pl.all().is_null()))
+            df = df.dropna(how='all')
             
-            if df.is_empty():
+            if df.empty:
                 logger.warning("DataFrame is empty after cleaning")
                 return df
             
             # Clean column names
-            df = df.rename(lambda col: col.strip())
+            df.columns = df.columns.str.strip()
             
             # Only perform automatic type conversion if explicitly enabled
             if enable_auto_type_conversion:
@@ -298,22 +264,23 @@ class DomoHandler:
                 # Handle data types
                 for col in df.columns:
                     # Skip if column is already numeric
-                    if df.schema[col] in [pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64, pl.Float32, pl.Float64]:
+                    if pd.api.types.is_numeric_dtype(df[col]):
                         continue
                     
                     # Try to convert to numeric if possible
                     numeric_threshold = 0.8  # Increased threshold to be more conservative
-                    non_null_values = df.filter(pl.col(col).is_not_null()).select(pl.col(col))
+                    non_null_values = df[col].dropna()
                     
                     if len(non_null_values) > 0:
                         # Count how many values can be converted to numeric
                         try:
-                            numeric_count = non_null_values.select(pl.col(col).cast(pl.Float64).is_not_null()).sum().item()
+                            numeric_series = pd.to_numeric(non_null_values, errors='coerce')
+                            numeric_count = numeric_series.notna().sum()
                             
                             # Convert if threshold is met
                             if numeric_count / len(non_null_values) >= numeric_threshold:
                                 try:
-                                    df = df.with_columns(pl.col(col).cast(pl.Float64))
+                                    df[col] = pd.to_numeric(df[col], errors='coerce')
                                     logger.info(f"Converted column '{col}' to numeric")
                                 except Exception:
                                     pass
@@ -322,19 +289,20 @@ class DomoHandler:
                 
                 # Handle date columns
                 for col in df.columns:
-                    if df.schema[col] == pl.Utf8:
+                    if df[col].dtype == 'object':
                         # Try to convert to datetime
                         date_threshold = 0.8  # Increased threshold to be more conservative
-                        non_null_values = df.filter(pl.col(col).is_not_null()).select(pl.col(col))
+                        non_null_values = df[col].dropna()
                         
                         if len(non_null_values) > 0:
                             try:
-                                date_count = non_null_values.select(pl.col(col).str.to_datetime().is_not_null()).sum().item()
+                                date_series = pd.to_datetime(non_null_values, errors='coerce')
+                                date_count = date_series.notna().sum()
                                 
                                 # Convert if threshold is met
                                 if date_count / len(non_null_values) >= date_threshold:
                                     try:
-                                        df = df.with_columns(pl.col(col).str.to_datetime())
+                                        df[col] = pd.to_datetime(df[col], errors='coerce')
                                         logger.info(f"Converted column '{col}' to datetime")
                                     except Exception:
                                         pass
@@ -343,22 +311,19 @@ class DomoHandler:
                 
                 # Handle boolean columns
                 for col in df.columns:
-                    if df.schema[col] == pl.Utf8:
+                    if df[col].dtype == 'object':
                         # Check if column contains boolean-like values
                         try:
-                            unique_values = df.filter(pl.col(col).is_not_null()).select(pl.col(col).unique()).to_series()
+                            unique_values = df[col].dropna().unique()
                             if len(unique_values) <= 2:
                                 bool_like = all(str(val).lower() in ['true', 'false', '1', '0', 'yes', 'no'] 
                                               for val in unique_values)
                                 if bool_like:
                                     try:
-                                        df = df.with_columns(
-                                            pl.when(pl.col(col).str.to_lowercase().is_in(['true', '1', 'yes']))
-                                            .then(True)
-                                            .otherwise(False)
-                                            .cast(pl.Boolean)
-                                            .alias(col)
-                                        )
+                                        df[col] = df[col].str.lower().map({
+                                            'true': True, '1': True, 'yes': True,
+                                            'false': False, '0': False, 'no': False
+                                        })
                                         logger.info(f"Converted column '{col}' to boolean")
                                     except Exception:
                                         pass
@@ -374,89 +339,7 @@ class DomoHandler:
             logger.error(f"DataFrame cleaning failed: {e}")
             return df  # Return original if cleaning fails
     
-    def _safe_pandas_to_polars(self, pandas_df: pd.DataFrame) -> Optional[pl.DataFrame]:
-        """
-        Safely convert pandas DataFrame to polars DataFrame with data type handling.
-        
-        Args:
-            pandas_df: Pandas DataFrame to convert
-            
-        Returns:
-            Optional[pl.DataFrame]: Converted polars DataFrame or None if failed
-        """
-        try:
-            # Log DataFrame info for debugging
-            logger.debug(f"Converting pandas DataFrame: {pandas_df.shape}")
-            logger.debug(f"Data types: {pandas_df.dtypes.to_dict()}")
-            
-            # Check for problematic columns and fix them
-            pandas_df_cleaned = pandas_df.copy()
-            
-            for col in pandas_df_cleaned.columns:
-                dtype = pandas_df_cleaned[col].dtype
-                
-                # Handle object columns that might contain mixed types
-                if dtype == 'object':
-                    # Convert all values to strings to avoid type conflicts
-                    pandas_df_cleaned[col] = pandas_df_cleaned[col].astype(str)
-                    # Replace 'nan' strings with actual NaN values
-                    pandas_df_cleaned[col] = pandas_df_cleaned[col].replace('nan', pd.NA)
-                
-                # Handle integer columns with NaN values
-                elif str(dtype).startswith('int') and pandas_df_cleaned[col].isnull().any():
-                    # Convert to nullable integer type
-                    pandas_df_cleaned[col] = pandas_df_cleaned[col].astype('Int64')
-                
-                # Handle float columns with potential infinity values
-                elif str(dtype).startswith('float'):
-                    # Replace inf/-inf with NaN
-                    pandas_df_cleaned[col] = pandas_df_cleaned[col].replace([float('inf'), float('-inf')], pd.NA)
-            
-            # Convert to polars
-            polars_df = pl.from_pandas(pandas_df_cleaned)
-            
-            logger.debug(f"Successfully converted to polars: {polars_df.shape}")
-            return polars_df
-            
-        except Exception as e:
-            logger.error(f"Safe pandas to polars conversion failed: {e}")
-            return None
-    
-    def _fallback_pandas_to_polars(self, pandas_df: pd.DataFrame) -> Optional[pl.DataFrame]:
-        """
-        Fallback method to convert pandas DataFrame to polars using more aggressive cleaning.
-        
-        Args:
-            pandas_df: Pandas DataFrame to convert
-            
-        Returns:
-            Optional[pl.DataFrame]: Converted polars DataFrame or None if failed
-        """
-        try:
-            logger.info("Using fallback conversion method - converting all columns to strings")
-            
-            # Convert all columns to strings first
-            pandas_df_str = pandas_df.copy()
-            for col in pandas_df_str.columns:
-                pandas_df_str[col] = pandas_df_str[col].astype(str)
-                # Replace 'nan' with actual None
-                pandas_df_str[col] = pandas_df_str[col].replace('nan', None)
-            
-            # Create polars DataFrame manually
-            data_dict = {}
-            for col in pandas_df_str.columns:
-                # Clean column name
-                clean_col = str(col).strip()
-                data_dict[clean_col] = pandas_df_str[col].tolist()
-            
-            polars_df = pl.DataFrame(data_dict)
-            
-            logger.info(f"Fallback conversion successful: {polars_df.shape}")
-            return polars_df
-            
-        except Exception as e:
-            logger.error(f"Fallback pandas to polars conversion failed: {e}")
-            return None
+
     
     def get_all_datasets(self, batch_size: int = 500) -> list:
         """
@@ -641,7 +524,7 @@ class DomoHandler:
                 return {"columns": []}
             
             # Get dataset info including schema
-            dataset_info = self.dataset_api.get_dataset(dataset_id)
+            dataset_info = self.dataset_api.get(dataset_id)
             schema = dataset_info.get('schema', {})
             
             logger.info(f"Retrieved schema for dataset {dataset_id}")
@@ -673,9 +556,9 @@ class DomoHandler:
             if df is None:
                 return {"datasource": "", "columns": [], "rows": []}
             
-            # Convert polars DataFrame to the expected format
-            columns = df.columns
-            rows = df.rows()
+            # Convert pandas DataFrame to the expected format
+            columns = df.columns.tolist()
+            rows = df.values.tolist()
             
             result = {
                 "datasource": dataset_id,

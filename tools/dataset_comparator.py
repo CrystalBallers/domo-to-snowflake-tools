@@ -130,7 +130,7 @@ class DatasetComparator:
             
             sf_result = self.snowflake_handler.execute_query(query)
             if sf_result is not None:
-                sf_schema_df = sf_result.to_pandas()
+                sf_schema_df = sf_result  # Already pandas DataFrame
                 sf_columns = {row['COLUMN_NAME']: row['DATA_TYPE'] for _, row in sf_schema_df.iterrows()}
             else:
                 raise Exception("Failed to get Snowflake schema")
@@ -219,7 +219,7 @@ class DatasetComparator:
             sf_count_query = f"SELECT COUNT(*) as row_count FROM {snowflake_table}"
             sf_result = self.snowflake_handler.execute_query(sf_count_query)
             if sf_result is not None:
-                sf_count = int(sf_result.to_pandas().iloc[0]['ROW_COUNT'])
+                sf_count = int(sf_result.iloc[0]['ROW_COUNT'])  # Already pandas DataFrame
             else:
                 raise Exception("Failed to get Snowflake count")
         except Exception as e:
@@ -319,18 +319,15 @@ class DatasetComparator:
             key_cols_str = ', '.join(key_columns)
             sample_query = f"SELECT * FROM table ORDER BY {key_cols_str} LIMIT {sample_size}"
             
-            # Use DomoHandler for data extraction
-            domo_df_polars = self.domo_handler.extract_data(
+            # Use DomoHandler for data extraction (now returns pandas directly)
+            domo_df = self.domo_handler.extract_data(
                 dataset_id=domo_dataset_id, 
                 query=sample_query,
                 enable_auto_type_conversion=True  # Keep original types for comparison
             )
             
-            if domo_df_polars is None or domo_df_polars.is_empty():
+            if domo_df is None or domo_df.empty:
                 raise Exception("No data returned from Domo")
-            
-            # Convert polars to pandas for datacompy compatibility
-            domo_df = domo_df_polars.to_pandas()
             
             # Apply column transformation if enabled
             if transform_names:
@@ -347,11 +344,9 @@ class DatasetComparator:
         try:
             key_cols_str = ', '.join(key_columns)
             sf_query = f"SELECT * FROM {snowflake_table} ORDER BY {key_cols_str} LIMIT {sample_size}"
-            sf_result = self.snowflake_handler.execute_query(sf_query)
+            sf_df = self.snowflake_handler.execute_query(sf_query)
             
-            if sf_result is not None:
-                sf_df = sf_result.to_pandas()
-            else:
+            if sf_df is None or sf_df.empty:
                 raise Exception("Failed to get Snowflake sample")
                 
         except Exception as e:
@@ -360,6 +355,50 @@ class DatasetComparator:
         
         # Use datacompy for comparison
         try:
+            self.logger.info(f"📊 Domo DataFrame shape: {domo_df.shape}, columns: {list(domo_df.columns)}")
+            self.logger.info(f"📊 Snowflake DataFrame shape: {sf_df.shape}, columns: {list(sf_df.columns)}")
+            self.logger.info(f"📊 Key columns for comparison: {key_columns}")
+            
+            # Normalize data types for key columns to ensure compatibility
+            for col in key_columns:
+                # Find matching columns case-insensitively
+                domo_col = None
+                sf_col = None
+                
+                # Find column in Domo DataFrame (case-insensitive)
+                for domo_column in domo_df.columns:
+                    if domo_column.lower() == col.lower():
+                        domo_col = domo_column
+                        break
+                
+                # Find column in Snowflake DataFrame (case-insensitive)
+                for sf_column in sf_df.columns:
+                    if sf_column.lower() == col.lower():
+                        sf_col = sf_column
+                        break
+                
+                if domo_col and sf_col:
+                    domo_dtype = str(domo_df[domo_col].dtype)
+                    sf_dtype = str(sf_df[sf_col].dtype)
+                    
+                    self.logger.info(f"Key column '{col}': Domo '{domo_col}'={domo_dtype}, Snowflake '{sf_col}'={sf_dtype}")
+                    
+                    # If types are different, convert both to string for compatibility
+                    if domo_dtype != sf_dtype:
+                        self.logger.info(f"Converting column '{col}' to string for compatibility")
+                        domo_df[domo_col] = domo_df[domo_col].astype(str)
+                        sf_df[sf_col] = sf_df[sf_col].astype(str)
+                    
+                    # Rename columns to match key_columns for datacompy compatibility
+                    if domo_col != col:
+                        domo_df = domo_df.rename(columns={domo_col: col})
+                        self.logger.info(f"Renamed Domo column '{domo_col}' to '{col}'")
+                    if sf_col != col:
+                        sf_df = sf_df.rename(columns={sf_col: col})
+                        self.logger.info(f"Renamed Snowflake column '{sf_col}' to '{col}'")
+                else:
+                    self.logger.warning(f"Key column '{col}' not found in both DataFrames. Domo: {domo_col}, Snowflake: {sf_col}")
+            
             comparison = datacompy.Compare(
                 domo_df,
                 sf_df,

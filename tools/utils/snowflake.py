@@ -11,7 +11,7 @@ import os
 import logging
 import time
 from typing import Optional
-import polars as pl
+import pandas as pd
 from dotenv import load_dotenv
 
 try:
@@ -234,7 +234,7 @@ class SnowflakeHandler:
         # Default to password authentication
         return "password"
     
-    def upload_data(self, df: pl.DataFrame, table_name: str, if_exists: str = 'replace') -> bool:
+    def upload_data(self, df: pd.DataFrame, table_name: str, if_exists: str = 'replace') -> bool:
         """
         Upload DataFrame to Snowflake table using cursor method.
         
@@ -258,7 +258,7 @@ class SnowflakeHandler:
             logger.error(f"Failed to upload data to Snowflake: {e}")
             return False 
     
-    def _upload_via_cursor(self, df: pl.DataFrame, table_name: str, if_exists: str = 'replace') -> bool:
+    def _upload_via_cursor(self, df: pd.DataFrame, table_name: str, if_exists: str = 'replace') -> bool:
         """
         Upload DataFrame using cursor method with proper SQL execution.
         
@@ -288,7 +288,7 @@ class SnowflakeHandler:
                 logger.info(f"Created table: {table_name}")
             
             # Prepare data for insertion
-            df_clean = df.fill_null('NULL')
+            df_clean = df.fillna('NULL')
             columns = list(df_clean.columns)
             # Escape column names for INSERT statement
             escaped_columns = [f'"{col}"' for col in columns]
@@ -299,8 +299,8 @@ class SnowflakeHandler:
             total_rows = len(df_clean)
             
             for i in range(0, total_rows, batch_size):
-                batch = df_clean.slice(i, batch_size)
-                values = [tuple(row) for row in batch.iter_rows()]
+                batch = df_clean.iloc[i:i + batch_size]
+                values = [tuple(row) for row in batch.values]
                 
                 insert_sql = f"INSERT INTO {escaped_table_name} ({', '.join(escaped_columns)}) VALUES ({placeholders})"
                 cursor.executemany(insert_sql, values)
@@ -315,7 +315,7 @@ class SnowflakeHandler:
             logger.error(f"Cursor upload failed: {e}")
             return False
     
-    def _generate_create_table_sql(self, df: pl.DataFrame, table_name: str) -> str:
+    def _generate_create_table_sql(self, df: pd.DataFrame, table_name: str) -> str:
         """
         Generate CREATE TABLE SQL based on DataFrame schema.
         
@@ -328,15 +328,16 @@ class SnowflakeHandler:
         """
         columns = []
         
-        for col_name, dtype in df.schema.items():
-            # Map polars dtypes to Snowflake types
-            if dtype in [pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64]:
+        for col_name, dtype in df.dtypes.items():
+            # Map pandas dtypes to Snowflake types
+            dtype_str = str(dtype)
+            if 'int' in dtype_str:
                 sf_type = "INTEGER"
-            elif dtype in [pl.Float32, pl.Float64]:
+            elif 'float' in dtype_str:
                 sf_type = "FLOAT"
-            elif dtype == pl.Boolean:
+            elif dtype_str == 'bool':
                 sf_type = "BOOLEAN"
-            elif dtype in [pl.Datetime, pl.Datetime('ms'), pl.Datetime('us'), pl.Datetime('ns')]:
+            elif 'datetime' in dtype_str:
                 sf_type = "TIMESTAMP"
             else:
                 sf_type = "VARCHAR(16777216)"  # Snowflake max varchar size
@@ -384,15 +385,15 @@ class SnowflakeHandler:
             logger.error(f"Error verifying upload: {e}")
             return False
     
-    def execute_query(self, query: str) -> Optional[pl.DataFrame]:
+    def execute_query(self, query: str) -> Optional[pd.DataFrame]:
         """
-        Executes a SQL query and returns the result as a Polars DataFrame.
+        Executes a SQL query and returns the result as a pandas DataFrame.
 
         Args:
             query (str): The SQL query to execute.
 
         Returns:
-            Optional[pl.DataFrame]: A Polars DataFrame with the query results,
+            Optional[pd.DataFrame]: A pandas DataFrame with the query results,
                                     or None if the query fails.
         """
         if not self.conn:
@@ -404,17 +405,15 @@ class SnowflakeHandler:
             cursor = self.conn.cursor()
             cursor.execute(query)
             
-            # Fetch results into a pandas DataFrame first
+            # Fetch results directly into pandas DataFrame
             pandas_df = cursor.fetch_pandas_all()
 
             if pandas_df is not None and not pandas_df.empty:
-                # Convert to Polars DataFrame
-                polars_df = pl.from_pandas(pandas_df)
-                logger.info(f"✅ Query returned {len(polars_df)} rows.")
-                return polars_df
+                logger.info(f"✅ Query returned {len(pandas_df)} rows.")
+                return pandas_df
             else:
                 logger.info("ℹ️ Query executed successfully, but returned no rows.")
-                return pl.DataFrame() # Return empty DataFrame for consistency
+                return pd.DataFrame() # Return empty DataFrame for consistency
 
         except Exception as e:
             logger.error(f"❌ Failed to execute query: {e}")
