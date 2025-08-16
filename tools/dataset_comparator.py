@@ -352,6 +352,7 @@ class DatasetComparator:
                 domo_df = self.domo_handler.extract_data(
                     dataset_id=domo_dataset_id, 
                     query=sample_query,
+                    chunk_size=999999999,  # Force single chunk to avoid pagination issues
                     enable_auto_type_conversion=True
                 )
                 
@@ -391,6 +392,7 @@ class DatasetComparator:
                     domo_df = self.domo_handler.extract_data(
                         dataset_id=domo_dataset_id, 
                         query=sample_query,
+                        chunk_size=999999999,  # Force single chunk to avoid pagination issues
                         enable_auto_type_conversion=True
                     )
                     
@@ -487,7 +489,12 @@ class DatasetComparator:
             timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
             # Use the provided Snowflake table name as base (now expected to be the Model Name)
             safe_base = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(snowflake_table).strip()) or "report"
-            report_filename = f"{safe_base}_{timestamp}.txt"
+            
+            # Create QA reports directory structure [[memory:5267850]]
+            qa_reports_dir = "results/txt/qa"
+            os.makedirs(qa_reports_dir, exist_ok=True)
+            
+            report_filename = os.path.join(qa_reports_dir, f"{safe_base}_{timestamp}.txt")
             
             with open(report_filename, 'w', encoding='utf-8') as f:
                 f.write(f"COMPARISON REPORT\n")
@@ -822,6 +829,7 @@ class DatasetComparator:
         domo_df = self.domo_handler.extract_data(
             dataset_id=domo_dataset_id,
             query=domo_query,
+            chunk_size=999999999,  # Force single chunk to avoid pagination issues with WHERE clauses
             enable_auto_type_conversion=True
         )
         
@@ -1564,7 +1572,7 @@ class DatasetComparator:
         schema = env_config.get('SNOWFLAKE_SCHEMA', 'UNKNOWN_SCHEMA')
         
         # Build full table path with real database and schema
-        database_schema_table = f"{database}.{schema}.{table_name}"
+        database_schema_table = f"{database.lower()}.{schema.lower()}.{table_name}"
         sampling_method = report.get('data_comparison', {}).get('sampling_method', 'Unknown')
         
         # Track failure reasons for debugging
@@ -1877,20 +1885,22 @@ class DatasetComparator:
                         self.logger.error(f"❌ Traceback: {traceback.format_exc()}")
                         pass  # Ignore errors, will use fallback
                     
-                    # Show column differences if found
-                    if columns_with_diffs:
-                        if len(columns_with_diffs) <= 5:
-                             summary_lines.append(f" Columns with Different Values: {', '.join(columns_with_diffs)}")
-                        else:
-                            summary_lines.append(f"⚠️ Columns with Different Values: {', '.join(columns_with_diffs[:5])}")
-                            summary_lines.append(f"... and {len(columns_with_diffs) - 5} more columns with differences")
+                    # Show column differences - check case 0 first
+                    if len(columns_with_diffs) == 0:
+                        # Case when len(columns_with_diffs) == 0
+                        summary_lines.append("✅ All values matched")
+                    elif len(columns_with_diffs) <= 5:
+                        summary_lines.append(f"⚠️ Columns with Different Values: {', '.join(columns_with_diffs)}")
+                    else:
+                        summary_lines.append(f"⚠️ Columns with Different Values: {', '.join(columns_with_diffs[:5])}")
+                        summary_lines.append(f"... and {len(columns_with_diffs) - 5} more columns with differences")
                     
                 except Exception as e:
                     failure_reasons.append(f"Error analyzing comparison data: {str(e)}")
                     summary_lines.append(f"❌ Could not analyze data differences: {str(e)}")
             
             # Fallback: use report data if comparison object failed
-            if not summary_lines or len([line for line in summary_lines if 'Different Values' in line or 'Missing' in line or 'Extra' in line]) == 0:
+            if not summary_lines or len([line for line in summary_lines if 'Different Values' in line or 'Missing' in line or 'Extra' in line or 'No column differences' in line]) == 0:
                 data = report.get('data_comparison', {})
                 if data and not data.get('error'):
                     if data.get('missing_in_snowflake', 0) > 0:
