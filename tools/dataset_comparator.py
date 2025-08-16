@@ -1682,26 +1682,40 @@ class DatasetComparator:
                 domo_cols = len(comparison.df1.columns)
                 sf_cols = len(comparison.df2.columns)
                 
-                # Add visual indicator for column count comparison
+                # Get missing and extra columns directly from dataframes first
+                domo_cols_set = set(comparison.df1.columns)
+                sf_cols_set = set(comparison.df2.columns)
+                missing_cols = list(domo_cols_set - sf_cols_set)
+                extra_cols = list(sf_cols_set - domo_cols_set)
+                
+                # Special logic for batch columns (technical metadata columns)
+                batch_columns = {'_batch_last_run_', '_batch_id_'}
+                missing_cols_set = set(missing_cols)
+                
+                # Check if missing columns are only batch columns
+                only_batch_missing = missing_cols_set.issubset(batch_columns)
+                has_non_batch_missing = bool(missing_cols_set - batch_columns)
+                
+                # Add visual indicator for column count comparison with special logic
                 if domo_cols == sf_cols:
+                    col_indicator = "✅"
+                elif len(missing_cols) <= 2 and only_batch_missing:
+                    # Special case: only batch columns missing (≤2)
                     col_indicator = "✅"
                 else:
                     col_indicator = "⚠️"
                 
                 summary_lines.append(f"{col_indicator} Columns: Domo {domo_cols} vs Snowflake {sf_cols}")
                 
-                # Get missing and extra columns directly from dataframes
-                domo_cols_set = set(comparison.df1.columns)
-                sf_cols_set = set(comparison.df2.columns)
-                missing_cols = list(domo_cols_set - sf_cols_set)
-                extra_cols = list(sf_cols_set - domo_cols_set)
-                
-                # Missing columns
+                # Missing columns with special batch column logic
                 if missing_cols:
+                    # Choose indicator based on whether non-batch columns are missing
+                    missing_indicator = "❌" if has_non_batch_missing else "✅"
+                    
                     if len(missing_cols) <= 5:
-                        summary_lines.append(f"❌ Missing Columns in Snowflake: {', '.join(missing_cols)}")
+                        summary_lines.append(f"{missing_indicator} Missing Columns in Snowflake: {', '.join(missing_cols)}")
                     else:
-                        summary_lines.append(f"❌ Missing Columns in Snowflake: {', '.join(missing_cols[:5])}")
+                        summary_lines.append(f"{missing_indicator} Missing Columns in Snowflake: {', '.join(missing_cols[:5])}")
                         summary_lines.append(f"... and {len(missing_cols) - 5} more missing columns")
                 
                 # Extra columns
@@ -1719,8 +1733,22 @@ class DatasetComparator:
                     domo_cols = schema.get('domo_columns', 0)
                     sf_cols = schema.get('snowflake_columns', 0)
                 
-                # Add visual indicator for column count comparison
+                # Get missing columns from schema report for fallback logic
+                missing_cols = schema.get('missing_in_snowflake', [])
+                
+                # Special logic for batch columns (technical metadata columns)
+                batch_columns = {'_batch_last_run_', '_batch_id_'}
+                missing_cols_set = set(missing_cols)
+                
+                # Check if missing columns are only batch columns
+                only_batch_missing = missing_cols_set.issubset(batch_columns)
+                has_non_batch_missing = bool(missing_cols_set - batch_columns)
+                
+                # Add visual indicator for column count comparison with special logic
                 if domo_cols == sf_cols:
+                    col_indicator = "✅"
+                elif len(missing_cols) <= 2 and only_batch_missing:
+                    # Special case: only batch columns missing (≤2)
                     col_indicator = "✅"
                 else:
                     col_indicator = "⚠️"
@@ -1746,13 +1774,15 @@ class DatasetComparator:
                     if len(type_mismatches) > 5:
                         summary_lines.append(f"... and {len(type_mismatches) - 5} more type mismatches")
                 
-                # Missing columns
-                missing_cols = schema.get('missing_in_snowflake', [])
+                # Missing columns with special batch column logic
                 if missing_cols:
+                    # Choose indicator based on whether non-batch columns are missing
+                    missing_indicator = "❌" if has_non_batch_missing else "✅"
+                    
                     if len(missing_cols) <= 5:
-                        summary_lines.append(f"❌ Missing Columns in Snowflake: {', '.join(missing_cols)}")
+                        summary_lines.append(f"{missing_indicator} Missing Columns in Snowflake: {', '.join(missing_cols)}")
                     else:
-                        summary_lines.append(f"❌ Missing Columns in Snowflake: {', '.join(missing_cols[:5])}")
+                        summary_lines.append(f"{missing_indicator} Missing Columns in Snowflake: {', '.join(missing_cols[:5])}")
                         summary_lines.append(f"... and {len(missing_cols) - 5} more missing columns")
                 
                 # Extra columns
@@ -1850,9 +1880,9 @@ class DatasetComparator:
                     # Show column differences if found
                     if columns_with_diffs:
                         if len(columns_with_diffs) <= 5:
-                             summary_lines.append(f"❌ Columns with Different Values: {', '.join(columns_with_diffs)}")
+                             summary_lines.append(f" Columns with Different Values: {', '.join(columns_with_diffs)}")
                         else:
-                            summary_lines.append(f"❌ Columns with Different Values: {', '.join(columns_with_diffs[:5])}")
+                            summary_lines.append(f"⚠️ Columns with Different Values: {', '.join(columns_with_diffs[:5])}")
                             summary_lines.append(f"... and {len(columns_with_diffs) - 5} more columns with differences")
                     
                 except Exception as e:
