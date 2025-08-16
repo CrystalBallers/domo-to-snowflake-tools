@@ -1635,14 +1635,14 @@ class DatasetComparator:
                             if sf_duplicates > 0:
                                 duplicates_detail.append(f"Snowflake: {sf_duplicates}")
                             
-                            duplicate_keys_info = f"⚠️ Duplicate keys detected"
+                            duplicate_keys_info = f"❌ Duplicate keys detected"
                             self.logger.info(f"🔍 Duplicate keys found - Domo: {domo_duplicates}, Snowflake: {sf_duplicates}")
                         else:
                             duplicate_keys_info = "✅ Duplicate keys: None found"
                             
                 except Exception as e:
                     self.logger.warning(f"Could not check for duplicate keys: {e}")
-                    duplicate_keys_info = "⚠️ Duplicate keys: Could not determine"
+                    duplicate_keys_info = "❌ Duplicate keys: Could not determine"
             
             # Add duplicate keys info to summary if available
             if duplicate_keys_info:
