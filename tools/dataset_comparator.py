@@ -1635,7 +1635,7 @@ class DatasetComparator:
                             if sf_duplicates > 0:
                                 duplicates_detail.append(f"Snowflake: {sf_duplicates}")
                             
-                            duplicate_keys_info = f"⚠️ Duplicate keys detected ({', '.join(duplicates_detail)})"
+                            duplicate_keys_info = f"⚠️ Duplicate keys detected"
                             self.logger.info(f"🔍 Duplicate keys found - Domo: {domo_duplicates}, Snowflake: {sf_duplicates}")
                         else:
                             duplicate_keys_info = "✅ Duplicate keys: None found"
