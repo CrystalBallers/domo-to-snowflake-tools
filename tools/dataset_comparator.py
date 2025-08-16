@@ -1612,6 +1612,42 @@ class DatasetComparator:
                 f"{dataset_id} → {database_schema_table}"
             ]
             
+            # Duplicate keys analysis - check for duplicate keys in match columns
+            # This checks if there are duplicate key combinations in the key columns used for matching
+            # (e.g., if using 'sku, asin' as keys, this detects multiple rows with same sku+asin combination)
+            duplicate_keys_info = ""
+            if comparison and hasattr(comparison, 'df1') and hasattr(comparison, 'df2'):
+                try:
+                    # Get join columns from the comparison object
+                    join_columns = getattr(comparison, 'join_columns', [])
+                    
+                    if join_columns:
+                        # Check for duplicate keys in Domo data (df1)
+                        domo_duplicates = comparison.df1.duplicated(subset=join_columns, keep=False).sum()
+                        # Check for duplicate keys in Snowflake data (df2)  
+                        sf_duplicates = comparison.df2.duplicated(subset=join_columns, keep=False).sum()
+                        
+                        if domo_duplicates > 0 or sf_duplicates > 0:
+                            # Show detailed duplicate key counts
+                            duplicates_detail = []
+                            if domo_duplicates > 0:
+                                duplicates_detail.append(f"Domo: {domo_duplicates}")
+                            if sf_duplicates > 0:
+                                duplicates_detail.append(f"Snowflake: {sf_duplicates}")
+                            
+                            duplicate_keys_info = f"⚠️ Duplicate keys detected ({', '.join(duplicates_detail)})"
+                            self.logger.info(f"🔍 Duplicate keys found - Domo: {domo_duplicates}, Snowflake: {sf_duplicates}")
+                        else:
+                            duplicate_keys_info = "✅ Duplicate keys: None found"
+                            
+                except Exception as e:
+                    self.logger.warning(f"Could not check for duplicate keys: {e}")
+                    duplicate_keys_info = "⚠️ Duplicate keys: Could not determine"
+            
+            # Add duplicate keys info to summary if available
+            if duplicate_keys_info:
+                summary_lines.append(duplicate_keys_info)
+
             # Row count analysis
             rows = report.get('row_count_comparison', {})
             if rows and not rows.get('error'):
