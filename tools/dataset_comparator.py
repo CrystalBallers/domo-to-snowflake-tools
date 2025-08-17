@@ -494,7 +494,8 @@ class DatasetComparator:
             qa_reports_dir = "results/txt/qa"
             os.makedirs(qa_reports_dir, exist_ok=True)
             
-            report_filename = os.path.join(qa_reports_dir, f"{safe_base}_{timestamp}.txt")
+            # report_filename = os.path.join(qa_reports_dir, f"{safe_base}_{timestamp}.txt")
+            report_filename = f"{safe_base}_{timestamp}.txt"
             
             with open(report_filename, 'w', encoding='utf-8') as f:
                 f.write(f"COMPARISON REPORT\n")
