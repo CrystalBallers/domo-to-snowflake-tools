@@ -137,14 +137,13 @@ def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, sc
     else:
         print("✅ Connected to Snowflake successfully.")
     
-    print(f"\n🔄 Generating SQL files for {len(df)} datasets...")
+    print(f"\n🔄 Processing {len(df)} datasets (validate → create immediately)...")
     print("=" * 80)
     
     generated_count = 0
     skipped_count = 0
     already_completed_count = 0
     
-    # Iterate through each row of the DataFrame
     for index, row in df.iterrows():
         dataset_id = row['Dataset ID']
         check_status = row['Check']
@@ -163,16 +162,11 @@ def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, sc
             skipped_count += 1
             continue
         
-        # Create the full file path
-        output_path = os.path.join(output_dir, model_filename)
-        
-        print(f"\n📝 Processing row {index + 1}:")
+        print(f"\n🔍 Row {index + 1}: {model_filename}")
         print(f"   Dataset ID: {dataset_id}")
-        print(f"   Check: {check_status}")
         print(f"   Name: {name}")
-        print(f"   Model: {model_filename}")
         
-        # Get column names from Snowflake (clean, normalized) and types from Domo (source of truth)
+        # Validate: Get column names from Snowflake and types from Domo
         columns = None
         error_message = None
         
@@ -280,9 +274,9 @@ def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, sc
         except Exception as e:
             print(f"   ⚠️  Error extracting Domo sample: {e}")
         
-        # Step 3: Match Snowflake columns with Domo types
+        # Step 3: Validation - Match Snowflake columns with Domo types
         if sf_columns and domo_types_map:
-            print(f"   🔗 Matching Snowflake columns with Domo types...")
+            print(f"   🔗 Validating Snowflake columns with Domo types...")
             
             matched_columns = []
             unmatched_sf_columns = []
@@ -365,71 +359,40 @@ def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, sc
             print(f"   ❌ Could not get columns from either Snowflake or Domo")
             error_message = f"ERROR: Could not retrieve columns from Snowflake table {database}.{schema}.{name} or Domo dataset {dataset_id}"
         
-        try:
-            if error_message:
-                # Create file with error message instead of SQL
-                print(f"   ⚠️  Creating file with error message: {model_filename}")
-                with open(output_path, "w", encoding="utf-8") as f:
-                    f.write(f"""-- {error_message}
--- 
--- This file could not be generated because the table schema could not be retrieved.
--- 
--- Possible causes:
--- 1. Table {database}.{schema}.{name} does not exist
--- 2. Insufficient permissions to access the table with role: {role}
--- 3. Snowflake connection failed
--- 4. Warehouse not available or not specified
--- 5. Role {role} does not have access to the table
--- 
--- Please verify the table exists and you have proper permissions with role: {role}, then regenerate this file.
-
-/*
-TABLE: {database}.{schema}.{name}
-DATASET_ID: {dataset_id}
-ROLE_USED: {role}
-GENERATED_AT: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}
-STATUS: FAILED
-*/
-
--- Uncomment and modify the following template when the table is available:
-/*
-with
-    source as (select * from {{{{ source("{schema}", "{name}") }}}})
-
-select
-    -- Add your columns here when table schema is available
-    *
-
-from source
-*/
-""")
-                print(f"   ⚠️  Error file created: {output_path}")
-                skipped_count += 1
-            else:
-                # Call the create_stg_sql_file function with real columns
+        # Validation → Immediate creation
+        if error_message:
+            print(f"   ❌ SKIPPING: {error_message}")
+            skipped_count += 1
+        else:
+            print(f"   ✅ Validation passed: {len(columns) if columns else 0} columns")
+            
+            # Create file immediately
+            try:
+                output_path = os.path.join(output_dir, model_filename)
+                
+                # Call the create_stg_sql_file function
                 sql_content = create_stg_sql_file(
                     columns=columns,
                     source_schema_name=schema,
                     source_table_name=name,
                     output_filename=output_path
                 )
-                print(f"   ✅ File generated: {output_path}")
+                
+                print(f"   🎯 Created: {output_path}")
                 generated_count += 1
                 
-                # Write "True" back to the Check column in Google Sheets
+                # Update Google Sheets
                 if gsheets and spreadsheet_id:
                     try:
-                        # Calculate the cell reference for the Check column (assuming it's column B, row is index+2 due to header)
                         check_cell = f"Stg Files!B{index + 2}"
                         gsheets.write_range(spreadsheet_id, check_cell, [["True"]])
-                        print(f"   📝 Updated Check column to 'True' for row {index + 1}")
+                        print(f"   📝 Updated Check column to 'True'")
                     except Exception as write_error:
                         print(f"   ⚠️  Warning: Could not update Check column: {write_error}")
-                        # Don't fail the whole process if we can't write back
-            
-        except Exception as e:
-            print(f"   ❌ Error generating file: {e}")
-            skipped_count += 1
+                
+            except Exception as e:
+                print(f"   ❌ Error creating file: {e}")
+                skipped_count += 1
     
     # Cleanup connections
     if domo_handler:
@@ -438,19 +401,20 @@ from source
         snowflake_handler.cleanup()
         print("🔌 Snowflake connection closed.")
     
+    # Final summary
     print("\n" + "=" * 80)
-    print(f"📊 Generation summary:")
-    print(f"   ✅ Files generated: {generated_count}")
+    print(f"📊 SUMMARY:")
+    print(f"   🎯 Files created: {generated_count}")
     print(f"   ✅ Already completed: {already_completed_count}")
     print(f"   ⚠️  Files skipped: {skipped_count}")
-    print(f"   📁 Output directory: {output_dir}")
-    print(f"   🗄️  Database used: {database}")
-    print(f"   📂 Schema used: {schema}")
-    print(f"   👤 Role used: {role}")
+    print(f"   📁 Output: {output_dir}")
+    print(f"   🗄️  Database: {database}")
+    print(f"   📂 Schema: {schema}")
+    print(f"   👤 Role: {role}")
     if gsheets and spreadsheet_id:
         print(f"   📝 Google Sheets updates: Enabled")
     else:
-        print(f"   📝 Google Sheets updates: Disabled (read-only mode)")
+        print(f"   📝 Google Sheets updates: Disabled")
     print("=" * 80)
 
 

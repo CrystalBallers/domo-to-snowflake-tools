@@ -1,45 +1,13 @@
 import re
+import os
+import sys
 
-# VARIABLES GLOBALES (¡modifícalas aquí!)
-NAME = "TEMP_ARGO_RAW"
-DATABASE_NAME = "DW_REPORTS"
-SCHEMA_NAME = "TEMP_ARGO_RAW"
-TABLE_NAMES = [
-    "AMAZON_FBA_INVENTORY_HEALTH",
-    "AMAZON_FBA_LONGTERM_STORAGE_FEE_CHARGES",
-    "AMAZON_FBA_REMOVAL_ORDER_DETAIL",
-    "AMAZON_FBA_STORAGE_FEE_CHARGES",
-    "AMAZON_FULFILLMENTS",
-    "AMAZON_HIGH_RETURN_RATE_FEES",
-    "AMAZON_INBOUND_PLACEMENT_FEES",
-    "AMAZON_INBOUND_SHIPMENT_ITEMS",
-    "AMAZON_INBOUND_SHIPMENTS",
-    "AMAZON_ORDER_ITEMS_MFN",
-    "AMAZON_SETTLEMENT_ITEMS",
-    "AMAZON_SETTLEMENTS",
-    "CALENDAR_DAYS_WEEKS_CONSTANTS",
-    "COBALT_MAIN_BRAND_SUB_CAT_YM_MARKETIQ",
-    "DEFAULT_CLASS_PARTNER_BRAND_BY_VENDORXLSX",
-    "DUMMY_PORTFOLIOS",
-    "EXCLUDE_FROM_NS_VID_OFFERSXLSX",
-    "FEE_PREVIEW",
-    "NG_COGS_HISTORICAL",
-    "NG_PRICING_LEVELS",
-    "NS_AMAZON_OFFERS",
-    "NS_ITEM_INVENTORY_BY_LOCATIONS_NG",
-    "NS_ITEM_VENDOR_MEMBERS",
-    "NS_NGCOGS_2025_YTD",
-    "OBSOLETE_ATLANTA_FIREFLY_DAILY_PRODUCTS_DIM",
-    "PCN_OFFERS_LATEST",
-    "POSTAL_CODES",
-    "RAIDAR_AUDIT_TABLE",
-    "RAIDAR_WORKING_DB_TABLE",
-    "REPURPOSE_SETTLEMENTS_CACHE",
-    "STATIC_ATLANTA_FIREFLY_DAILY_PARTNER_SKU_SALES_COGS",
-    "USER_INPUT_REQUIRED"
-]
+# Add project root to path to import from tools
+current_dir = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.join(current_dir, '..', '..')
+sys.path.insert(0, project_root)
 
-OUTPUT_FILE = 'sources_auto.yml'
+from tools.get_all_stg_files import get_stg_files_data
 
 def sanitize(name):
     """
@@ -51,9 +19,63 @@ def sanitize(name):
     cleaned = cleaned.replace(' ', '_').upper()
     return f"{cleaned}"
 
+def generate_sources_from_spreadsheet(database, schema, output_file='sources_auto.yml'):
+    """
+    Genera un archivo 'sources.yml' usando los datos del Google Sheets.
+    Lee la columna 'Name' para obtener los nombres de las tablas.
+    """
+    print(f"📊 Reading Google Sheets data...")
+    
+    # Get data from Google Sheets (same as generate-stg command)
+    df, gsheets, spreadsheet_id = get_stg_files_data()
+    
+    if df is None or df.empty:
+        print("❌ No data found in Google Sheets")
+        return False
+    
+    # Filter out rows where Check is True (already processed)
+    df_filtered = df[df['Check'] != True].copy()
+    
+    if df_filtered.empty:
+        print("✅ All tables already have Check = True, no sources to generate")
+        return True
+    
+    print(f"📋 Found {len(df_filtered)} tables to include in sources.yml")
+    
+    # Extract table names from Name column
+    table_names = df_filtered['Name'].dropna().tolist()
+    
+    if not table_names:
+        print("❌ No table names found in 'Name' column")
+        return False
+    
+    # Generate the sources file
+    source_name = schema  # Use schema as the source name
+    
+    with open(output_file, 'w') as f:
+        f.write("version: 2\n\n")
+        f.write("sources:\n")
+        f.write(f"  - name: {source_name}\n")
+        f.write(f"    database: {database}\n")
+        f.write(f"    schema: {schema}\n")
+        f.write(f"    tables:\n")
+        
+        for table_name in table_names:
+            identifier = sanitize(table_name)
+            f.write(f"      - name: {table_name.upper()}\n")  # Force uppercase names
+            f.write(f"        identifier: {identifier}\n")
+    
+    print(f"✅ Generated '{output_file}' with {len(table_names)} tables")
+    print(f"   📊 Database: {database}")
+    print(f"   📂 Schema: {schema}")
+    print(f"   📋 Tables: {len(table_names)} from Google Sheets")
+    
+    return True
+
 def generate_sources(name, database_name, schema_name, table_names, output_file):
     """
     Genera un archivo 'sources.yml' con el esquema y las tablas dadas.
+    (Legacy function for backward compatibility)
     """
     with open(output_file, 'w') as f:
         f.write("version: 2\n\n")
@@ -62,11 +84,25 @@ def generate_sources(name, database_name, schema_name, table_names, output_file)
         f.write(f"    database: {database_name}\n")
         f.write(f"    schema: {schema_name}\n")
         f.write(f"    tables:\n")
-        for name in table_names:
-            identifier = sanitize(name)
-            f.write(f"      - name: {name}\n")
+        for table_name in table_names:
+            identifier = sanitize(table_name)
+            f.write(f"      - name: {table_name.upper()}\n")  # Force uppercase names
             f.write(f"        identifier: {identifier}\n")
 
 if __name__ == "__main__":
-    generate_sources(NAME, DATABASE_NAME, SCHEMA_NAME, TABLE_NAMES, OUTPUT_FILE)
-    print(f"'{OUTPUT_FILE}' generado con esquema '{SCHEMA_NAME}' y tablas: {TABLE_NAMES}")
+    # Default values for standalone execution
+    DEFAULT_DATABASE = "DW_RAW"
+    DEFAULT_SCHEMA = "SRC"
+    DEFAULT_OUTPUT = "sources_auto.yml"
+    
+    import argparse
+    parser = argparse.ArgumentParser(description='Generate dbt sources.yml from Google Sheets')
+    parser.add_argument('--database', default=DEFAULT_DATABASE, help='Snowflake database name')
+    parser.add_argument('--schema', default=DEFAULT_SCHEMA, help='Snowflake schema name')  
+    parser.add_argument('--output', default=DEFAULT_OUTPUT, help='Output file name')
+    
+    args = parser.parse_args()
+    
+    success = generate_sources_from_spreadsheet(args.database, args.schema, args.output)
+    if not success:
+        sys.exit(1)

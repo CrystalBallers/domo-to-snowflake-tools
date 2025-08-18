@@ -39,6 +39,7 @@ try:
     from tools.utils import show_mfa_debug_info, reload_environment
     from tools.utils.domo import export_datasets_to_spreadsheet, DomoHandler
     from tools.get_all_stg_files import get_stg_files_data, generate_stg_files_from_dataframe
+    from tools.utils.create_source import generate_sources_from_spreadsheet
 except ImportError as e:
     logger.error(f"Failed to import required modules: {e}")
     sys.exit(1)
@@ -687,6 +688,58 @@ def handle_generate_stg_command(args) -> int:
         return 1
 
 
+def handle_generate_sources_command(args) -> int:
+    """
+    Handle the generate-sources subcommand for generating dbt sources.yml files.
+    
+    Args:
+        args: Parsed command line arguments
+        
+    Returns:
+        int: Exit code (0 for success, 1 for failure)
+    """
+    # Validate required configuration
+    if not args.database:
+        logger.error("❌ Database not specified. Use --database or set SNOWFLAKE_DATABASE environment variable.")
+        return 1
+    
+    if not args.schema:
+        logger.error("❌ Schema not specified. Use --schema.")
+        return 1
+    
+    # Show configuration
+    logger.info("🚀 Starting dbt sources.yml generation...")
+    logger.info(f"📊 Database: {args.database}")
+    logger.info(f"📂 Schema: {args.schema}")
+    logger.info(f"📁 Output: {args.output}")
+    
+    try:
+        # Generate sources file from Google Sheets
+        success = generate_sources_from_spreadsheet(
+            database=args.database,
+            schema=args.schema,
+            output_file=args.output
+        )
+        
+        if success:
+            logger.info("🎉 Sources file generated successfully!")
+            return 0
+        else:
+            logger.error("❌ Sources generation failed!")
+            return 1
+        
+    except KeyboardInterrupt:
+        logger.info("⚠️  Sources generation cancelled by user")
+        return 1
+    except Exception as e:
+        logger.error(f"❌ Sources generation failed: {e}")
+        logger.error("💡 Suggestions:")
+        logger.error("   - Verify Google Sheets credentials and spreadsheet access")
+        logger.error("   - Check that the 'Stg Files' tab exists in the spreadsheet")
+        logger.error("   - Ensure the 'Name' column contains valid table names")
+        return 1
+
+
 def create_parser() -> argparse.ArgumentParser:
     """
     Create the main argument parser with subcommands.
@@ -755,6 +808,15 @@ Examples:
     
     # Read-only mode - don't update Check column in Google Sheets
     python main.py generate-stg --read-only
+    
+    # Generate dbt sources.yml with default configuration
+    python main.py generate-sources
+    
+    # Generate sources.yml with custom database and schema
+    python main.py generate-sources --database DW_RAW --schema SRC
+    
+    # Generate sources.yml with custom output file
+    python main.py generate-sources --database DW_RAW --schema SRC --output my_sources.yml
     
 Environment Variables:
     EXPORT_DIR: Default export directory
@@ -1048,6 +1110,30 @@ Environment Variables:
         action="store_true",
         help="Show what would be generated without creating files or updating sheets"
     )
+
+    # Generate Sources subcommand
+    generate_sources_parser = subparsers.add_parser(
+        'generate-sources',
+        help='Generate dbt sources.yml file from Google Sheets data'
+    )
+    
+    generate_sources_parser.add_argument(
+        "--database", 
+        default=os.getenv("SNOWFLAKE_DATABASE"),
+        help="Snowflake database name (default: from SNOWFLAKE_DATABASE env var)"
+    )
+    
+    generate_sources_parser.add_argument(
+        "--schema", 
+        default="SRC",
+        help="Snowflake schema name (default: SRC)"
+    )
+    
+    generate_sources_parser.add_argument(
+        "--output", 
+        default="sources_auto.yml",
+        help="Output file name (default: sources_auto.yml)"
+    )
     
     return parser
 
@@ -1078,6 +1164,8 @@ def main() -> int:
         return handle_compare_command(args)
     elif args.command == 'generate-stg':
         return handle_generate_stg_command(args)
+    elif args.command == 'generate-sources':
+        return handle_generate_sources_command(args)
     
     # If we get here, unknown command
     logger.error(f"❌ Unknown command: {args.command}")
