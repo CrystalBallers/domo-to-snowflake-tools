@@ -214,6 +214,31 @@ python main.py datasets [options]
 - `--sheet-name`: Sheet name for datasets (default: DomoDatasets)
 - `--batch-size`: Number of datasets to fetch per batch (default: 100)
 
+#### 4. `generate-stg` - Generate STG Files
+
+Generate staging SQL files with automatic CAST based on Snowflake schema and Google Sheets tracking.
+
+```bash
+python main.py generate-stg [options]
+```
+
+**Options:**
+- `--database`: Snowflake database name (default: from SNOWFLAKE_DATABASE env var)
+- `--schema`: Snowflake schema name (default: TEMP_ARGO_RAW)
+- `--role`: Snowflake role to use (default: DBT_ROLE)
+- `--warehouse`: Snowflake warehouse to use (default: from SNOWFLAKE_WAREHOUSE env var)
+- `--output-dir`: Directory to save SQL files (default: sql/stg/)
+- `--credentials`: Path to Google Sheets credentials file
+- `--spreadsheet-id`: Google Sheets spreadsheet ID
+- `--read-only`: Run in read-only mode (don't update Check column)
+- `--dry-run`: Show what would be generated without creating files
+
+**Features:**
+- ✅ **Smart Skip**: Automatically skips rows where Check = "True"
+- ✅ **Auto CAST**: Generates appropriate CAST statements based on Snowflake data types
+- ✅ **Progress Tracking**: Writes "True" to Check column when files are created successfully
+- ✅ **Schema Validation**: Connects to Snowflake to get real column names and types
+
 ## 📚 Usage Examples
 
 Examples:
@@ -252,6 +277,21 @@ Examples:
     
     # Use custom credentials file
     python main.py inventory --credentials /path/to/creds.json --export-dir output
+    
+    # Generate STG files with default configuration
+    python main.py generate-stg
+    
+    # Generate STG files with custom database and schema
+    python main.py generate-stg --database DW_REPORTS --schema TEMP_ARGO_RAW
+    
+    # Dry run - see what would be generated without creating files
+    python main.py generate-stg --dry-run
+    
+    # Read-only mode - don't update Check column in Google Sheets
+    python main.py generate-stg --read-only
+    
+    # Full custom configuration
+    python main.py generate-stg --database DW_RAW --schema SRC --role DBT_ROLE --warehouse DBT_WH --output-dir results/sql/stg
 
 ## 📝 Project Structure
 
@@ -263,14 +303,32 @@ Domo-to-snowflake-migration/
 ├── README.md                   # This file
 ├── tools/                      # Main modules
 │   ├── __init__.py
+│   ├── get_all_stg_files.py   # STG files generation (with CLI)
 │   ├── inventory_handler.py    # Inventory management
 │   ├── domo_to_snowflake.py   # Data migration
+│   ├── dataset_comparator.py  # Data comparison/QA
+│   ├── scripts/                # Utility scripts
+│   │   ├── __init__.py
+│   │   ├── cleanup_project.py
+│   │   ├── extract_lineage.py
+│   │   ├── maintain_structure.py
+│   │   └── project_maintenance.py
 │   └── utils/                  # Utilities
 │       ├── __init__.py
 │       ├── domo.py            # Domo API client
 │       ├── snowflake.py       # Snowflake client
-│       └── gsheets.py         # Google Sheets client
-└── results/sql/translated/     # Output directory (created automatically)
+│       ├── gsheets.py         # Google Sheets client
+│       ├── create_stg_sql_file.py  # STG SQL generation
+│       └── create_source.py   # Source file generation
+├── results/                    # Output directories (created automatically)
+│   ├── sql/
+│   │   ├── stg/               # Staging files
+│   │   └── translated/        # Inventory exports
+│   └── txt/qa/                # QA comparison reports
+└── tests/                      # Test files
+    ├── __init__.py
+    ├── conftest.py
+    └── test_*.py
 ```
 
 **Examples:**

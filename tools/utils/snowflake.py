@@ -422,9 +422,9 @@ class SnowflakeHandler:
             if 'cursor' in locals() and cursor:
                 cursor.close()
 
-    def get_table_columns(self, database: str, schema: str, table_name: str, role: str = "DBT_ROLE", warehouse: str = None) -> list[str]:
+    def get_table_columns(self, database: str, schema: str, table_name: str, role: str = "DBT_ROLE", warehouse: str = None) -> list[dict]:
         """
-        Get all column names from a specific table in Snowflake.
+        Get all column names and data types from a specific table in Snowflake.
         
         Args:
             database: Database name
@@ -434,7 +434,7 @@ class SnowflakeHandler:
             warehouse: Warehouse to use (if None, uses environment variable)
             
         Returns:
-            list[str]: List of column names, empty list if error or table not found
+            list[dict]: List of column info dicts with 'name' and 'data_type' keys, empty list if error or table not found
         """
         if not self.conn:
             logger.error("❌ No active Snowflake connection.")
@@ -455,7 +455,7 @@ class SnowflakeHandler:
             
             # Query to get column information from INFORMATION_SCHEMA
             query = f"""
-            SELECT COLUMN_NAME 
+            SELECT COLUMN_NAME, DATA_TYPE
             FROM {database}.INFORMATION_SCHEMA.COLUMNS 
             WHERE TABLE_SCHEMA = '{schema.upper()}' 
             AND TABLE_NAME = '{table_name.upper()}'
@@ -465,15 +465,15 @@ class SnowflakeHandler:
             logger.info(f"Getting columns for table: {database}.{schema}.{table_name} using role: {role}")
             cursor.execute(query)
             
-            # Fetch all column names
+            # Fetch all column names and data types
             results = cursor.fetchall()
-            columns = [row[0] for row in results]
+            columns = [{"name": row[0], "data_type": row[1]} for row in results]
             
             cursor.close()
             
             if columns:
                 logger.info(f"✅ Found {len(columns)} columns in {table_name}")
-                logger.debug(f"Columns: {columns}")
+                logger.debug(f"Columns with types: {columns}")
             else:
                 logger.warning(f"⚠️  No columns found for table {database}.{schema}.{table_name}")
                 logger.warning("   Table may not exist or you may not have permissions")
