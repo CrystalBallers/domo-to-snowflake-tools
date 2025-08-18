@@ -314,14 +314,7 @@ def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, sc
             
             columns = matched_columns
             
-            # Add unmatched Snowflake columns as STRING type
-            for sf_col in unmatched_sf_columns:
-                columns.append({
-                    'name': sf_col['name'],
-                    'data_type': 'varchar(16777216)',  # Default for unmatched
-                    'domo_type': 'STRING',
-                    'domo_name': f"MISSING_IN_DOMO_{sf_col['name']}"
-                })
+            # Note: Unmatched Snowflake columns will be added as comments only (not as regular columns)
             
             # Store unmatched Domo columns for comments
             unmatched_domo_info = []
@@ -334,10 +327,24 @@ def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, sc
                     'domo_name': domo_info['original_name']
                 })
             
+            # Add both types of unmatched columns as comments
             if unmatched_domo_info:
                 print(f"   📝 Will add {len(unmatched_domo_info)} unmatched Domo columns as comments")
                 # Store for later use in SQL generation
-                columns.extend([{**col, 'commented': True} for col in unmatched_domo_info])
+                columns.extend([{**col, 'commented': True, 'comment_type': 'domo_only'} for col in unmatched_domo_info])
+            
+            if unmatched_sf_columns:
+                print(f"   📝 Will add {len(unmatched_sf_columns)} Snowflake-only columns as comments")
+                # Store for later use in SQL generation
+                for sf_col in unmatched_sf_columns:
+                    columns.append({
+                        'name': sf_col['name'],
+                        'data_type': sf_col['data_type'].lower(),
+                        'domo_type': 'UNKNOWN',
+                        'domo_name': f"MISSING_IN_DOMO_{sf_col['name']}",
+                        'commented': True,
+                        'comment_type': 'snowflake_only'
+                    })
                 
         elif sf_columns and not domo_types_map:
             print(f"   ⚠️  Using Snowflake columns with default types (no Domo sample)")
@@ -350,15 +357,10 @@ def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, sc
                     'domo_name': sf_col['name']
                 })
         elif domo_types_map and not sf_columns:
-            print(f"   ⚠️  Using Domo columns only (no Snowflake table)")
-            columns = []
-            for norm_name, domo_info in domo_types_map.items():
-                columns.append({
-                    'name': domo_info['original_name'],
-                    'data_type': domo_info['snowflake_type'],
-                    'domo_type': domo_info['type'],
-                    'domo_name': domo_info['original_name']
-                })
+            print(f"   ❌ Snowflake table {database}.{schema}.{name} not found or accessible")
+            print(f"   💡 Cannot create STG file without target Snowflake table")
+            error_message = f"ERROR: Snowflake table {database}.{schema}.{name} does not exist or is not accessible with role {role}"
+            columns = None
         else:
             print(f"   ❌ Could not get columns from either Snowflake or Domo")
             error_message = f"ERROR: Could not retrieve columns from Snowflake table {database}.{schema}.{name} or Domo dataset {dataset_id}"

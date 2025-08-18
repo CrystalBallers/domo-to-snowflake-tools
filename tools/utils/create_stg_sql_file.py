@@ -83,10 +83,32 @@ def create_stg_sql_file(columns: list[dict], source_schema_name: str, source_tab
         footer = "\n\nfrom source"
         if commented_columns:
             commented_lines = []
-            commented_lines.append("\n\n-- Columns found in Domo but not in Snowflake:")
-            for col in commented_columns:
-                commented_line = f"    -- {get_cast_expression(col['name'], col['data_type'])} as {sanitize_column_name(col['name'])}  -- Domo: {col.get('domo_name', col['name'])} ({col.get('domo_type', 'UNKNOWN')})"
-                commented_lines.append(commented_line)
+            
+            # Separate different types of commented columns
+            domo_only = [col for col in commented_columns if col.get('comment_type') == 'domo_only']
+            snowflake_only = [col for col in commented_columns if col.get('comment_type') == 'snowflake_only']
+            other_commented = [col for col in commented_columns if not col.get('comment_type')]
+            
+            # Add Domo-only columns comments
+            if domo_only:
+                commented_lines.append("\n\n-- Columns found in Domo but not in Snowflake:")
+                for col in domo_only:
+                    commented_line = f"    -- {get_cast_expression(col['name'], col['data_type'])} as {sanitize_column_name(col['name'])}  -- Domo: {col.get('domo_name', col['name'])} ({col.get('domo_type', 'UNKNOWN')})"
+                    commented_lines.append(commented_line)
+            
+            # Add Snowflake-only columns comments
+            if snowflake_only:
+                commented_lines.append("\n\n-- Columns found in Snowflake but not in Domo:")
+                for col in snowflake_only:
+                    commented_line = f"    -- {get_cast_expression(col['name'], col['data_type'])} as {sanitize_column_name(col['name'])}  -- Snowflake: {col['name']} ({col['data_type']})"
+                    commented_lines.append(commented_line)
+            
+            # Add other commented columns (legacy support)
+            if other_commented:
+                commented_lines.append("\n\n-- Other columns:")
+                for col in other_commented:
+                    commented_line = f"    -- {get_cast_expression(col['name'], col['data_type'])} as {sanitize_column_name(col['name'])}  -- {col.get('domo_name', col['name'])} ({col.get('domo_type', 'UNKNOWN')})"
+                    commented_lines.append(commented_line)
             
             footer = "\n".join(commented_lines) + footer
         
