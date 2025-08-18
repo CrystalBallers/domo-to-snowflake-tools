@@ -37,7 +37,7 @@ try:
     )
     from tools.utils import DomoHandler, SnowflakeHandler, DatasetComparator
     from tools.utils import show_mfa_debug_info, reload_environment
-    from tools.utils.domo import export_datasets_to_spreadsheet
+    from tools.utils.domo import export_datasets_to_spreadsheet, DomoHandler
     from tools.get_all_stg_files import get_stg_files_data, generate_stg_files_from_dataframe
 except ImportError as e:
     logger.error(f"Failed to import required modules: {e}")

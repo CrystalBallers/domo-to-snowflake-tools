@@ -6,7 +6,7 @@ Generate staging SQL files from Google Sheets with Snowflake schema validation.
 📍 RECOMMENDED: Use `python main.py generate-stg [options]` instead
 
 This script reads from the 'Stg Files' tab in Google Sheets and generates SQL files
-with automatic CAST statements based on real Snowflake column types.
+with automatic CAST statements based on real Domo dataset schemas (source of truth).
 
 Legacy Usage (still supported):
     python tools/get_all_stg_files.py [options]
@@ -15,10 +15,12 @@ Recommended Usage:
     python main.py generate-stg [options]
     
 Features:
-    - Automatic CAST generation based on Snowflake data types
+    - Source-first approach: Uses Domo dataset schemas as source of truth
+    - Intelligent type mapping: Maps Domo types to Snowflake-compatible types  
+    - Explicit CAST: All columns have explicit CAST statements for clarity
     - Smart skip: Only processes rows where Check != "True"  
     - Progress tracking: Updates Check column when files are created successfully
-    - Schema validation: Connects to Snowflake to get real column names and types
+    - Optional validation: Compares Domo schema against existing Snowflake tables
 """
 
 import os
@@ -35,6 +37,7 @@ sys.path.insert(0, str(project_root))
 from tools.utils.gsheets import GoogleSheets, READ_WRITE_SCOPES
 from tools.utils.create_stg_sql_file import create_stg_sql_file
 from tools.utils.snowflake import SnowflakeHandler
+from tools.utils.domo import DomoHandler
 
 # Load environment variables
 load_dotenv()
@@ -86,15 +89,16 @@ def get_stg_files_data():
 def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, schema: str = "TEMP_ARGO_RAW", output_dir: str = "sql/stg/", role: str = "DBT_ROLE", warehouse: str = None, gsheets=None, spreadsheet_id: str = None):
     """
     Iterates through each row of the DataFrame and generates staging SQL files.
-    Gets real column names from Snowflake for each table.
+    Gets real column names and types from Domo datasets (source of truth).
+    Maps Domo types to Snowflake-compatible types with intelligent CAST.
     Writes "True" to the Check column when files are created successfully.
     
     Args:
         df: DataFrame with data from the 'Stg Files' tab
-        database: Snowflake database name (if None, uses environment variable)
+        database: Snowflake database name (for validation only, if None uses environment variable)
         schema: Snowflake schema name (default: "TEMP_ARGO_RAW")
         output_dir: Directory where to save the SQL files
-        role: Snowflake role to use (default: "DBT_ROLE")
+        role: Snowflake role to use (default: "DBT_ROLE") 
         warehouse: Snowflake warehouse to use (if None, uses environment variable)
         gsheets: GoogleSheets client for writing back to spreadsheet
         spreadsheet_id: ID of the Google Spreadsheet
@@ -113,12 +117,22 @@ def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, sc
             print("❌ Database not provided and SNOWFLAKE_DATABASE environment variable not set.")
             return
     
-    # Initialize Snowflake connection to get real column names
-    print("🔗 Connecting to Snowflake to get table schemas...")
+    # Initialize Domo connection to get real column names and types from source
+    print("🔗 Connecting to Domo to get dataset schemas...")
+    domo_handler = DomoHandler()
+    
+    if not domo_handler.setup_auth():
+        print("❌ Failed to connect to Domo. Cannot generate files without source schema.")
+        return
+    else:
+        print("✅ Connected to Domo successfully.")
+    
+    # Initialize Snowflake connection for validation (optional)
+    print("🔗 Connecting to Snowflake for validation...")
     snowflake_handler = SnowflakeHandler()
     
     if not snowflake_handler.setup_connection():
-        print("❌ Failed to connect to Snowflake. Using placeholder columns.")
+        print("⚠️  Failed to connect to Snowflake. Will generate files without validation.")
         snowflake_handler = None
     else:
         print("✅ Connected to Snowflake successfully.")
@@ -158,29 +172,196 @@ def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, sc
         print(f"   Name: {name}")
         print(f"   Model: {model_filename}")
         
-        # Get real column names from Snowflake
+        # Get column names from Snowflake (clean, normalized) and types from Domo (source of truth)
         columns = None
         error_message = None
         
-        if snowflake_handler:
-            print(f"   🔍 Getting columns from Snowflake table: {database}.{schema}.{name} using role: {role}")
-            columns = snowflake_handler.get_table_columns(database, schema, name, role, warehouse)
+        def normalize_column_name(col_name: str) -> str:
+            """Normalize column name for matching by removing special chars and lowercasing."""
+            import re
+            return re.sub(r'[^a-z0-9]', '', col_name.lower())
+        
+        def map_domo_type_to_snowflake(domo_type: str) -> str:
+            """Mapea tipos de Domo a tipos compatibles de Snowflake."""
+            domo_type_upper = domo_type.upper()
             
-            if not columns:
-                print(f"   ❌ Failed to get columns from Snowflake table: {database}.{schema}.{name}")
-                print(f"   💡 Table may not exist or you may not have permissions with role: {role}")
-                error_message = f"ERROR: Could not retrieve columns for table {database}.{schema}.{name} using role: {role}"
+            # Mapeo de tipos Domo → Snowflake compatible
+            if domo_type_upper in ['DATETIME', 'DATE', 'TIMESTAMP']:
+                return 'timestamp'
+            elif domo_type_upper in ['LONG', 'DOUBLE', 'DECIMAL']:
+                return 'number'
+            elif domo_type_upper == 'STRING':
+                return 'varchar(16777216)'  # Snowflake max VARCHAR
+            elif domo_type_upper == 'TEXT':
+                return 'text'
             else:
-                print(f"   ✅ Found {len(columns)} columns with data types from Snowflake")
-                # Show first few columns with types for verification
-                sample_cols = columns[:3] if len(columns) > 3 else columns
-                for col in sample_cols:
-                    print(f"      • {col['name']} ({col['data_type']})")
-                if len(columns) > 3:
-                    print(f"      ... and {len(columns) - 3} more columns")
+                # Para tipos desconocidos, usar VARCHAR como fallback seguro
+                return 'varchar(16777216)'
+        
+        # Step 1: Get column names from Snowflake (normalized, clean names)
+        print(f"   🔍 Getting column names from Snowflake table: {database}.{schema}.{name}")
+        sf_columns = None
+        if snowflake_handler:
+            sf_columns = snowflake_handler.get_table_columns(database, schema, name, role, warehouse)
+            if sf_columns:
+                print(f"   ✅ Found {len(sf_columns)} columns from Snowflake")
+            else:
+                print(f"   ⚠️  Could not get Snowflake columns (table may not exist yet)")
+        
+        # Step 2: Get data sample from Domo to infer types
+        print(f"   🔍 Getting data types from Domo dataset: {dataset_id}")
+        domo_sample = None
+        domo_types_map = {}
+        
+        try:
+            # Extract small sample to infer types
+            domo_sample = domo_handler.extract_data(dataset_id, "SELECT * FROM table LIMIT 5", chunk_size=999999999)
+            
+            if domo_sample is not None and not domo_sample.empty:
+                print(f"   ✅ Extracted sample from Domo: {len(domo_sample.columns)} columns")
+                
+                # Infer types from real data
+                for col_name in domo_sample.columns:
+                    col_dtype = domo_sample[col_name].dtype
+                    
+                    # Map pandas dtypes to Domo-like types
+                    if pd.api.types.is_integer_dtype(col_dtype):
+                        domo_type = 'LONG'
+                    elif pd.api.types.is_float_dtype(col_dtype):
+                        domo_type = 'DOUBLE'
+                    elif pd.api.types.is_datetime64_any_dtype(col_dtype):
+                        domo_type = 'DATETIME'
+                    else:
+                        # Check for date-like strings in first few values
+                        sample_values = domo_sample[col_name].dropna().astype(str).head(3)
+                        date_like = False
+                        numeric_like = False
+                        
+                        for val in sample_values:
+                            # Check if looks like date
+                            try:
+                                pd.to_datetime(val)
+                                date_like = True
+                                break
+                            except:
+                                pass
+                            
+                            # Check if looks like number
+                            try:
+                                float(val)
+                                numeric_like = True
+                            except:
+                                pass
+                        
+                        if date_like:
+                            domo_type = 'DATETIME'
+                        elif numeric_like and col_name.lower() in ['id', 'count', 'amount', 'price', 'quantity', 'number', 'total']:
+                            domo_type = 'DOUBLE'
+                        else:
+                            domo_type = 'STRING'
+                    
+                    # Store the mapping with normalized name for matching
+                    normalized_name = normalize_column_name(col_name)
+                    domo_types_map[normalized_name] = {
+                        'original_name': col_name,
+                        'type': domo_type,
+                        'snowflake_type': map_domo_type_to_snowflake(domo_type)
+                    }
+                
+                print(f"   ✅ Inferred types for {len(domo_types_map)} Domo columns")
+                # Show sample of inferred types
+                sample_types = list(domo_types_map.items())[:3]
+                for norm_name, info in sample_types:
+                    print(f"      • {info['original_name']} ({info['type']} → {info['snowflake_type']})")
+                if len(domo_types_map) > 3:
+                    print(f"      ... and {len(domo_types_map) - 3} more columns")
+            else:
+                print(f"   ⚠️  Could not extract sample from Domo dataset")
+        except Exception as e:
+            print(f"   ⚠️  Error extracting Domo sample: {e}")
+        
+        # Step 3: Match Snowflake columns with Domo types
+        if sf_columns and domo_types_map:
+            print(f"   🔗 Matching Snowflake columns with Domo types...")
+            
+            matched_columns = []
+            unmatched_sf_columns = []
+            unmatched_domo_columns = list(domo_types_map.keys())
+            
+            for sf_col in sf_columns:
+                sf_name = sf_col['name']
+                sf_normalized = normalize_column_name(sf_name)
+                
+                if sf_normalized in domo_types_map:
+                    # Match found!
+                    domo_info = domo_types_map[sf_normalized]
+                    matched_columns.append({
+                        'name': sf_name,  # Use Snowflake name (clean)
+                        'data_type': domo_info['snowflake_type'],  # Use Domo type mapped to Snowflake
+                        'domo_type': domo_info['type'],
+                        'domo_name': domo_info['original_name']
+                    })
+                    # Safe remove: only remove if it exists in the list
+                    if sf_normalized in unmatched_domo_columns:
+                        unmatched_domo_columns.remove(sf_normalized)
+                else:
+                    # Snowflake column not found in Domo
+                    unmatched_sf_columns.append(sf_col)
+            
+            print(f"   ✅ Matched {len(matched_columns)} columns")
+            print(f"   ⚠️  Unmatched Snowflake: {len(unmatched_sf_columns)}")
+            print(f"   ⚠️  Unmatched Domo: {len(unmatched_domo_columns)}")
+            
+            columns = matched_columns
+            
+            # Add unmatched Snowflake columns as STRING type
+            for sf_col in unmatched_sf_columns:
+                columns.append({
+                    'name': sf_col['name'],
+                    'data_type': 'varchar(16777216)',  # Default for unmatched
+                    'domo_type': 'STRING',
+                    'domo_name': f"MISSING_IN_DOMO_{sf_col['name']}"
+                })
+            
+            # Store unmatched Domo columns for comments
+            unmatched_domo_info = []
+            for norm_name in unmatched_domo_columns:
+                domo_info = domo_types_map[norm_name]
+                unmatched_domo_info.append({
+                    'name': domo_info['original_name'],
+                    'data_type': domo_info['snowflake_type'],
+                    'domo_type': domo_info['type'],
+                    'domo_name': domo_info['original_name']
+                })
+            
+            if unmatched_domo_info:
+                print(f"   📝 Will add {len(unmatched_domo_info)} unmatched Domo columns as comments")
+                # Store for later use in SQL generation
+                columns.extend([{**col, 'commented': True} for col in unmatched_domo_info])
+                
+        elif sf_columns and not domo_types_map:
+            print(f"   ⚠️  Using Snowflake columns with default types (no Domo sample)")
+            columns = []
+            for sf_col in sf_columns:
+                columns.append({
+                    'name': sf_col['name'],
+                    'data_type': sf_col['data_type'].lower(),  # Use Snowflake type
+                    'domo_type': 'UNKNOWN',
+                    'domo_name': sf_col['name']
+                })
+        elif domo_types_map and not sf_columns:
+            print(f"   ⚠️  Using Domo columns only (no Snowflake table)")
+            columns = []
+            for norm_name, domo_info in domo_types_map.items():
+                columns.append({
+                    'name': domo_info['original_name'],
+                    'data_type': domo_info['snowflake_type'],
+                    'domo_type': domo_info['type'],
+                    'domo_name': domo_info['original_name']
+                })
         else:
-            print(f"   ❌ No Snowflake connection available")
-            error_message = "ERROR: No Snowflake connection available to retrieve table schema"
+            print(f"   ❌ Could not get columns from either Snowflake or Domo")
+            error_message = f"ERROR: Could not retrieve columns from Snowflake table {database}.{schema}.{name} or Domo dataset {dataset_id}"
         
         try:
             if error_message:
@@ -248,7 +429,9 @@ from source
             print(f"   ❌ Error generating file: {e}")
             skipped_count += 1
     
-    # Cleanup Snowflake connection
+    # Cleanup connections
+    if domo_handler:
+        print("🔌 Domo connection closed.")
     if snowflake_handler:
         snowflake_handler.cleanup()
         print("🔌 Snowflake connection closed.")

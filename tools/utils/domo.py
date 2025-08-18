@@ -525,13 +525,39 @@ class DomoHandler:
             
             # Get dataset info including schema
             dataset_info = self.dataset_api.get(dataset_id)
-            schema = dataset_info.get('schema', {})
             
-            logger.info(f"Retrieved schema for dataset {dataset_id}")
-            return schema
+            # This method is now replaced by the hybrid approach in get_all_stg_files.py
+            # Left here for compatibility if called directly
+            logger.warning("⚠️  get_dataset_schema() called directly - using legacy fallback")
+            logger.warning("📍 Use the hybrid approach in generate_stg_files_from_dataframe() for better results")
+            
+            try:
+                # Simple fallback: extract sample data
+                sample_df = self.extract_data(dataset_id, "SELECT * FROM table LIMIT 1", chunk_size=999999999)
+                
+                if sample_df is not None and not sample_df.empty:
+                    columns_list = []
+                    for col_name in sample_df.columns:
+                        columns_list.append({
+                            'name': col_name,
+                            'type': 'STRING',  # Default fallback
+                            'id': col_name,
+                            'visible': True
+                        })
+                    
+                    logger.info(f"Retrieved basic schema for dataset {dataset_id}: {len(columns_list)} columns")
+                    return {"columns": columns_list}
+                else:
+                    logger.warning(f"Could not extract any data from dataset {dataset_id}")
+                    return {"columns": []}
+            except Exception as e:
+                logger.error(f"Fallback schema extraction failed: {e}")
+                return {"columns": []}
             
         except Exception as e:
             logger.error(f"Error getting schema for dataset {dataset_id}: {e}")
+            import traceback
+            logger.debug(f"Traceback: {traceback.format_exc()}")
             return {"columns": []}
 
     def query_dataset(self, dataset_id: str, query: str) -> dict:

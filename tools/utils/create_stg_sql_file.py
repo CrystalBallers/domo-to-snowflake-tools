@@ -25,48 +25,25 @@ def create_stg_sql_file(columns: list[dict], source_schema_name: str, source_tab
 
     def get_cast_expression(column_name: str, data_type: str) -> str:
         """
-        Genera la expresión CAST apropiada basada en el tipo de dato de Snowflake.
-        Aplica lógica inteligente para manejar conversiones Domo → Snowflake.
+        Genera la expresión CAST apropiada con CAST explícito en TODAS las columnas.
+        Mantiene la compatibilidad Domo → Snowflake pero con tipos consistentes.
         
         Args:
             column_name: Nombre de la columna
-            data_type: Tipo de dato de Snowflake
+            data_type: Tipo de dato (puede ser de Domo o Snowflake)
             
         Returns:
-            str: Expresión SQL con CAST solo donde es necesario, keywords en minúsculas
+            str: Expresión SQL con CAST explícito, keywords en minúsculas
         """
-        # Convertir a mayúsculas para comparación, pero usar minúsculas en output
-        data_type_upper = data_type.upper()
+        # Convertir tipo de dato a minúsculas para consistencia
         data_type_lower = data_type.lower()
         
-        # Tipos de fecha/tiempo: Domo STRING → Snowflake DATE/TIME (requieren CAST)
-        if 'TIMESTAMP' in data_type_upper:
-            return f'cast("{column_name}" as timestamp)'
-        elif 'DATE' in data_type_upper:
-            return f'cast("{column_name}" as date)'
-        elif 'TIME' in data_type_upper:
-            return f'cast("{column_name}" as time)'
-        
-        # Tipos numéricos: Domo STRING → Snowflake NUMERIC (requieren CAST)
-        elif data_type_upper.startswith('NUMBER'):
-            return f'cast("{column_name}" as {data_type_lower})'
-        elif data_type_upper in ['INTEGER', 'INT', 'BIGINT', 'SMALLINT', 'TINYINT']:
-            return f'cast("{column_name}" as {data_type_lower})'
-        elif data_type_upper in ['FLOAT', 'DOUBLE', 'REAL', 'DECIMAL', 'NUMERIC']:
-            return f'cast("{column_name}" as {data_type_lower})'
-        
-        # Tipos booleanos: Domo 'true'/'false' → Snowflake BOOLEAN (requiere CAST)
-        elif data_type_upper == 'BOOLEAN':
-            return f'cast("{column_name}" as boolean)'
-        
-        # VARCHAR con longitud: Puede requerir CAST para longitud específica
-        elif data_type_upper.startswith('VARCHAR'):
-            return f'cast("{column_name}" as {data_type_lower})'
-        
-        # Tipos de texto simples: STRING, TEXT, etc. - CAST explícito para consistencia
-        # Aunque sean compatibles, es mejor ser explícito para claridad y documentación
-        else:
-            return f'cast("{column_name}" as {data_type_lower})'
+        # TODAS las columnas tendrán CAST explícito para:
+        # 1. Documentación clara del tipo esperado
+        # 2. Consistencia en el patrón SQL
+        # 3. Validación explícita de tipos
+        # 4. Mejor mantenibilidad
+        return f'cast("{column_name}" as {data_type_lower})'
 
     def generate_sql(columns: list[dict]) -> str:
         """
@@ -90,12 +67,29 @@ def create_stg_sql_file(columns: list[dict], source_schema_name: str, source_tab
             f"    source as (select * from {{{{ source(\"{schema_name_upper}\", \"{table_name_upper}\") }}}})\n\n"
             "select\n"
         )
+        
+        # Separate regular columns from commented columns
+        regular_columns = [col for col in columns if not col.get('commented', False)]
+        commented_columns = [col for col in columns if col.get('commented', False)]
+        
+        # Generate regular column lines
         body_lines = [
             f'    {get_cast_expression(col["name"], col["data_type"])} as {sanitize_column_name(col["name"])}'
-            for col in columns
+            for col in regular_columns
         ]
         body = ",\n".join(body_lines)
+        
+        # Add commented columns at the end if any
         footer = "\n\nfrom source"
+        if commented_columns:
+            commented_lines = []
+            commented_lines.append("\n\n-- Columns found in Domo but not in Snowflake:")
+            for col in commented_columns:
+                commented_line = f"    -- {get_cast_expression(col['name'], col['data_type'])} as {sanitize_column_name(col['name'])}  -- Domo: {col.get('domo_name', col['name'])} ({col.get('domo_type', 'UNKNOWN')})"
+                commented_lines.append(commented_line)
+            
+            footer = "\n".join(commented_lines) + footer
+        
         return header + body + footer
 
     # Generar el SQL
