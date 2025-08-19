@@ -187,13 +187,24 @@ def handle_migrate_command(args) -> int:
         logger.info(f"📋 Spreadsheet ID: {args.spreadsheet_id}")
         logger.info(f"📄 Sheet name: {args.sheet_name}")
         
+        if args.full_table:
+            logger.info("📊 Full table mode: Will upload entire datasets (no row limit)")
+        elif args.auto_chunk_size:
+            logger.info("📊 X-Small optimized auto-chunk mode: Will automatically determine optimal chunk size based on dataset size for X-Small warehouse")
+        else:
+            logger.info("📊 Limited mode: Will upload first 1000 rows per dataset")
+        
+        logger.info("🔧 Column normalization: Automatic Snowflake compatibility (UPPERCASE)")
+        
         # Show TOTP debug info if using MFA
         show_mfa_debug_info()
         
         results = migrate_from_spreadsheet(
             spreadsheet_id=args.spreadsheet_id,
             sheet_name=args.sheet_name,
-            credentials_path=args.credentials
+            credentials_path=args.credentials,
+            full_table=args.full_table,
+            auto_chunk_size=args.auto_chunk_size
         )
         
         if 'errors' in results and results['errors']:
@@ -613,6 +624,12 @@ Examples:
     # Migrate from custom spreadsheet and sheet
     python main.py migrate --from-spreadsheet --spreadsheet-id YOUR_SHEET_ID --sheet-name MyMigration
     
+    # Migrate entire tables (no row limit) from spreadsheet
+    python main.py migrate --from-spreadsheet --full-table
+    
+    # Use X-Small optimized chunking for large datasets
+    python main.py migrate --from-spreadsheet --auto-chunk-size
+    
     # Test migration connections
     python main.py migrate --test-connection
     
@@ -636,6 +653,12 @@ Examples:
     
     # Use custom credentials file
     python main.py inventory --credentials /path/to/creds.json --export-dir output
+
+Features:
+    🔧 Automatic column normalization for Snowflake compatibility (UPPERCASE)
+    🏔️  X-Small warehouse optimization
+    📊 Intelligent batch sizing based on dataset size
+    🔄 Progress tracking and detailed logging
     
 Environment Variables:
     EXPORT_DIR: Default export directory
@@ -739,6 +762,18 @@ Environment Variables:
         "--reload-env",
         action="store_true",
         help="Force reload environment variables from .env file"
+    )
+    
+    migrate_parser.add_argument(
+        "--full-table",
+        action="store_true",
+        help="Upload the entire table instead of limiting to first 1000 rows (default: False, limits to 1000 rows)"
+    )
+    
+    migrate_parser.add_argument(
+        "--auto-chunk-size",
+        action="store_true",
+        help="Automatically determine optimal chunk size for X-Small warehouse based on dataset size (default: False, uses fixed 1000 row chunks)"
     )
     
     # Datasets subcommand

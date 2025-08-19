@@ -126,13 +126,14 @@ class MigrationManager:
         
         return success
     
-    def migrate_dataset(self, dataset_id: str, target_table: str) -> bool:
+    def migrate_dataset(self, dataset_id: str, target_table: str, chunk_size: int = None) -> bool:
         """
         Migrate a single dataset from Domo to Snowflake using existing connections.
         
         Args:
             dataset_id (str): Domo dataset ID
             target_table (str): Target Snowflake table name
+            chunk_size (int): Number of rows to extract (None for all rows, default: None)
             
         Returns:
             bool: True if migration successful, False otherwise
@@ -146,7 +147,14 @@ class MigrationManager:
         try:
             # Extract data from Domo
             logger.info("📥 Extracting data from Domo...")
-            df = self.domo_handler.extract_data(dataset_id)
+            
+            # Handle auto chunk size
+            if chunk_size == "auto":
+                logger.info("🔄 X-Small optimized auto-chunk mode: Will determine optimal chunk size based on dataset size for X-Small warehouse")
+                # For auto mode, we'll extract all data and let the upload handle X-Small optimized chunking
+                df = self.domo_handler.extract_data(dataset_id, chunk_size=None)
+            else:
+                df = self.domo_handler.extract_data(dataset_id, chunk_size=chunk_size)
             
             if df is None or len(df) == 0:
                 logger.warning(f"⚠️  No data found for dataset {dataset_id}")
@@ -156,7 +164,12 @@ class MigrationManager:
             
             # Load data to Snowflake
             logger.info("📤 Loading data to Snowflake...")
-            success = self.snowflake_handler.upload_data(df, target_table)
+            
+            # Pass chunk_size for auto mode
+            if chunk_size == "auto":
+                success = self.snowflake_handler.upload_data(df, target_table, chunk_size=None)
+            else:
+                success = self.snowflake_handler.upload_data(df, target_table)
             
             if success:
                 # Verify upload
@@ -386,7 +399,8 @@ def batch_migrate_datasets(dataset_mapping: dict) -> dict:
 
 
 def migrate_from_spreadsheet(spreadsheet_id: str, sheet_name: str = "Migration", 
-                           credentials_path: str = None) -> dict:
+                           credentials_path: str = None, full_table: bool = False, 
+                           auto_chunk_size: bool = False) -> dict:
     """
     Migrate datasets from a Google Sheets spreadsheet.
     
@@ -394,6 +408,8 @@ def migrate_from_spreadsheet(spreadsheet_id: str, sheet_name: str = "Migration",
         spreadsheet_id (str): Google Sheets spreadsheet ID
         sheet_name (str): Name of the sheet tab containing migration data
         credentials_path (str): Path to Google Sheets credentials file
+        full_table (bool): If True, upload entire table; if False, limit to first 1000 rows
+        auto_chunk_size (bool): If True, automatically determine optimal chunk size for large datasets
         
     Returns:
         dict: Results summary with success/failure counts
@@ -510,13 +526,28 @@ def migrate_from_spreadsheet(spreadsheet_id: str, sheet_name: str = "Migration",
                 
                 logger.info(f"🔄 Migrating dataset {dataset_id} ({dataset_name})")
                 
+                # Log chunk size information
+                if full_table:
+                    logger.info(f"   📊 Full table mode: Will extract all rows")
+                else:
+                    logger.info(f"   📊 Limited mode: Will extract first 1000 rows")
+                
                 try:
                     # Generate target table name using the dataset_name resolved above.
                     # With the change above, if the sheet contains 'Model Name', it will be used here.
                     target_table = sanitize_table_name(dataset_id, dataset_name)
                     
+                    # Set chunk size based on flags
+                    if full_table:
+                        chunk_size = None  # No limit, upload entire table
+                    elif auto_chunk_size:
+                        # Auto-determine chunk size based on dataset size
+                        chunk_size = "auto"
+                    else:
+                        chunk_size = 1000  # Default fixed chunk size
+                    
                     # Migrate the dataset
-                    success = migration_manager.migrate_dataset(dataset_id, target_table)
+                    success = migration_manager.migrate_dataset(dataset_id, target_table, chunk_size=chunk_size)
                     
                     if success:
                         logger.info(f"✅ Successfully migrated dataset {dataset_id}")

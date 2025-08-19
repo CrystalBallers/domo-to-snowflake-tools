@@ -116,8 +116,13 @@ class DomoHandler:
                 base_query = query
                 logger.info(f"Using custom query: {query}")
             else:
-                base_query = "SELECT * FROM table limit 1000"
-                logger.info("Using default query: SELECT * FROM table")
+                # Use chunk_size parameter to determine limit
+                if chunk_size is not None:
+                    base_query = f"SELECT * FROM table limit {chunk_size}"
+                    logger.info(f"Using default query with limit: SELECT * FROM table limit {chunk_size}")
+                else:
+                    base_query = "SELECT * FROM table"
+                    logger.info("Using default query: SELECT * FROM table (no limit)")
             
             # Get dataset info
             dataset_info = self.dataset_api.get(dataset_id)
@@ -125,8 +130,8 @@ class DomoHandler:
             logger.info(f"Dataset {dataset_id} has {total_rows} rows")
             
             # Extract data
-            if total_rows <= chunk_size:
-                # Single chunk extraction
+            if chunk_size is None or total_rows <= chunk_size:
+                # Single chunk extraction (either no limit or dataset fits in chunk)
                 return self._extract_single_chunk(dataset_id, base_query, enable_auto_type_conversion)
             else:
                 # Paginated extraction

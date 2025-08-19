@@ -234,7 +234,7 @@ class SnowflakeHandler:
         # Default to password authentication
         return "password"
     
-    def upload_data(self, df: pl.DataFrame, table_name: str, if_exists: str = 'replace') -> bool:
+    def upload_data(self, df: pl.DataFrame, table_name: str, if_exists: str = 'replace', chunk_size: int = None) -> bool:
         """
         Upload DataFrame to Snowflake table using cursor method.
         
@@ -242,6 +242,7 @@ class SnowflakeHandler:
             df: DataFrame to upload
             table_name: Target table name
             if_exists: What to do if table exists ('replace', 'append', 'fail')
+            chunk_size: Optional batch size for uploads (None for X-Small optimization)
             
         Returns:
             bool: True if upload successful, False otherwise
@@ -252,13 +253,13 @@ class SnowflakeHandler:
         
         try:
             logger.info(f"Uploading {len(df)} rows to Snowflake table: {table_name}")
-            return self._upload_via_cursor(df, table_name, if_exists)
+            return self._upload_via_cursor(df, table_name, if_exists, chunk_size)
             
         except Exception as e:
             logger.error(f"Failed to upload data to Snowflake: {e}")
             return False 
     
-    def _upload_via_cursor(self, df: pl.DataFrame, table_name: str, if_exists: str = 'replace') -> bool:
+    def _upload_via_cursor(self, df: pl.DataFrame, table_name: str, if_exists: str = 'replace', chunk_size: int = None) -> bool:
         """
         Upload DataFrame using cursor method with proper SQL execution.
         
@@ -266,6 +267,7 @@ class SnowflakeHandler:
             df: DataFrame to upload
             table_name: Target table name
             if_exists: What to do if table exists
+            chunk_size: Optional batch size for uploads (None for X-Small optimization)
             
         Returns:
             bool: True if upload successful, False otherwise
@@ -276,27 +278,48 @@ class SnowflakeHandler:
             # Escape table name for SQL operations
             escaped_table_name = f'"{table_name.upper()}"'
             
+            # Normalize column names for Snowflake compatibility FIRST
+            logger.info("🔧 Normalizing columns...")
+            df_normalized = self._normalize_column_names(df)
+            
             # Handle table existence
             if if_exists == 'replace':
                 cursor.execute(f"DROP TABLE IF EXISTS {escaped_table_name}")
                 logger.info(f"Dropped existing table: {table_name}")
             
-            # Create table if it doesn't exist
+            # Create table if it doesn't exist (using normalized columns)
             if if_exists in ['replace', 'fail']:
-                create_sql = self._generate_create_table_sql(df, table_name)
+                create_sql = self._generate_create_table_sql(df_normalized, table_name)
                 cursor.execute(create_sql)
                 logger.info(f"Created table: {table_name}")
             
             # Prepare data for insertion
-            df_clean = df.fill_null('NULL')
+            df_clean = df_normalized.fill_null('NULL')
             columns = list(df_clean.columns)
-            # Escape column names for INSERT statement
-            escaped_columns = [f'"{col}"' for col in columns]
+            
+            # Handle column names for INSERT statement
+            # Columns that are already quoted (reserved words) don't need additional escaping
+            escaped_columns = []
+            for col in columns:
+                if col.startswith('"') and col.endswith('"'):
+                    # Already quoted (reserved word), use as is
+                    escaped_columns.append(col)
+                else:
+                    # Regular column, add quotes
+                    escaped_columns.append(f'"{col}"')
+            
             placeholders = ', '.join(['%s'] * len(columns))
             
             # Insert data in batches
-            batch_size = 1000  # Smaller batch size for better performance
-            total_rows = len(df_clean)
+            if chunk_size is None:
+                # X-Small warehouse optimized batch size determination
+                batch_size = self._calculate_xsmall_optimized_batch_size(df_clean)
+                total_rows = len(df_clean)
+            else:
+                batch_size = chunk_size
+                total_rows = len(df_clean)
+            
+            logger.info(f"📊 Batch size: {batch_size}")
             
             for i in range(0, total_rows, batch_size):
                 batch = df_clean.slice(i, batch_size)
@@ -315,6 +338,128 @@ class SnowflakeHandler:
             logger.error(f"Cursor upload failed: {e}")
             return False
     
+    def _normalize_column_names(self, df: pl.DataFrame) -> pl.DataFrame:
+        """
+        Normalize column names for Snowflake compatibility.
+        
+        Rules:
+        - Spaces -> underscores
+        - Special characters -> underscores  
+        - # -> number
+        - Convert to UPPERCASE (all columns)
+        - Handle reserved words (store with quotes)
+        - Remove leading/trailing underscores
+        
+        Args:
+            df: DataFrame with original column names
+            
+        Returns:
+            pl.DataFrame: DataFrame with normalized column names
+        """
+        import re
+        
+        # Snowflake reserved words that should be uppercase
+        reserved_words = {
+            'date', 'dates', 'time', 'timestamp', 'year', 'month', 'day',
+            'hour', 'minute', 'second', 'order', 'group', 'select', 'from',
+            'where', 'and', 'or', 'not', 'null', 'true', 'false', 'case',
+            'when', 'then', 'else', 'end', 'as', 'in', 'like', 'between',
+            'is', 'exists', 'all', 'any', 'some', 'distinct', 'count',
+            'sum', 'avg', 'min', 'max', 'first', 'last', 'limit', 'offset'
+        }
+        
+        # Create a mapping of old names to new names
+        column_mapping = {}
+        new_columns = []
+        
+        for col in df.columns:
+            original_name = col
+            
+            # Apply normalization rules
+            normalized = col
+            
+            # Replace spaces with underscores
+            normalized = normalized.replace(' ', '_')
+            
+            # Replace # with 'number'
+            normalized = normalized.replace('#', 'number')
+            
+            # Replace special characters with underscores (except alphanumeric and underscore)
+            normalized = re.sub(r'[^a-zA-Z0-9_]', '_', normalized)
+            
+            # Convert to lowercase
+            normalized = normalized.lower()
+            
+            # Remove multiple consecutive underscores
+            normalized = re.sub(r'_+', '_', normalized)
+            
+            # Remove leading and trailing underscores
+            normalized = normalized.strip('_')
+            
+            # Ensure column name is not empty
+            if not normalized:
+                normalized = 'unnamed_column'
+            
+            # Convert all columns to UPPERCASE for consistency
+            normalized = normalized.upper()
+            
+            # Handle reserved words - store with quotes
+            if normalized in reserved_words:
+                # Store the name with quotes for Snowflake compatibility
+                final_name = f'"{normalized}"'
+                logger.info(f"🔄 Reserved word detected: '{original_name}' -> '{final_name}' (quoted UPPERCASE)")
+            else:
+                # Ensure uniqueness (add number suffix if duplicate)
+                counter = 1
+                final_name = normalized
+                while final_name in new_columns:
+                    final_name = f"{normalized}_{counter}"
+                    counter += 1
+            
+            column_mapping[original_name] = final_name
+            new_columns.append(final_name)
+            
+            # Log the transformation if it changed (but not for reserved words already logged)
+            if original_name != final_name and normalized not in reserved_words:
+                logger.info(f"🔄 Column normalized: '{original_name}' -> '{final_name}'")
+        
+        # Rename columns in the DataFrame
+        df_normalized = df.rename(column_mapping)
+        
+        logger.info(f"✅ Columns normalized: {len(column_mapping)}")
+        
+        return df_normalized
+
+    def _calculate_xsmall_optimized_batch_size(self, df: pl.DataFrame) -> int:
+        """
+        Calculate optimal batch size for X-Small warehouse based on dataset size.
+        Simple, deterministic, and optimized for 128 MB memory limit.
+        
+        Args:
+            df: DataFrame to analyze
+            
+        Returns:
+            int: Optimal batch size in rows
+        """
+        total_rows = len(df)
+        
+        if total_rows < 50_000:
+            batch_size = 25_000
+            reason = "Estabilidad máxima para datasets pequeños"
+        elif total_rows < 200_000:
+            batch_size = 50_000
+            reason = "Balance performance/riesgo para datasets medianos"
+        elif total_rows < 1_000_000:
+            batch_size = 75_000
+            reason = "Performance optimizada para datasets grandes"
+        else:
+            batch_size = 100_000
+            reason = "Límite máximo para X-Small warehouse"
+        
+        logger.info(f"📊 Batch size: {batch_size:,} rows")
+        
+        return batch_size
+
     def _generate_create_table_sql(self, df: pl.DataFrame, table_name: str) -> str:
         """
         Generate CREATE TABLE SQL based on DataFrame schema.
@@ -341,8 +486,15 @@ class SnowflakeHandler:
             else:
                 sf_type = "VARCHAR(16777216)"  # Snowflake max varchar size
             
-            # Escape column names to handle reserved keywords and special characters
-            escaped_col_name = f'"{col_name}"'
+            # Handle column names for CREATE TABLE
+            # Columns that are already quoted (reserved words) don't need additional escaping
+            if col_name.startswith('"') and col_name.endswith('"'):
+                # Already quoted (reserved word), use as is
+                escaped_col_name = col_name
+            else:
+                # Regular column, add quotes
+                escaped_col_name = f'"{col_name}"'
+            
             columns.append(f"{escaped_col_name} {sf_type}")
         
         columns_sql = ', '.join(columns)
