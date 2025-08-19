@@ -10,6 +10,7 @@ This module handles all Snowflake-related operations including:
 import os
 import logging
 import time
+import getpass
 from typing import Optional
 import pandas as pd
 from dotenv import load_dotenv
@@ -32,10 +33,14 @@ def show_current_totp_debug():
     """Show current TOTP passcode for debugging purposes"""
     passcode = os.getenv('SNOWFLAKE_PASSCODE')
     if passcode:
-        masked_passcode = passcode[:2] + '*' * (len(passcode) - 2) if len(passcode) > 2 else '***'
-        print(f"📱 Current TOTP passcode: {masked_passcode}")
-        print(f"⏰ Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"💡 Remember: TOTP codes expire every 30 seconds")
+        if passcode == "MANUAL":
+            print(f"📱 TOTP mode: MANUAL (interactive input)")
+            print(f"💡 You will be prompted to enter TOTP code when connecting")
+        else:
+            masked_passcode = passcode[:2] + '*' * (len(passcode) - 2) if len(passcode) > 2 else '***'
+            print(f"📱 Current TOTP passcode: {masked_passcode}")
+            print(f"⏰ Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"💡 Remember: TOTP codes expire every 30 seconds")
     else:
         print("📱 No TOTP passcode found in environment variables")
 
@@ -125,9 +130,29 @@ class SnowflakeHandler:
                     logger.error("SNOWFLAKE_PASSWORD is required for MFA authentication")
                     return False
                 
-                if not passcode:
+                # Check if manual passcode input is requested
+                if passcode == "MANUAL":
+                    print("🔐 Manual TOTP passcode input requested")
+                    print("📱 Please enter your current MFA/TOTP code from your authenticator app")
+                    print("💡 TOTP codes expire every 30 seconds - use a fresh code")
+                    print()  # Add blank line for better readability
+                    
+                    try:
+                        passcode = getpass.getpass("Enter TOTP code (6 digits): ").strip()
+                    except KeyboardInterrupt:
+                        print("\n⚠️  Authentication cancelled by user")
+                        return False
+                    except Exception as e:
+                        print(f"❌ Error reading passcode: {e}")
+                        return False
+                    
+                    if not passcode:
+                        print("❌ No passcode entered")
+                        return False
+                
+                elif not passcode:
                     logger.error("SNOWFLAKE_PASSCODE is required for MFA authentication")
-                    logger.error("Set SNOWFLAKE_PASSCODE to your current TOTP code")
+                    logger.error("Set SNOWFLAKE_PASSCODE to your current TOTP code, or set to 'MANUAL' for interactive input")
                     logger.error("💡 TOTP codes expire every 30 seconds - make sure to use a fresh code")
                     return False
                 
@@ -223,8 +248,9 @@ class SnowflakeHandler:
         if os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH"):
             return "key_pair"
         
-        # Check for MFA
-        if os.getenv("SNOWFLAKE_PASSCODE"):
+        # Check for MFA (including manual input)
+        passcode_env = os.getenv("SNOWFLAKE_PASSCODE")
+        if passcode_env and (passcode_env.isdigit() or passcode_env == "MANUAL"):
             return "mfa"
         
         # Check for SSO

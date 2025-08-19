@@ -25,6 +25,7 @@ Features:
 
 import os
 import sys
+import re
 import pandas as pd
 import argparse
 from pathlib import Path
@@ -232,13 +233,28 @@ def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, sc
                         numeric_like = False
                         
                         for val in sample_values:
-                            # Check if looks like date
-                            try:
-                                pd.to_datetime(val)
-                                date_like = True
+                            # Check if looks like date - BE MORE STRICT
+                            date_patterns = [
+                                r'^\d{4}-\d{2}-\d{2}',           # 2024-01-15
+                                r'^\d{2}/\d{2}/\d{4}',           # 01/15/2024
+                                r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}', # 2024-01-15 14:30
+                                r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}', # 2024-01-15T14:30
+                            ]
+                            
+                            # Only consider it a date if it matches specific patterns
+                            val_str = str(val).strip()
+                            for pattern in date_patterns:
+                                if re.match(pattern, val_str):
+                                    # Double-check it's actually parseable as date
+                                    try:
+                                        pd.to_datetime(val_str)
+                                        date_like = True
+                                        break
+                                    except:
+                                        pass
+                            
+                            if date_like:
                                 break
-                            except:
-                                pass
                             
                             # Check if looks like number
                             try:
@@ -249,8 +265,23 @@ def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, sc
                         
                         if date_like:
                             domo_type = 'DATETIME'
-                        elif numeric_like and col_name.lower() in ['id', 'count', 'amount', 'price', 'quantity', 'number', 'total']:
-                            domo_type = 'DOUBLE'
+                        elif numeric_like:
+                            # Be more intelligent about detecting numeric columns
+                            col_lower = col_name.lower()
+                            numeric_keywords = [
+                                'id', 'count', 'amount', 'price', 'quantity', 'number', 'total',
+                                'threshold', 'value', 'rate', 'percent', 'score', 'metric',
+                                'weight', 'size', 'length', 'width', 'height', 'volume',
+                                'cost', 'revenue', 'profit', 'margin', 'ratio', 'factor'
+                            ]
+                            
+                            # Check if column name contains numeric keywords
+                            is_numeric_column = any(keyword in col_lower for keyword in numeric_keywords)
+                            
+                            if is_numeric_column:
+                                domo_type = 'DOUBLE'
+                            else:
+                                domo_type = 'STRING'  # Even if numeric values, treat as string if name doesn't suggest numeric use
                         else:
                             domo_type = 'STRING'
                     
