@@ -92,7 +92,7 @@ def mock_polars_dataframe():
     """Mock Polars DataFrame."""
     try:
         import polars as pl
-        return pl.DataFrame({
+        return pd.DataFrame({
             'customer_id': ['C001', 'C002', 'C003'],
             'order_date': ['2024-01-01', '2024-01-02', '2024-01-03'],
             'amount': [100.50, 200.75, 150.25]

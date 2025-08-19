@@ -456,7 +456,7 @@ class SnowflakeHandler:
         
         return df_normalized
 
-    def _calculate_xsmall_optimized_batch_size(self, df: pl.DataFrame) -> int:
+    def _calculate_xsmall_optimized_batch_size(self, df: pd.DataFrame) -> int:
         """
         Calculate optimal batch size for X-Small warehouse based on dataset size.
         Simple, deterministic, and optimized for 128 MB memory limit.

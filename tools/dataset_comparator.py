@@ -13,8 +13,70 @@ import random
 from typing import List, Dict, Any, Optional, Tuple
 import pandas as pd
 import datacompy
+from datetime import datetime
 
 from .utils.common import transform_column_name, get_snowflake_table_full_name, setup_dual_connections, get_env_config
+from .utils.domo import DomoHandler
+from .utils.snowflake import SnowflakeHandler
+from .utils.gsheets import GoogleSheets, READ_WRITE_SCOPES
+
+
+def _escape_domo_column_name(column_name: str) -> str:
+    """
+    Escapa nombres de columnas para consultas SQL de Domo.
+    
+    Args:
+        column_name: Nombre original de la columna
+        
+    Returns:
+        Nombre de columna escapado para SQL de Domo
+        
+    Examples:
+        >>> _escape_domo_column_name("Site Code")
+        '"Site Code"'
+        >>> _escape_domo_column_name("site_code")
+        'site_code'
+        >>> _escape_domo_column_name("Total Revenue")
+        '"Total Revenue"'
+    """
+    # Si el nombre tiene espacios o caracteres especiales, envolver en comillas dobles
+    if re.search(r'[^a-zA-Z0-9_]', column_name):
+        return f'"{column_name}"'
+    return column_name
+
+def _escape_domo_column_list(column_names: List[str]) -> str:
+    """
+    Escapa una lista de nombres de columnas para consultas SQL de Domo.
+    
+    Args:
+        column_names: Lista de nombres de columnas
+        
+    Returns:
+        String con nombres de columnas escapados, separados por comas
+        
+    Examples:
+        >>> _escape_domo_column_list(["Site Code", "Total Revenue"])
+        '"Site Code", "Total Revenue"'
+    """
+    escaped_columns = [_escape_domo_column_name(col) for col in column_names]
+    return ', '.join(escaped_columns)
+
+def _normalize_snowflake_column_list(column_names: List[str]) -> str:
+    """
+    Normaliza una lista de nombres de columnas para consultas SQL de Snowflake.
+    
+    Args:
+        column_names: Lista de nombres de columnas
+        
+    Returns:
+        String con nombres de columnas normalizados, separados por comas
+        
+    Examples:
+        >>> _normalize_snowflake_column_list(["Site Code", "Total Revenue"])
+        'SITE_CODE, TOTAL_REVENUE'
+    """
+    normalized_columns = [transform_column_name(col) for col in column_names]
+    return ', '.join(normalized_columns)
 
 
 class DatasetComparator:
@@ -346,7 +408,7 @@ class DatasetComparator:
             actual_sampling_method = "Ordered Sampling"
             try:
                 # Get Domo sample using ordered method
-                key_cols_str = ', '.join(key_columns)
+                key_cols_str = _escape_domo_column_list(key_columns)
                 sample_query = f"SELECT * FROM table ORDER BY {key_cols_str} LIMIT {sample_size}"
                 
                 domo_df = self.domo_handler.extract_data(
@@ -360,7 +422,8 @@ class DatasetComparator:
                     raise Exception("No data returned from Domo")
                 
                 # Get Snowflake sample using ordered method  
-                sf_query = f"SELECT * FROM {snowflake_table} ORDER BY {key_cols_str} LIMIT {sample_size}"
+                sf_key_cols_str = _normalize_snowflake_column_list(key_columns)
+                sf_query = f"SELECT * FROM {snowflake_table} ORDER BY {sf_key_cols_str} LIMIT {sample_size}"
                 sf_df = self.snowflake_handler.execute_query(sf_query)
                 
                 if sf_df is None or sf_df.empty:
@@ -386,7 +449,7 @@ class DatasetComparator:
                 # Fallback to original deterministic sampling
                 try:
                     # Get Domo sample using original method
-                    key_cols_str = ', '.join(key_columns)
+                    key_cols_str = _escape_domo_column_list(key_columns)
                     sample_query = f"SELECT * FROM table ORDER BY {key_cols_str} LIMIT {sample_size}"
                     
                     domo_df = self.domo_handler.extract_data(
@@ -400,7 +463,8 @@ class DatasetComparator:
                         raise Exception("No data returned from Domo")
                     
                     # Get Snowflake sample using original method  
-                    sf_query = f"SELECT * FROM {snowflake_table} ORDER BY {key_cols_str} LIMIT {sample_size}"
+                    sf_key_cols_str = _normalize_snowflake_column_list(key_columns)
+                    sf_query = f"SELECT * FROM {snowflake_table} ORDER BY {sf_key_cols_str} LIMIT {sample_size}"
                     sf_df = self.snowflake_handler.execute_query(sf_query)
                     
                     if sf_df is None or sf_df.empty:
@@ -412,9 +476,14 @@ class DatasetComparator:
                     self.add_error("Sample Extraction", "Both smart and fallback sampling failed", str(fallback_error))
                     return self._get_error_data_result(sample_size)
         
+        # Always normalize key columns for comparison (regardless of transform_names setting)
+        # This ensures compatibility between Domo and Snowflake column names
+        normalized_key_columns = [transform_column_name(col) for col in key_columns]
+        self.logger.info(f"🔄 Key columns normalized for comparison: {key_columns} → {normalized_key_columns}")
+        
         # Apply column transformation if enabled (applies to both sampling methods)
         if transform_names:
-            self.logger.info("🔄 Applying column name transformation...")
+            self.logger.info("🔄 Applying full column name transformation...")
             
             # Transform Domo columns
             original_domo_columns = domo_df.columns.tolist()
@@ -426,19 +495,23 @@ class DatasetComparator:
             transformed_sf_columns = [transform_column_name(col) for col in original_sf_columns]
             sf_df.columns = transformed_sf_columns
             
-            # Transform key columns for datacompy
-            key_columns = [transform_column_name(col) for col in key_columns]
+            # Use normalized key columns (already transformed above)
+            key_columns_for_comparison = normalized_key_columns
             
-            self.logger.info(f"🔄 Column transformation applied to both DataFrames")
+            self.logger.info(f"🔄 Full column transformation applied to both DataFrames")
+        else:
+            # Even without full transformation, we need to use normalized key columns
+            key_columns_for_comparison = normalized_key_columns
+            self.logger.info(f"🔄 Using normalized key columns without full column transformation")
         
         # Use datacompy for comparison
         try:
             self.logger.info(f"📊 Domo DataFrame shape: {domo_df.shape}, columns: {list(domo_df.columns)}")
             self.logger.info(f"📊 Snowflake DataFrame shape: {sf_df.shape}, columns: {list(sf_df.columns)}")
-            self.logger.info(f"📊 Key columns for comparison: {key_columns}")
+            self.logger.info(f"📊 Key columns for comparison: {key_columns_for_comparison}")
             
             # Normalize data types for key columns to ensure compatibility
-            for col in key_columns:
+            for col in key_columns_for_comparison:
                 # Find matching columns case-insensitively
                 domo_col = None
                 sf_col = None
@@ -475,12 +548,45 @@ class DatasetComparator:
                         sf_df = sf_df.rename(columns={sf_col: col})
                         self.logger.info(f"Renamed Snowflake column '{sf_col}' to '{col}'")
                 else:
-                    self.logger.warning(f"Key column '{col}' not found in both DataFrames. Domo: {domo_col}, Snowflake: {sf_col}")
+                    # If column not found, try to find it with the original name (before normalization)
+                    original_col_name = None
+                    for original_key in key_columns:
+                        if transform_column_name(original_key) == col:
+                            original_col_name = original_key
+                            break
+                    
+                    if original_col_name:
+                        self.logger.info(f"Trying to find original column name '{original_col_name}' for normalized key '{col}'")
+                        
+                        # Try to find the original column name in Domo
+                        for domo_column in domo_df.columns:
+                            if domo_column.lower() == original_col_name.lower():
+                                domo_col = domo_column
+                                break
+                        
+                        # Try to find the normalized column name in Snowflake
+                        for sf_column in sf_df.columns:
+                            if sf_column.lower() == col.lower():
+                                sf_col = sf_column
+                                break
+                        
+                        if domo_col and sf_col:
+                            self.logger.info(f"Found columns with original/normalized names: Domo '{domo_col}', Snowflake '{sf_col}'")
+                            
+                            # Rename both columns to the normalized name for datacompy
+                            domo_df = domo_df.rename(columns={domo_col: col})
+                            sf_df = sf_df.rename(columns={sf_col: col})
+                            
+                            self.logger.info(f"Renamed columns for datacompy compatibility: '{domo_col}' → '{col}', '{sf_col}' → '{col}'")
+                        else:
+                            self.logger.warning(f"Could not find matching columns for key '{col}' (original: '{original_col_name}'). Domo: {domo_col}, Snowflake: {sf_col}")
+                    else:
+                        self.logger.warning(f"Key column '{col}' not found in both DataFrames. Domo: {domo_col}, Snowflake: {sf_col}")
             
             comparison = datacompy.Compare(
                 domo_df,
                 sf_df,
-                join_columns=key_columns,
+                join_columns=key_columns_for_comparison,
                 df1_name='Domo',
                 df2_name='Snowflake'
             )
@@ -501,7 +607,7 @@ class DatasetComparator:
                 f.write(f"COMPARISON REPORT\n")
                 f.write(f"Domo Dataset: {domo_dataset_id}\n")
                 f.write(f"Snowflake Table: {snowflake_table}\n")
-                f.write(f"Key Columns: {', '.join(key_columns)}\n")
+                f.write(f"Key Columns: {', '.join(key_columns_for_comparison)}\n")
                 f.write(f"Transform Applied: {transform_names}\n")
                 f.write(f"Timestamp: {pd.Timestamp.now().isoformat()}\n")
                 f.write("="*80 + "\n")
@@ -606,7 +712,7 @@ class DatasetComparator:
         Returns:
             DataFrame con todas las combinaciones únicas de keys
         """
-        key_cols_str = ', '.join(key_columns)
+        key_cols_str = _escape_domo_column_list(key_columns)
         all_keys_query = f"SELECT DISTINCT {key_cols_str} FROM table"
         
         self.logger.info(f"📋 Getting all unique key combinations for columns: {key_columns}")
@@ -654,7 +760,8 @@ class DatasetComparator:
                 escaped_values = [str(v) for v in values]
             
             values_str = ', '.join(escaped_values)
-            where_clause = f"{col} IN ({values_str})"
+            escaped_col = _escape_domo_column_name(col)
+            where_clause = f"{escaped_col} IN ({values_str})"
             
         elif len(key_columns) == 2:
             # Dos key columns: usar ORs para máxima compatibilidad con MySQL
@@ -688,18 +795,105 @@ class DatasetComparator:
             
             for col in key_columns:
                 value = row[col]
+                escaped_col = _escape_domo_column_name(col)
                 
                 # Manejar diferentes tipos de datos
                 if pd.isna(value) or value is None:
-                    row_conditions.append(f"{col} IS NULL")
+                    row_conditions.append(f"{escaped_col} IS NULL")
                 elif isinstance(value, str):
                     if value.strip() == '':
-                        row_conditions.append(f"({col} = '' OR {col} IS NULL)")
+                        row_conditions.append(f"({escaped_col} = '' OR {escaped_col} IS NULL)")
                     else:
                         escaped_value = str(value).replace("'", "''")
-                        row_conditions.append(f"{col} = '{escaped_value}'")
+                        row_conditions.append(f"{escaped_col} = '{escaped_value}'")
                 else:
-                    row_conditions.append(f"{col} = {value}")
+                    row_conditions.append(f"{escaped_col} = {value}")
+            
+            # Unir condiciones de esta fila con AND
+            row_condition = "(" + " AND ".join(row_conditions) + ")"
+            where_conditions.append(row_condition)
+        
+        # Unir todas las filas con OR
+        return " OR ".join(where_conditions)
+    
+    def _build_snowflake_where_clause(self, sampled_keys_df: pd.DataFrame, key_columns: List[str]) -> str:
+        """
+        Construye cláusula WHERE para Snowflake usando nombres de columnas normalizados.
+        
+        Args:
+            sampled_keys_df: DataFrame con las combinaciones de keys seleccionadas
+            key_columns: Lista de columnas que actúan como keys
+            
+        Returns:
+            String con la cláusula WHERE optimizada para Snowflake
+        """
+        if sampled_keys_df.empty:
+            raise Exception("No sampled keys provided")
+        
+        if len(key_columns) == 1:
+            # Un solo key column: usar simple IN (muy eficiente)
+            col = key_columns[0]
+            normalized_col = transform_column_name(col)
+            values = sampled_keys_df[col].dropna().tolist()
+            
+            # Manejar diferentes tipos de datos
+            if all(isinstance(v, str) for v in values):
+                # String values: escapar comillas
+                escaped_values = []
+                for v in values:
+                    escaped_val = str(v).replace("'", "''")  # Escapar comillas simples
+                    escaped_values.append(f"'{escaped_val}'")
+            else:
+                # Numeric or other values
+                escaped_values = [str(v) for v in values]
+            
+            values_str = ', '.join(escaped_values)
+            where_clause = f"{normalized_col} IN ({values_str})"
+            
+        elif len(key_columns) == 2:
+            # Dos key columns: usar ORs para máxima compatibilidad
+            where_clause = self._build_snowflake_or_where_clause(sampled_keys_df, key_columns)
+                
+        else:
+            # 3+ columns: usar approach de ORs
+            where_clause = self._build_snowflake_or_where_clause(sampled_keys_df, key_columns)
+        
+        self.logger.info(f"🔍 Built Snowflake WHERE clause for {len(sampled_keys_df)} combinations")
+        self.logger.debug(f"Snowflake WHERE clause (first 200 chars): {where_clause[:200]}...")
+        
+        return where_clause
+    
+    def _build_snowflake_or_where_clause(self, sampled_keys_df: pd.DataFrame, key_columns: List[str]) -> str:
+        """
+        Construye cláusula WHERE para Snowflake usando ORs para casos complejos.
+        
+        Args:
+            sampled_keys_df: DataFrame con las combinaciones de keys seleccionadas  
+            key_columns: Lista de columnas que actúan como keys
+            
+        Returns:
+            String con la cláusula WHERE usando ORs para Snowflake
+        """
+        where_conditions = []
+        
+        for _, row in sampled_keys_df.iterrows():
+            row_conditions = []
+            
+            for col in key_columns:
+                value = row[col]
+                normalized_col = transform_column_name(col)
+                
+                # Manejar diferentes tipos de datos
+                if pd.isna(value) or value is None:
+                    row_conditions.append(f"{normalized_col} IS NULL")
+                elif isinstance(value, str):
+                    if value.strip() == '':
+                        row_conditions.append(f"({normalized_col} = '' OR {normalized_col} IS NULL)")
+                    else:
+                        escaped_value = str(value).replace("'", "''")
+                        row_conditions.append(f"{normalized_col} = '{escaped_value}'")
+                else:
+                    row_conditions.append(f"{normalized_col} = {value}")
             
             # Unir condiciones de esta fila con AND
             row_condition = "(" + " AND ".join(row_conditions) + ")"
@@ -821,12 +1015,15 @@ class DatasetComparator:
         Returns:
             Tuple[domo_df, snowflake_df] para este batch
         """
-        # Construir WHERE clause para este batch
-        where_clause = self._build_efficient_where_clause(batch_keys_df, key_columns)
+        # Construir WHERE clause para Domo (con escape)
+        domo_where_clause = self._build_efficient_where_clause(batch_keys_df, key_columns)
+        
+        # Construir WHERE clause para Snowflake (con nombres normalizados)
+        sf_where_clause = self._build_snowflake_where_clause(batch_keys_df, key_columns)
         
         # Ejecutar query en Domo
         self.logger.info(f"📥 Getting {len(batch_keys_df)} rows from Domo...")
-        domo_query = f"SELECT * FROM table WHERE {where_clause}"
+        domo_query = f"SELECT * FROM table WHERE {domo_where_clause}"
         domo_df = self.domo_handler.extract_data(
             dataset_id=domo_dataset_id,
             query=domo_query,
@@ -840,7 +1037,7 @@ class DatasetComparator:
         
         # Ejecutar query en Snowflake
         self.logger.info(f"📥 Getting {len(batch_keys_df)} rows from Snowflake...")
-        sf_query = f"SELECT * FROM {snowflake_table} WHERE {where_clause}"
+        sf_query = f"SELECT * FROM {snowflake_table} WHERE {sf_where_clause}"
         sf_df = self.snowflake_handler.execute_query(sf_query)
         
         if sf_df is None or sf_df.empty:

@@ -97,7 +97,7 @@ class GoogleSheets:
 
     def read_to_dataframe(
         self, spreadsheet_id: str, range_name: str, header: bool = True
-    ) -> pl.DataFrame:
+    ) -> pd.DataFrame:
         """
         Read data from a specific range in a spreadsheet into a polars DataFrame
 
@@ -107,12 +107,12 @@ class GoogleSheets:
             header (bool): Whether to treat the first row as column names
 
         Returns:
-            pl.DataFrame: The data as a polars DataFrame
+            pd.DataFrame: The data as a polars DataFrame
         """
         values = self.read_range(spreadsheet_id, range_name)
 
         if not values:
-            return pl.DataFrame()
+            return pd.DataFrame()
 
         if header and len(values) > 0:
             # Get the headers from the first row
@@ -123,13 +123,13 @@ class GoogleSheets:
 
             # Create pandas DataFrame first, then convert to polars
             pandas_df = pd.DataFrame(data_rows, columns=headers)
-            df = pl.from_pandas(pandas_df)
+            df = pd.from_pandas(pandas_df)
 
             return df
         else:
             # For non-header data, create pandas DataFrame first, then convert to polars
             pandas_df = pd.DataFrame(values)
-            df = pl.from_pandas(pandas_df)
+            df = pd.from_pandas(pandas_df)
             return df
 
     def write_range(
@@ -175,7 +175,7 @@ class GoogleSheets:
 
     def write_dataframe(
         self,
-        df: pl.DataFrame,
+        df: pd.DataFrame,
         spreadsheet_id: str,
         range_name: str,
         include_header: bool = True,
@@ -184,7 +184,7 @@ class GoogleSheets:
         Write a polars DataFrame to a specific range in a spreadsheet
 
         Args:
-            df (pl.DataFrame): The DataFrame to write
+            df (pd.DataFrame): The DataFrame to write
             spreadsheet_id (str): The ID of the spreadsheet
             range_name (str): The range to write to (e.g., 'Sheet1!A1')
             include_header (bool): Whether to include column names as the first row
