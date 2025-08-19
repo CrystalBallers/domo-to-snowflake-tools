@@ -2,78 +2,19 @@
 
 A comprehensive suite of tools for migrating data from Domo to Snowflake, with additional functionalities for managing inventories from Google Sheets.
 
-## ⚡ Quick Start
-
-### **1. Installation & Setup**
-```bash
-# Clone the repository
-git clone <repository-url>
-cd Domo-to-snowflake-migration
-
-# Create virtual environment (recommended)
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-### **2. Configuration**
-Create a `.env` file with your credentials:
-```bash
-# Copy example file
-cp .env.example .env
-
-# Edit with your actual credentials
-nano .env  # or your preferred editor
-```
-
-**Required environment variables:**
-- `GOOGLE_SHEETS_CREDENTIALS_FILE` - Path to your service account JSON
-- `DOMO_DEVELOPER_TOKEN` - Your Domo API token
-- `DOMO_INSTANCE` - Your Domo instance name
-- `SNOWFLAKE_*` - Your Snowflake connection details
-
-### **3. Test Everything Works**
-```bash
-# Test Google Sheets connection
-python main.py inventory --test-connection
-
-# Test Domo and Snowflake connections  
-python main.py migrate --test-connection
-
-# Check project health
-python tools/scripts/project_maintenance.py check
-```
-
-### **4. Your First Migration**
-```bash
-# Export inventory from Google Sheets to SQL files
-python main.py inventory --export-dir results/sql/translated
-
-# Migrate a single dataset (test)
-python main.py migrate --dataset-id YOUR_DATASET_ID --target-table test_table
-
-# Migrate from Google Sheets (production)
-python main.py migrate --from-spreadsheet
-```
-
-**🎯 That's it!** Check [Usage Examples](#-usage-examples) below for more detailed workflows.
-
 ## 📋 Table of Contents
 
-- [Quick Start](#-quick-start)
+
 - [Features](#-features)
 - [Prerequisites](#-prerequisites)
 - [Installation](#-installation)
 - [Configuration](#-configuration)
 - [Usage](#-usage)
-- [Available Commands](#-available-commands)
 - [Usage Examples](#-usage-examples)
 - [Project Structure](#-project-structure)
-- [Documentation](#-documentation)
 - [Troubleshooting](#-troubleshooting)
-- [Contributing](#-contributing)
+
+
 
 ## 🚀 Features
 
@@ -98,7 +39,7 @@ python main.py migrate --from-spreadsheet
 ## 📋 Prerequisites
 
 ### Required Software
-- Python 3.8 or higher
+- Python 3.11
 - pip (Python package manager)
 - Internet access for APIs
 
@@ -111,34 +52,29 @@ python main.py migrate --from-spreadsheet
 
 ### 1. Clone the Repository
 ```bash
-git clone <repository-url>
+git clone https://github.com/<user>/<repository>.git <destination_folder_name>
 cd Domo-to-snowflake-migration
 ```
 
 ### 2. Create Virtual Environment (Recommended)
 ```bash
-python -m venv .venv
+# If you don't have Python 3.11 installed:
+# - macOS (Homebrew): brew install python@3.11 && brew link python@3.11 --force
+# - Windows: Download and install from https://www.python.org/downloads/release/python-3110/
+#   (make sure to check "Add Python to PATH" during installation)
+python3.11 -m venv .venv
 source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ```
 
-### 3. Install Dependencies
+### 3. Clone, install and clean argo-utils-cli 
 ```bash
-pip install -r requirements.txt
+git clone https://github.com/CrystalBallers/argo-utils-cli.git argo-utils-cli
+pip install -e ./argo-utils-cli # (Not Yet) && rm -rf argo-utils-cli
 ```
 
-### 4. Install Additional Dependencies (if needed)
+### 4. Install Dependencies
 ```bash
-# For Google Sheets
-pip install google-api-python-client google-auth google-auth-oauthlib google-auth-httplib2
-
-# For data processing
-pip install pandas polars
-
-# For Snowflake
-pip install snowflake-connector-python
-
-# For environment variables
-pip install python-dotenv
+pip install -r requirements.txt
 ```
 
 ## ⚙️ Configuration
@@ -278,6 +214,31 @@ python main.py datasets [options]
 - `--sheet-name`: Sheet name for datasets (default: DomoDatasets)
 - `--batch-size`: Number of datasets to fetch per batch (default: 100)
 
+#### 4. `generate-stg` - Generate STG Files
+
+Generate staging SQL files with automatic CAST based on Snowflake schema and Google Sheets tracking.
+
+```bash
+python main.py generate-stg [options]
+```
+
+**Options:**
+- `--database`: Snowflake database name (default: from SNOWFLAKE_DATABASE env var)
+- `--schema`: Snowflake schema name (default: TEMP_ARGO_RAW)
+- `--role`: Snowflake role to use (default: DBT_ROLE)
+- `--warehouse`: Snowflake warehouse to use (default: from SNOWFLAKE_WAREHOUSE env var)
+- `--output-dir`: Directory to save SQL files (default: sql/stg/)
+- `--credentials`: Path to Google Sheets credentials file
+- `--spreadsheet-id`: Google Sheets spreadsheet ID
+- `--read-only`: Run in read-only mode (don't update Check column)
+- `--dry-run`: Show what would be generated without creating files
+
+**Features:**
+- ✅ **Smart Skip**: Automatically skips rows where Check = "True"
+- ✅ **Auto CAST**: Generates appropriate CAST statements based on Snowflake data types
+- ✅ **Progress Tracking**: Writes "True" to Check column when files are created successfully
+- ✅ **Schema Validation**: Connects to Snowflake to get real column names and types
+
 ## 📚 Usage Examples
 
 Examples:
@@ -316,27 +277,21 @@ Examples:
     
     # Use custom credentials file
     python main.py inventory --credentials /path/to/creds.json --export-dir output
-
-### Migration Spreadsheet Structure
-
-When using `--from-spreadsheet`, the system reads from a Google Sheets tab with the following structure:
-
-| Dataset ID | Name | Status |
-|------------|------|--------|
-| dataset_001 | sales_monthly | Pending |
-| dataset_002 | customer_data | Migrated |
-| dataset_003 | inventory_levels | Failed |
-| dataset_004 | financial_reports | Pending |
-
-**Required Columns:**
-- **Dataset ID**: The Domo dataset identifier
-- **Name**: The target table name in Snowflake (will be cleaned: spaces→underscores, lowercase)
-- **Status**: Migration status. Only rows where Status ≠ "Migrated" will be processed
-
-**Alternative Column Names:**
-- Dataset ID: `dataset_id`, `DatasetID`, `dataset`, `Dataset`, `ID`
-- Name: `name`, `table_name`, `Table Name`, `TableName`, `target_table`
-- Status: `status`, `migration_status`, `Migration Status`, `state`
+    
+    # Generate STG files with default configuration
+    python main.py generate-stg
+    
+    # Generate STG files with custom database and schema
+    python main.py generate-stg --database DW_REPORTS --schema TEMP_ARGO_RAW
+    
+    # Dry run - see what would be generated without creating files
+    python main.py generate-stg --dry-run
+    
+    # Read-only mode - don't update Check column in Google Sheets
+    python main.py generate-stg --read-only
+    
+    # Full custom configuration
+    python main.py generate-stg --database DW_RAW --schema SRC --role DBT_ROLE --warehouse DBT_WH --output-dir results/sql/stg
 
 ## 📝 Project Structure
 
@@ -348,97 +303,32 @@ Domo-to-snowflake-migration/
 ├── README.md                   # This file
 ├── tools/                      # Main modules
 │   ├── __init__.py
+│   ├── get_all_stg_files.py   # STG files generation (with CLI)
 │   ├── inventory_handler.py    # Inventory management
 │   ├── domo_to_snowflake.py   # Data migration
+│   ├── dataset_comparator.py  # Data comparison/QA
+│   ├── scripts/                # Utility scripts
+│   │   ├── __init__.py
+│   │   ├── cleanup_project.py
+│   │   ├── extract_lineage.py
+│   │   ├── maintain_structure.py
+│   │   └── project_maintenance.py
 │   └── utils/                  # Utilities
 │       ├── __init__.py
 │       ├── domo.py            # Domo API client
 │       ├── snowflake.py       # Snowflake client
-│       └── gsheets.py         # Google Sheets client
-└── results/sql/translated/     # Output directory (created automatically)
-```
-
-## 📚 Documentation
-
-Our documentation is organized by audience and complexity:
-
-### **📖 For All Users**
-- **[README.md](README.md)** (this file) - Main documentation with quick start and essential usage
-- **[Usage Examples](#-usage-examples)** - Common use cases and workflows
-
-### **🤖 For Advanced Users**
-- **[Advanced Automation](docs/AUTOMATION.md)** - CI/CD integration, cron jobs, monitoring
-- **[Quick Reference](docs/QUICK_REFERENCE.md)** - Power user commands and productivity tips
-
-### **👨‍💻 For Developers**
-- **[Contributing Guide](docs/CONTRIBUTING.md)** - Development standards, coding conventions, testing
-- **[Project Structure](#-project-structure)** - Understanding the codebase organization
-
-### **🆘 For Troubleshooting**
-- **[Troubleshooting](#-troubleshooting)** - Common issues and solutions
-- **[Configuration](#-configuration)** - Environment setup and credentials
-
-**💡 Tip:** Start with the Quick Start section above, then dive into specific documentation as needed.
-
-## 🔧 Advanced Configuration
-
-### Customize Spreadsheet Configuration
-
-The system uses environment variables for Google Sheets configuration:
-
-```env
-# Default spreadsheet ID (can be overridden)
-MIGRATION_SPREADSHEET_ID=1Y_CpIXW9RCxnlwwvP-tAL5B9UmvQlgu6DbpEnHgSgVA
-
-# Default migration sheet name (can be overridden)
-MIGRATION_SHEET_NAME=Migration
-```
-
-You can also override these at runtime:
-```bash
-# Use custom spreadsheet
-python main.py migrate --from-spreadsheet --spreadsheet-id YOUR_SHEET_ID
-
-# Use custom sheet name
-python main.py migrate --from-spreadsheet --sheet-name MyMigrationTab
-```
-
-### Customize Dataflow Columns
-
-The system automatically searches for these columns for dataflows:
-- "Dataflow ID" (default)
-- "dataflow"
-- "Dataflow"
-- "DataFlow"
-- "dataflow_id"
-- "Dataflow_ID"
-
-### Control Table Name Prefix
-
-By default, all Snowflake tables are created with a `DOMO_` prefix. You can control this behavior:
-
-**Option 1: Environment Variable**
-```bash
-# Remove prefix completely
-export DOMO_TABLE_PREFIX=""
-
-# Use custom prefix
-export DOMO_TABLE_PREFIX="MIGRATED_"
-
-# Use default prefix
-export DOMO_TABLE_PREFIX="DOMO_"
-```
-
-**Option 2: In .env file**
-```env
-# Remove prefix
-DOMO_TABLE_PREFIX=
-
-# Custom prefix
-DOMO_TABLE_PREFIX=MIGRATED_
-
-# Default prefix
-DOMO_TABLE_PREFIX=DOMO_
+│       ├── gsheets.py         # Google Sheets client
+│       ├── create_stg_sql_file.py  # STG SQL generation
+│       └── create_source.py   # Source file generation
+├── results/                    # Output directories (created automatically)
+│   ├── sql/
+│   │   ├── stg/               # Staging files
+│   │   └── translated/        # Inventory exports
+│   └── txt/qa/                # QA comparison reports
+└── tests/                      # Test files
+    ├── __init__.py
+    ├── conftest.py
+    └── test_*.py
 ```
 
 **Examples:**
@@ -454,23 +344,6 @@ To adjust API timeouts:
 # In tools/inventory_handler.py, line ~200
 timeout=60  # Increase if necessary
 ```
-
-### Using MigrationManager for Custom Migrations
-
-For advanced use cases, you can use the `MigrationManager` class directly:
-
-```python
-from tools.domo_to_snowflake import MigrationManager
-
-# Efficient batch migration with connection reuse
-with MigrationManager() as manager:
-    # All datasets will use the same connections
-    success1 = manager.migrate_dataset("dataset_001", "table_1")
-    success2 = manager.migrate_dataset("dataset_002", "table_2")
-    success3 = manager.migrate_dataset("dataset_003", "table_3")
-```
-
-This approach is much more efficient than calling `migrate_dataset()` individually, as it reuses connections instead of re-authenticating for each dataset.
 
 ## 🚨 Troubleshooting
 
@@ -568,140 +441,3 @@ Migrations show:
    ✅ Successful: 8
    ❌ Failed: 2
 ```
-
-## 🔄 Recommended Workflow
-
-### 1. Initial Setup
-```bash
-# 1. Configure environment variables
-cp .env.example .env
-# Edit .env with your credentials
-
-# 2. Test connections
-python main.py inventory --test-connection
-python main.py migrate --test-connection
-```
-
-### 2. Inventory Management
-```bash
-# 1. Export complete inventory
-python main.py inventory --export-dir inventory_$(date +%Y%m%d)
-
-# 2. Review generated files
-ls -la inventory_*/
-```
-
-### 3. Data Migration
-```bash
-# 1. Test migration (single dataset)
-python main.py migrate --dataset-id TEST_ID --target-table test_table
-
-# 2. Batch migration (production)
-python main.py migrate --batch-file production_mapping.json
-```
-
-## 🤝 Contributing
-
-### Reporting Issues
-1. Describe the problem in detail
-2. Include relevant logs
-3. Specify your configuration (Python version, OS, etc.)
-
-### Proposing Improvements
-1. Fork the repository
-2. Create a branch for your feature
-3. Implement changes with tests
-4. Submit a Pull Request
-
-### Local Development
-```bash
-# Install development dependencies
-pip install -e .
-
-# Run tests
-python -m pytest tests/
-
-# Check code
-flake8 tools/
-black tools/
-```
-
-## 📝 License
-
-This project is under the MIT license. See the `LICENSE` file for more details.
-
-## 📞 Support
-
-For technical support:
-1. Review this README
-2. Check the Troubleshooting section
-3. Search existing Issues
-4. Create a new Issue if necessary
-
----
-
-**Note**: This project is under active development. Features may change between versions. Always check the latest documentation before using in production. 
-
-## Migration from Google Sheets
-
-The tool can read migration datasets from a Google Sheets spreadsheet and automatically update the status after successful migrations.
-
-### Spreadsheet Structure
-
-Your Google Sheets should have a tab (default name: "Migration") with the following columns:
-
-| Column Name | Description | Required | Example |
-|-------------|-------------|----------|---------|
-| Dataset ID | The Domo dataset ID to migrate | Yes | `12345` |
-| Name | Dataset name (for reference) | No | `Sales Data` |
-| Status | Migration status | No | `Pending`, `Migrated`, `Failed` |
-
-**Note:** The tool is flexible with column names and will try to find columns with similar names (e.g., `dataset_id`, `DatasetID`, etc.).
-
-### Usage
-
-```bash
-# Migrate from default spreadsheet (uses environment variables)
-python main.py migrate --from-spreadsheet
-
-# Migrate from custom spreadsheet
-python main.py migrate --from-spreadsheet \
-    --spreadsheet-id "your-spreadsheet-id" \
-    --sheet-name "Migration" \
-    --credentials "path/to/credentials.json"
-```
-
-### Environment Variables
-
-You can set these environment variables to avoid passing parameters:
-
-```bash
-export MIGRATION_SPREADSHEET_ID="your-spreadsheet-id"
-export MIGRATION_SHEET_NAME="Migration"
-export GOOGLE_SHEETS_CREDENTIALS_FILE="path/to/credentials.json"
-```
-
-### Automatic Status Updates
-
-When using spreadsheet migration, the tool will:
-
-1. **Read** datasets where Status is not "Migrated"
-2. **Migrate** each dataset to Snowflake
-3. **Update** the Status column to "Migrated" for successful migrations
-4. **Log** detailed progress and any errors
-
-This allows you to:
-- Track migration progress visually in the spreadsheet
-- Re-run migrations safely (only pending datasets will be processed)
-- Maintain a clear audit trail of migration status
-
-### Example Workflow
-
-1. **Prepare your spreadsheet** with Dataset ID, Name, and Status columns
-2. **Set Status to "Pending"** for datasets you want to migrate
-3. **Run the migration**:
-   ```bash
-   python main.py migrate --from-spreadsheet
-   ```
-4. **Check the results** - successful migrations will have Status updated to "Migrated"
-5. **Review any errors** in the logs for failed migrations 

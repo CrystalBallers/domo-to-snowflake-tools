@@ -9,7 +9,8 @@ import os
 import re
 import logging
 import math
-from typing import List, Dict, Any, Optional
+import random
+from typing import List, Dict, Any, Optional, Tuple
 import pandas as pd
 import datacompy
 
@@ -103,7 +104,30 @@ class DatasetComparator:
         try:
             # Get Domo schema using DomoHandler
             domo_schema = self.domo_handler.get_dataset_schema(domo_dataset_id)
-            domo_columns = {col['name']: col['type'] for col in domo_schema['columns']}
+            self.logger.info(f"🔍 Raw Domo schema response: {domo_schema}")
+            
+            # Check if schema has columns
+            if 'columns' not in domo_schema:
+                self.logger.warning(f"⚠️ No 'columns' key in Domo schema. Available keys: {list(domo_schema.keys())}")
+                # Try alternative approach - extract columns from actual data
+                try:
+                    sample_df = self.domo_handler.extract_data(
+                        dataset_id=domo_dataset_id, 
+                        query="SELECT * FROM table LIMIT 1",
+                        enable_auto_type_conversion=True
+                    )
+                    if sample_df is not None and not sample_df.empty:
+                        # Create schema from DataFrame columns
+                        domo_columns = {col: 'UNKNOWN' for col in sample_df.columns}
+                        self.logger.info(f"✅ Extracted schema from data sample: {len(domo_columns)} columns")
+                    else:
+                        raise Exception("No data available to infer schema")
+                except Exception as fallback_error:
+                    self.logger.error(f"❌ Fallback schema extraction failed: {fallback_error}")
+                    raise Exception(f"Cannot get Domo schema: no 'columns' in response and data extraction failed")
+            else:
+                domo_columns = {col['name']: col['type'] for col in domo_schema['columns']}
+                self.logger.info(f"✅ Extracted {len(domo_columns)} columns from Domo schema")
             
             # Apply column name transformation if enabled
             if transform_names:
@@ -130,7 +154,7 @@ class DatasetComparator:
             
             sf_result = self.snowflake_handler.execute_query(query)
             if sf_result is not None:
-                sf_schema_df = sf_result.to_pandas()
+                sf_schema_df = sf_result  # Already pandas DataFrame
                 sf_columns = {row['COLUMN_NAME']: row['DATA_TYPE'] for _, row in sf_schema_df.iterrows()}
             else:
                 raise Exception("Failed to get Snowflake schema")
@@ -219,7 +243,7 @@ class DatasetComparator:
             sf_count_query = f"SELECT COUNT(*) as row_count FROM {snowflake_table}"
             sf_result = self.snowflake_handler.execute_query(sf_count_query)
             if sf_result is not None:
-                sf_count = int(sf_result.to_pandas().iloc[0]['ROW_COUNT'])
+                sf_count = int(sf_result.iloc[0]['ROW_COUNT'])  # Already pandas DataFrame
             else:
                 raise Exception("Failed to get Snowflake count")
         except Exception as e:
@@ -280,7 +304,8 @@ class DatasetComparator:
     
     def compare_data_samples(self, domo_dataset_id: str, snowflake_table: str, 
                            key_columns: List[str], sample_size: Optional[int] = None, 
-                           transform_names: bool = False, schema_comparison: Dict[str, Any] = None) -> Dict[str, Any]:
+                           transform_names: bool = False, schema_comparison: Dict[str, Any] = None, 
+                           sampling_method: str = "random") -> Dict[str, Any]:
         """
         Compare data samples using datacompy.
         
@@ -291,6 +316,7 @@ class DatasetComparator:
             sample_size: Number of rows to sample (auto-calculated if None)
             transform_names: Whether to apply column name transformation
             schema_comparison: Schema comparison results to include in report
+            sampling_method: Sampling method ('random' for smart random with fallback, 'ordered' for direct ordered)
             
         Returns:
             Dictionary with data comparison results
@@ -313,53 +339,144 @@ class DatasetComparator:
             self.add_error("Sample Size Calculation", "Could not get total row count", str(e))
             sample_size = sample_size or 1000
         
-        # Get Domo sample using DomoHandler (more robust)
-        try:
-            # Build query for sample
-            key_cols_str = ', '.join(key_columns)
-            sample_query = f"SELECT * FROM table ORDER BY {key_cols_str} LIMIT {sample_size}"
-            
-            # Use DomoHandler for data extraction
-            domo_df_polars = self.domo_handler.extract_data(
-                dataset_id=domo_dataset_id, 
-                query=sample_query,
-                enable_auto_type_conversion=True  # Keep original types for comparison
-            )
-            
-            if domo_df_polars is None or domo_df_polars.is_empty():
-                raise Exception("No data returned from Domo")
-            
-            # Convert polars to pandas for datacompy compatibility
-            domo_df = domo_df_polars.to_pandas()
-            
-            # Apply column transformation if enabled
-            if transform_names:
-                original_columns = domo_df.columns.tolist()
-                transformed_columns = [transform_column_name(col) for col in original_columns]
-                domo_df.columns = transformed_columns
-                key_columns = [transform_column_name(col) for col in key_columns]
+        # Get synchronized samples based on chosen sampling method
+        if sampling_method == "ordered":
+            # Direct ordered sampling - skip random sampling entirely
+            self.logger.info("🎯 Using direct ordered sampling (no random attempt)")
+            actual_sampling_method = "Ordered Sampling"
+            try:
+                # Get Domo sample using ordered method
+                key_cols_str = ', '.join(key_columns)
+                sample_query = f"SELECT * FROM table ORDER BY {key_cols_str} LIMIT {sample_size}"
                 
-        except Exception as e:
-            self.add_error("Domo Sample", "Could not get Domo sample", str(e))
-            return self._get_error_data_result(sample_size)
+                domo_df = self.domo_handler.extract_data(
+                    dataset_id=domo_dataset_id, 
+                    query=sample_query,
+                    chunk_size=999999999,  # Force single chunk to avoid pagination issues
+                    enable_auto_type_conversion=True
+                )
+                
+                if domo_df is None or domo_df.empty:
+                    raise Exception("No data returned from Domo")
+                
+                # Get Snowflake sample using ordered method  
+                sf_query = f"SELECT * FROM {snowflake_table} ORDER BY {key_cols_str} LIMIT {sample_size}"
+                sf_df = self.snowflake_handler.execute_query(sf_query)
+                
+                if sf_df is None or sf_df.empty:
+                    raise Exception("No data returned from Snowflake")
+                    
+            except Exception as ordered_error:
+                self.add_error("Data Sampling", "Both random and ordered sampling failed", str(ordered_error))
+                return {'error': f"All sampling methods failed: {ordered_error}"}
+        else:
+            # Random sampling with fallback (default behavior)
+            actual_sampling_method = "Random Sampling"
+            try:
+                # Use the new smart random sampling approach
+                domo_df, sf_df = self._get_smart_random_samples(
+                    domo_dataset_id, snowflake_table, key_columns, sample_size
+                )
+                
+            except Exception as e:
+                self.logger.error(f"❌ Smart random sampling failed: {e}")
+                self.logger.info("🔄 Falling back to ordered sampling...")
+                actual_sampling_method = "Ordered Sampling"
+                
+                # Fallback to original deterministic sampling
+                try:
+                    # Get Domo sample using original method
+                    key_cols_str = ', '.join(key_columns)
+                    sample_query = f"SELECT * FROM table ORDER BY {key_cols_str} LIMIT {sample_size}"
+                    
+                    domo_df = self.domo_handler.extract_data(
+                        dataset_id=domo_dataset_id, 
+                        query=sample_query,
+                        chunk_size=999999999,  # Force single chunk to avoid pagination issues
+                        enable_auto_type_conversion=True
+                    )
+                    
+                    if domo_df is None or domo_df.empty:
+                        raise Exception("No data returned from Domo")
+                    
+                    # Get Snowflake sample using original method  
+                    sf_query = f"SELECT * FROM {snowflake_table} ORDER BY {key_cols_str} LIMIT {sample_size}"
+                    sf_df = self.snowflake_handler.execute_query(sf_query)
+                    
+                    if sf_df is None or sf_df.empty:
+                        raise Exception("Failed to get Snowflake sample")
+                    
+                    self.logger.info("✅ Fallback sampling completed")
+                    
+                except Exception as fallback_error:
+                    self.add_error("Sample Extraction", "Both smart and fallback sampling failed", str(fallback_error))
+                    return self._get_error_data_result(sample_size)
         
-        # Get Snowflake sample
-        try:
-            key_cols_str = ', '.join(key_columns)
-            sf_query = f"SELECT * FROM {snowflake_table} ORDER BY {key_cols_str} LIMIT {sample_size}"
-            sf_result = self.snowflake_handler.execute_query(sf_query)
+        # Apply column transformation if enabled (applies to both sampling methods)
+        if transform_names:
+            self.logger.info("🔄 Applying column name transformation...")
             
-            if sf_result is not None:
-                sf_df = sf_result.to_pandas()
-            else:
-                raise Exception("Failed to get Snowflake sample")
-                
-        except Exception as e:
-            self.add_error("Snowflake Sample", "Could not get Snowflake sample", str(e))
-            return self._get_error_data_result(sample_size, len(domo_df))
+            # Transform Domo columns
+            original_domo_columns = domo_df.columns.tolist()
+            transformed_domo_columns = [transform_column_name(col) for col in original_domo_columns]
+            domo_df.columns = transformed_domo_columns
+            
+            # Transform Snowflake columns (may have different case)
+            original_sf_columns = sf_df.columns.tolist()
+            transformed_sf_columns = [transform_column_name(col) for col in original_sf_columns]
+            sf_df.columns = transformed_sf_columns
+            
+            # Transform key columns for datacompy
+            key_columns = [transform_column_name(col) for col in key_columns]
+            
+            self.logger.info(f"🔄 Column transformation applied to both DataFrames")
         
         # Use datacompy for comparison
         try:
+            self.logger.info(f"📊 Domo DataFrame shape: {domo_df.shape}, columns: {list(domo_df.columns)}")
+            self.logger.info(f"📊 Snowflake DataFrame shape: {sf_df.shape}, columns: {list(sf_df.columns)}")
+            self.logger.info(f"📊 Key columns for comparison: {key_columns}")
+            
+            # Normalize data types for key columns to ensure compatibility
+            for col in key_columns:
+                # Find matching columns case-insensitively
+                domo_col = None
+                sf_col = None
+                
+                # Find column in Domo DataFrame (case-insensitive)
+                for domo_column in domo_df.columns:
+                    if domo_column.lower() == col.lower():
+                        domo_col = domo_column
+                        break
+                
+                # Find column in Snowflake DataFrame (case-insensitive)
+                for sf_column in sf_df.columns:
+                    if sf_column.lower() == col.lower():
+                        sf_col = sf_column
+                        break
+                
+                if domo_col and sf_col:
+                    domo_dtype = str(domo_df[domo_col].dtype)
+                    sf_dtype = str(sf_df[sf_col].dtype)
+                    
+                    self.logger.info(f"Key column '{col}': Domo '{domo_col}'={domo_dtype}, Snowflake '{sf_col}'={sf_dtype}")
+                    
+                    # If types are different, convert both to string for compatibility
+                    if domo_dtype != sf_dtype:
+                        self.logger.info(f"Converting column '{col}' to string for compatibility")
+                        domo_df[domo_col] = domo_df[domo_col].astype(str)
+                        sf_df[sf_col] = sf_df[sf_col].astype(str)
+                    
+                    # Rename columns to match key_columns for datacompy compatibility
+                    if domo_col != col:
+                        domo_df = domo_df.rename(columns={domo_col: col})
+                        self.logger.info(f"Renamed Domo column '{domo_col}' to '{col}'")
+                    if sf_col != col:
+                        sf_df = sf_df.rename(columns={sf_col: col})
+                        self.logger.info(f"Renamed Snowflake column '{sf_col}' to '{col}'")
+                else:
+                    self.logger.warning(f"Key column '{col}' not found in both DataFrames. Domo: {domo_col}, Snowflake: {sf_col}")
+            
             comparison = datacompy.Compare(
                 domo_df,
                 sf_df,
@@ -372,6 +489,12 @@ class DatasetComparator:
             timestamp = pd.Timestamp.now().strftime("%Y%m%d_%H%M%S")
             # Use the provided Snowflake table name as base (now expected to be the Model Name)
             safe_base = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(snowflake_table).strip()) or "report"
+            
+            # Create QA reports directory structure [[memory:5267850]]
+            qa_reports_dir = "results/txt/qa"
+            os.makedirs(qa_reports_dir, exist_ok=True)
+            
+            # report_filename = os.path.join(qa_reports_dir, f"{safe_base}_{timestamp}.txt")
             report_filename = f"{safe_base}_{timestamp}.txt"
             
             with open(report_filename, 'w', encoding='utf-8') as f:
@@ -437,7 +560,9 @@ class DatasetComparator:
                 'extra_in_snowflake': len(comparison.df2_unq_rows),
                 'rows_with_differences': self._count_differing_rows(comparison),
                 'transform_applied': transform_names,
-                'report_file': report_filename
+                'report_file': report_filename,
+                'comparison_object': comparison,  # Add comparison object for executive summary
+                'sampling_method': actual_sampling_method  # Track which sampling method was actually used
             }
             
         except Exception as e:
@@ -470,9 +595,264 @@ class DatasetComparator:
             'error': True
         }
     
+    def _get_all_unique_keys(self, domo_dataset_id: str, key_columns: List[str]) -> pd.DataFrame:
+        """
+        Obtiene todas las combinaciones únicas de keys del dataset de Domo.
+        
+        Args:
+            domo_dataset_id: ID del dataset de Domo
+            key_columns: Lista de columnas que actúan como keys
+            
+        Returns:
+            DataFrame con todas las combinaciones únicas de keys
+        """
+        key_cols_str = ', '.join(key_columns)
+        all_keys_query = f"SELECT DISTINCT {key_cols_str} FROM table"
+        
+        self.logger.info(f"📋 Getting all unique key combinations for columns: {key_columns}")
+        
+        all_keys_df = self.domo_handler.extract_data(
+            dataset_id=domo_dataset_id,
+            query=all_keys_query,
+            enable_auto_type_conversion=False  # Keep original types for exact matching
+        )
+        
+        if all_keys_df is None or all_keys_df.empty:
+            raise Exception("Could not retrieve unique keys from Domo dataset")
+        
+        self.logger.info(f"📊 Found {len(all_keys_df)} unique key combinations")
+        return all_keys_df
+    
+    def _build_efficient_where_clause(self, sampled_keys_df: pd.DataFrame, key_columns: List[str]) -> str:
+        """
+        Construye una cláusula WHERE eficiente y compatible con MySQL.
+        
+        Args:
+            sampled_keys_df: DataFrame con las combinaciones de keys seleccionadas
+            key_columns: Lista de columnas que actúan como keys
+            
+        Returns:
+            String con la cláusula WHERE optimizada y compatible con MySQL
+        """
+        if sampled_keys_df.empty:
+            raise Exception("No sampled keys provided")
+        
+        if len(key_columns) == 1:
+            # Un solo key column: usar simple IN (muy eficiente)
+            col = key_columns[0]
+            values = sampled_keys_df[col].dropna().tolist()
+            
+            # Manejar diferentes tipos de datos
+            if all(isinstance(v, str) for v in values):
+                # String values: escapar comillas (no podemos usar backslash en f-strings)
+                escaped_values = []
+                for v in values:
+                    escaped_val = str(v).replace("'", "''")  # Escapar comillas simples
+                    escaped_values.append(f"'{escaped_val}'")
+            else:
+                # Numeric or other values
+                escaped_values = [str(v) for v in values]
+            
+            values_str = ', '.join(escaped_values)
+            where_clause = f"{col} IN ({values_str})"
+            
+        elif len(key_columns) == 2:
+            # Dos key columns: usar ORs para máxima compatibilidad con MySQL
+            # (IN con tuples puede fallar en algunas versiones de MySQL)
+            where_clause = self._build_or_where_clause(sampled_keys_df, key_columns)
+                
+        else:
+            # 3+ columns: usar approach de ORs (pero son pocas filas, así que está bien)
+            where_clause = self._build_or_where_clause(sampled_keys_df, key_columns)
+        
+        self.logger.info(f"🔍 Built efficient WHERE clause for {len(sampled_keys_df)} combinations")
+        self.logger.debug(f"WHERE clause (first 200 chars): {where_clause[:200]}...")
+        
+        return where_clause
+    
+    def _build_or_where_clause(self, sampled_keys_df: pd.DataFrame, key_columns: List[str]) -> str:
+        """
+        Construye cláusula WHERE usando ORs para casos complejos (fallback).
+        
+        Args:
+            sampled_keys_df: DataFrame con las combinaciones de keys seleccionadas  
+            key_columns: Lista de columnas que actúan como keys
+            
+        Returns:
+            String con la cláusula WHERE usando ORs
+        """
+        where_conditions = []
+        
+        for _, row in sampled_keys_df.iterrows():
+            row_conditions = []
+            
+            for col in key_columns:
+                value = row[col]
+                
+                # Manejar diferentes tipos de datos
+                if pd.isna(value) or value is None:
+                    row_conditions.append(f"{col} IS NULL")
+                elif isinstance(value, str):
+                    if value.strip() == '':
+                        row_conditions.append(f"({col} = '' OR {col} IS NULL)")
+                    else:
+                        escaped_value = str(value).replace("'", "''")
+                        row_conditions.append(f"{col} = '{escaped_value}'")
+                else:
+                    row_conditions.append(f"{col} = {value}")
+            
+            # Unir condiciones de esta fila con AND
+            row_condition = "(" + " AND ".join(row_conditions) + ")"
+            where_conditions.append(row_condition)
+        
+        # Unir todas las filas con OR
+        return " OR ".join(where_conditions)
+    
+    def _get_smart_random_samples(self, domo_dataset_id: str, snowflake_table: str, 
+                                 key_columns: List[str], sample_size: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Obtiene muestras aleatorias sincronizadas usando random determinístico en Python.
+        
+        Esta es la "solución ganadora": rápida, garantiza mismas filas, y reproducible.
+        
+        Args:
+            domo_dataset_id: ID del dataset de Domo
+            snowflake_table: Nombre de la tabla en Snowflake
+            key_columns: Lista de columnas que actúan como keys
+            sample_size: Número de filas a muestrear
+            
+        Returns:
+            Tuple[domo_df, snowflake_df] con exactamente las mismas filas
+        """
+        self.logger.info("🎲 Using smart random sampling (Python-controlled)")
+        
+        # Paso 1: Obtener TODAS las combinaciones únicas (UNA sola query rápida)
+        all_keys_df = self._get_all_unique_keys(domo_dataset_id, key_columns)
+        
+        if len(all_keys_df) <= sample_size:
+            # Si hay pocas keys únicas, usar todas
+            self.logger.info(f"📊 Only {len(all_keys_df)} unique keys available, using all")
+            sampled_keys_df = all_keys_df
+        else:
+            # Paso 2: Python hace el random sampling (DETERMINÍSTICO)
+            self.logger.info(f"🎲 Randomly sampling {sample_size} from {len(all_keys_df)} unique keys...")
+            
+            # Seed fijo para reproducibilidad (puedes cambiarlo por datetime si quieres variedad)
+            random.seed(42)
+            
+            # Random sampling en Python (muy rápido)
+            sampled_indices = random.sample(range(len(all_keys_df)), sample_size)
+            sampled_keys_df = all_keys_df.iloc[sampled_indices].reset_index(drop=True)
+        
+        self.logger.info(f"✅ Selected {len(sampled_keys_df)} key combinations for sampling")
+        
+        # Paso 3: Usar batching inteligente para evitar queries demasiado largos
+        max_batch_size = 10  # Muy pequeño para evitar errores de API de Domo
+        domo_dfs = []
+        sf_dfs = []
+        
+        if len(sampled_keys_df) > max_batch_size:
+            self.logger.info(f"🔄 Using batching: {len(sampled_keys_df)} keys split into batches of {max_batch_size}")
+            
+            # Dividir en batches
+            for i in range(0, len(sampled_keys_df), max_batch_size):
+                batch_end = min(i + max_batch_size, len(sampled_keys_df))
+                batch_keys_df = sampled_keys_df.iloc[i:batch_end].reset_index(drop=True)
+                
+                self.logger.info(f"📦 Processing batch {i//max_batch_size + 1}: {len(batch_keys_df)} keys (rows {i+1}-{batch_end})")
+                
+                # Procesar este batch
+                domo_batch_df, sf_batch_df = self._get_batch_data(
+                    domo_dataset_id, snowflake_table, key_columns, batch_keys_df
+                )
+                
+                if domo_batch_df is not None and not domo_batch_df.empty:
+                    domo_dfs.append(domo_batch_df)
+                if sf_batch_df is not None and not sf_batch_df.empty:
+                    sf_dfs.append(sf_batch_df)
+            
+            # Combinar todos los batches
+            if domo_dfs and sf_dfs:
+                domo_df = pd.concat(domo_dfs, ignore_index=True)
+                sf_df = pd.concat(sf_dfs, ignore_index=True)
+                self.logger.info(f"✅ Combined {len(domo_dfs)} batches: Domo {len(domo_df)} rows, Snowflake {len(sf_df)} rows")
+            else:
+                raise Exception("No data returned from any batch")
+                
+        else:
+            # Sample size pequeño, usar método original
+            self.logger.info(f"📦 Single batch processing: {len(sampled_keys_df)} keys")
+            domo_df, sf_df = self._get_batch_data(
+                domo_dataset_id, snowflake_table, key_columns, sampled_keys_df
+            )
+        
+        # Verificar que ambos DataFrames tienen datos
+        if domo_df is None or domo_df.empty:
+            raise Exception("No data returned from Domo with sampled keys")
+        if sf_df is None or sf_df.empty:
+            raise Exception("No data returned from Snowflake with sampled keys")
+            
+        
+        # Validar resultados finales
+        self.logger.info(f"✅ Smart random sampling completed:")
+        self.logger.info(f"   📊 Domo: {len(domo_df)} rows, {len(domo_df.columns)} columns") 
+        self.logger.info(f"   📊 Snowflake: {len(sf_df)} rows, {len(sf_df.columns)} columns")
+        
+        # Advertir si hay discrepancias significativas en el número de filas
+        expected_rows = len(sampled_keys_df)
+        if len(domo_df) < expected_rows * 0.8:
+            self.logger.warning(f"⚠️ Domo returned fewer rows than expected: {len(domo_df)} vs {expected_rows}")
+        if len(sf_df) < expected_rows * 0.8:
+            self.logger.warning(f"⚠️ Snowflake returned fewer rows than expected: {len(sf_df)} vs {expected_rows}")
+        
+        return domo_df, sf_df
+    
+    def _get_batch_data(self, domo_dataset_id: str, snowflake_table: str, 
+                       key_columns: List[str], batch_keys_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Obtiene datos para un batch específico de keys.
+        
+        Args:
+            domo_dataset_id: ID del dataset de Domo
+            snowflake_table: Nombre de la tabla en Snowflake
+            key_columns: Lista de columnas que actúan como keys
+            batch_keys_df: DataFrame con las combinaciones de keys para este batch
+            
+        Returns:
+            Tuple[domo_df, snowflake_df] para este batch
+        """
+        # Construir WHERE clause para este batch
+        where_clause = self._build_efficient_where_clause(batch_keys_df, key_columns)
+        
+        # Ejecutar query en Domo
+        self.logger.info(f"📥 Getting {len(batch_keys_df)} rows from Domo...")
+        domo_query = f"SELECT * FROM table WHERE {where_clause}"
+        domo_df = self.domo_handler.extract_data(
+            dataset_id=domo_dataset_id,
+            query=domo_query,
+            chunk_size=999999999,  # Force single chunk to avoid pagination issues with WHERE clauses
+            enable_auto_type_conversion=True
+        )
+        
+        if domo_df is None or domo_df.empty:
+            self.logger.warning(f"⚠️ No data returned from Domo for this batch")
+            domo_df = pd.DataFrame()
+        
+        # Ejecutar query en Snowflake
+        self.logger.info(f"📥 Getting {len(batch_keys_df)} rows from Snowflake...")
+        sf_query = f"SELECT * FROM {snowflake_table} WHERE {where_clause}"
+        sf_df = self.snowflake_handler.execute_query(sf_query)
+        
+        if sf_df is None or sf_df.empty:
+            self.logger.warning(f"⚠️ No data returned from Snowflake for this batch")
+            sf_df = pd.DataFrame()
+        
+        self.logger.info(f"✅ Batch completed: Domo {len(domo_df)} rows, Snowflake {len(sf_df)} rows")
+        return domo_df, sf_df
+    
     def generate_report(self, domo_dataset_id: str, snowflake_table: str, 
                        key_columns: List[str], sample_size: Optional[int] = None,
-                       transform_names: bool = False) -> Dict[str, Any]:
+                       transform_names: bool = False, sampling_method: str = "random") -> Dict[str, Any]:
         """
         Generate complete comparison report.
         
@@ -482,6 +862,7 @@ class DatasetComparator:
             key_columns: List of key columns for comparison
             sample_size: Number of rows to sample
             transform_names: Whether to apply column name transformation
+            sampling_method: Sampling method ('random' or 'ordered')
             
         Returns:
             Complete comparison report dictionary
@@ -501,7 +882,7 @@ class DatasetComparator:
         schema_comparison = self.compare_schemas(domo_dataset_id, snowflake_table, transform_names)
         row_count_comparison = self.compare_row_counts(domo_dataset_id, snowflake_table)
         data_comparison = self.compare_data_samples(domo_dataset_id, snowflake_table, 
-                                                   key_columns, sample_size, transform_names, schema_comparison)
+                                                   key_columns, sample_size, transform_names, schema_comparison, sampling_method)
         
         # Determine overall match
         overall_match = False
@@ -630,8 +1011,8 @@ class DatasetComparator:
         
         print("="*80)
     
-    def compare_from_spreadsheet(self, spreadsheet_id: str, sheet_name: str = "QA - Test",
-                                credentials_path: str = None) -> Dict[str, Any]:
+    def compare_from_spreadsheet(self, spreadsheet_id: str, sheet_name: str = None,
+                                credentials_path: str = None, sampling_method: str = "random") -> Dict[str, Any]:
         """
         Compare multiple datasets from Google Sheets configuration.
         
@@ -645,13 +1026,19 @@ class DatasetComparator:
         
         Args:
             spreadsheet_id: Google Sheets spreadsheet ID
-            sheet_name: Sheet name containing comparison configurations
+            sheet_name: Sheet name containing comparison configurations (uses COMPARISON_SHEET_NAME env var if None)
             credentials_path: Path to Google Sheets credentials file
+            sampling_method: Sampling method ('random' or 'ordered')
             
         Returns:
             Dictionary with comparison results summary
         """
         try:
+            # Get sheet name from environment if not provided
+            if sheet_name is None:
+                env_config = get_env_config()
+                sheet_name = env_config.get("COMPARISON_SHEET_NAME", "QA - Test")
+            
             self.logger.info(f"🚀 Starting spreadsheet-based comparisons...")
             self.logger.info(f"📋 Spreadsheet ID: {spreadsheet_id}")
             self.logger.info(f"📄 Sheet name: {sheet_name}")
@@ -685,7 +1072,16 @@ class DatasetComparator:
             import pandas as pd
             headers = data[0]
             rows = data[1:]
-            df = pd.DataFrame(rows, columns=headers)
+            
+            # Normalize row lengths to match header length
+            num_cols = len(headers)
+            normalized_rows = []
+            for row in rows:
+                # Ensure each row has the same number of columns as headers
+                normalized_row = row + [''] * (num_cols - len(row)) if len(row) < num_cols else row[:num_cols]
+                normalized_rows.append(normalized_row)
+            
+            df = pd.DataFrame(normalized_rows, columns=headers)
             
             # Remove empty rows
             df = df.dropna(how='all')
@@ -742,6 +1138,14 @@ class DatasetComparator:
                     status_column = col
                     break
             
+            # Find Notes column (optional)
+            notes_column = None
+            possible_notes_columns = ['Notes', 'notes', 'Note', 'note', 'Comments', 'comments']
+            for col in possible_notes_columns:
+                if col in df.columns:
+                    notes_column = col
+                    break
+            
             # Validate required columns
             if dataset_id_column is None:
                 raise Exception("Required column 'Output ID' not found in spreadsheet")
@@ -752,18 +1156,18 @@ class DatasetComparator:
             if key_columns_column is None:
                 raise Exception("Required column 'Key Columns' not found in spreadsheet")
             
-            # Filter rows where Status is not "Completed" (if status column exists)
+            # Filter rows where Status is "Testing" (if status column exists)
             if status_column and status_column in df.columns:
                 df[status_column] = df[status_column].fillna('Pending')
                 df[status_column] = df[status_column].astype(str)
-                pending_df = df[~df[status_column].str.contains('Completed|Complete', case=False, na=False)]
-                self.logger.info(f"📋 Found {len(pending_df)} comparisons pending (excluding completed)")
+                testing_df = df[df[status_column].str.contains('Testing', case=False, na=False)]
+                self.logger.info(f"📋 Found {len(testing_df)} comparisons in 'Testing' status")
             else:
-                pending_df = df
-                self.logger.info(f"📋 No status column found, processing all {len(pending_df)} comparisons")
+                testing_df = df
+                self.logger.info(f"📋 No status column found, processing all {len(testing_df)} comparisons")
             
-            if len(pending_df) == 0:
-                self.logger.info("✅ No comparisons pending")
+            if len(testing_df) == 0:
+                self.logger.info("✅ No comparisons in 'Testing' status")
                 return {"success": 0, "failed": 0, "total": 0, "errors": []}
             
             # Setup connections once
@@ -775,31 +1179,26 @@ class DatasetComparator:
             failed_comparisons = []
             errors = []
             
-            for index, row in pending_df.iterrows():
+            for index, row in testing_df.iterrows():
                 dataset_id = row[dataset_id_column]
                 table_name = row[table_name_column]
                 key_columns_str = row[key_columns_column]
                 
-                # Validate required fields
+                # Clean table name - remove .sql extension if present
+                if table_name and str(table_name).strip().lower().endswith('.sql'):
+                    table_name = str(table_name).strip()[:-4]  # Remove last 4 characters (.sql)
+                
+                # Validate required fields - skip incomplete rows instead of treating as errors
                 if pd.isna(dataset_id) or str(dataset_id).strip() == '':
-                    error_msg = f"Row {index + 2}: Empty Output ID"
-                    self.logger.warning(f"⚠️  {error_msg}")
-                    errors.append(error_msg)
-                    failed_comparisons.append(f"Row {index + 2}")
+                    self.logger.info(f"⏭️  Skipping row {index + 2}: Empty Output ID")
                     continue
                 
                 if pd.isna(table_name) or str(table_name).strip() == '':
-                    error_msg = f"Row {index + 2}: Empty Table Name"
-                    self.logger.warning(f"⚠️  {error_msg}")
-                    errors.append(error_msg)
-                    failed_comparisons.append(f"Row {index + 2}")
+                    self.logger.info(f"⏭️  Skipping row {index + 2}: Empty Table Name")
                     continue
                 
                 if pd.isna(key_columns_str) or str(key_columns_str).strip() == '':
-                    error_msg = f"Row {index + 2}: Empty Key Columns"
-                    self.logger.warning(f"⚠️  {error_msg}")
-                    errors.append(error_msg)
-                    failed_comparisons.append(f"Row {index + 2}")
+                    self.logger.info(f"⏭️  Skipping row {index + 2}: Empty Key Columns")
                     continue
                 
                 # Parse key columns (comma-separated)
@@ -827,7 +1226,8 @@ class DatasetComparator:
                         snowflake_table=str(table_name),
                         key_columns=key_columns,
                         sample_size=sample_size,
-                        transform_names=transform_columns
+                        transform_names=transform_columns,
+                        sampling_method=sampling_method
                     )
                     
                     # Check if comparison was successful
@@ -843,15 +1243,45 @@ class DatasetComparator:
                         else:
                             self.logger.warning(f"⚠️  {success_msg} - Discrepancies found")
                         successful_comparisons.append(str(dataset_id))
-                        
-                        # Update status in spreadsheet if status column exists
-                        if status_column:
-                            try:
-                                status_text = "Perfect Match" if report.get('overall_match') else "Discrepancies Found"
-                                cell_range = f"{sheet_name}!{chr(65 + df.columns.get_loc(status_column))}{index + 2}"
-                                gsheets_client.write_range(spreadsheet_id, cell_range, [[status_text]])
-                            except Exception as e:
-                                self.logger.warning(f"⚠️  Could not update status for row {index + 2}: {e}")
+                    
+                    # Always update notes in spreadsheet if notes column exists
+                    if notes_column:
+                        try:
+                            # Generate executive summary or error summary based on comparison result
+                            if report.get('errors'):
+                                # Generate error summary for failed comparisons
+                                timestamp = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
+                                error_summary = f"❌ COMPARISON FAILED [{timestamp}]\n"
+                                error_summary += f"Dataset: {dataset_id} → {table_name}\n"
+                                error_summary += f"❌ Errors encountered:\n"
+                                for error in report.get('errors', []):
+                                    error_summary += f"  • {error.get('error', str(error))}\n"
+                                error_summary += f"📄 Check detailed logs for more information"
+                                executive_summary = error_summary
+                            else:
+                                # Generate normal executive summary for successful comparisons
+                                comparison_obj = report.get('data_comparison', {}).get('comparison_object')
+                                executive_summary = self._generate_executive_summary(report, comparison_obj)
+                            
+                            # Get current notes content
+                            notes_cell_range = f"{sheet_name}!{chr(65 + df.columns.get_loc(notes_column))}{index + 2}"
+                            current_notes_result = gsheets_client.read_range(spreadsheet_id, notes_cell_range)
+                            current_notes = ""
+                            if current_notes_result and len(current_notes_result) > 0 and len(current_notes_result[0]) > 0:
+                                current_notes = str(current_notes_result[0][0]).strip()
+                            
+                            # Append executive summary to existing notes
+                            if current_notes:
+                                updated_notes = f"{current_notes}\n\n{executive_summary}"
+                            else:
+                                updated_notes = executive_summary
+                            
+                            # Update the notes cell
+                            gsheets_client.write_range(spreadsheet_id, notes_cell_range, [[updated_notes]])
+                            self.logger.info(f"📝 Updated notes for dataset {dataset_id}")
+                            
+                        except Exception as e:
+                            self.logger.warning(f"⚠️  Could not update notes for row {index + 2}: {e}")
                     
                 except Exception as e:
                     error_msg = f"Dataset {dataset_id}: {str(e)}"
@@ -897,7 +1327,7 @@ class DatasetComparator:
                 "errors": [str(e)]
             }
     
-    def compare_from_inventory(self, credentials_path: str = None) -> Dict[str, Any]:
+    def compare_from_inventory(self, credentials_path: str = None, sampling_method: str = "random") -> Dict[str, Any]:
         """
         Compare datasets from the existing inventory spreadsheet.
         
@@ -908,6 +1338,7 @@ class DatasetComparator:
         
         Args:
             credentials_path: Path to Google Sheets credentials file
+            sampling_method: Sampling method ('random' or 'ordered')
             
         Returns:
             Dictionary with comparison results summary
@@ -955,7 +1386,16 @@ class DatasetComparator:
             import pandas as pd
             headers = data[0]
             rows = data[1:]
-            df = pd.DataFrame(rows, columns=headers)
+            
+            # Normalize row lengths to match header length
+            num_cols = len(headers)
+            normalized_rows = []
+            for row in rows:
+                # Ensure each row has the same number of columns as headers
+                normalized_row = row + [''] * (num_cols - len(row)) if len(row) < num_cols else row[:num_cols]
+                normalized_rows.append(normalized_row)
+            
+            df = pd.DataFrame(normalized_rows, columns=headers)
             
             # Remove empty rows
             df = df.dropna(how='all')
@@ -1028,14 +1468,15 @@ class DatasetComparator:
                 table_name = str(row[table_name_column]).strip()
                 key_columns_str = str(row[key_columns_column]).strip()
                 
+                # Clean table name - remove .sql extension if present
+                if table_name and table_name.lower().endswith('.sql'):
+                    table_name = table_name[:-4]  # Remove last 4 characters (.sql)
+                
                 # Parse key columns (comma-separated)
                 key_columns = [col.strip() for col in key_columns_str.split(',') if col.strip()]
                 
                 if not key_columns:
-                    error_msg = f"Row {index + 2}: Invalid Key Columns format"
-                    self.logger.warning(f"⚠️  {error_msg}")
-                    errors.append(error_msg)
-                    failed_comparisons.append(f"Row {index + 2}")
+                    self.logger.info(f"⏭️  Skipping row {index + 2}: Invalid Key Columns format")
                     continue
                 
                 self.logger.info(f"🔄 Comparing dataset {dataset_id} vs table {table_name}")
@@ -1048,7 +1489,8 @@ class DatasetComparator:
                         snowflake_table=table_name,
                         key_columns=key_columns,
                         sample_size=None,  # Use auto-calculation
-                        transform_names=False  # Don't transform by default for inventory
+                        transform_names=False,  # Don't transform by default for inventory
+                        sampling_method=sampling_method
                     )
                     
                     # Check if comparison was successful
@@ -1108,6 +1550,392 @@ class DatasetComparator:
                 "total": 0,
                 "errors": [str(e)]
             }
+    
+    def _generate_executive_summary(self, report: Dict[str, Any], comparison: Optional[datacompy.Compare] = None) -> str:
+        """
+        Generate detailed executive summary for comparison results.
+        
+        Args:
+            report: Complete comparison report dictionary
+            comparison: Optional datacompy Compare object for direct data access
+            
+        Returns:
+            String with detailed executive summary or error information
+        """
+        timestamp = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M")
+        dataset_id = report.get('domo_dataset_id', 'N/A')
+        table_name = report.get('snowflake_table', 'N/A')
+        
+        # Get database and schema from environment configuration
+        from .utils.common import get_env_config
+        env_config = get_env_config()
+        database = env_config.get('SNOWFLAKE_DATABASE', 'UNKNOWN_DB')
+        schema = env_config.get('SNOWFLAKE_SCHEMA', 'UNKNOWN_SCHEMA')
+        
+        # Build full table path with real database and schema
+        database_schema_table = f"{database.lower()}.{schema.lower()}.{table_name}"
+        sampling_method = report.get('data_comparison', {}).get('sampling_method', 'Unknown')
+        
+        # Track failure reasons for debugging
+        failure_reasons = []
+        
+        # Debug: Check if comparison object is available
+        self.logger.info(f"🔍 Executive Summary Debug - Comparison object: {comparison is not None}")
+        if comparison:
+            self.logger.info(f"🔍 Has column_stats: {hasattr(comparison, 'column_stats')}")
+            if hasattr(comparison, 'column_stats'):
+                self.logger.info(f"🔍 Column_stats is not None: {comparison.column_stats is not None}")
+                if comparison.column_stats is not None:
+                    self.logger.info(f"🔍 Column_stats type: {type(comparison.column_stats)}")
+                    if isinstance(comparison.column_stats, list):
+                        self.logger.info(f"🔍 Column_stats length: {len(comparison.column_stats)}")
+                    elif hasattr(comparison.column_stats, 'shape'):
+                        self.logger.info(f"🔍 Column_stats shape: {comparison.column_stats.shape}")
+        else:
+            failure_reasons.append("DataComPy comparison object not available")
+        
+        # Check for major errors
+        if report.get('errors'):
+            error_summary = f"[{timestamp}] {sampling_method} - COMPARISON FAILED:\n"
+            error_summary += f"{dataset_id} → {database_schema_table}\n"
+            error_summary += f"❌ Errors encountered:\n"
+            for error in report.get('errors', []):
+                error_summary += f"  • {error}\n"
+            if failure_reasons:
+                error_summary += f"🔍 Debug info:\n"
+                for reason in failure_reasons:
+                    error_summary += f"  • {reason}\n"
+            error_summary += f"📄 Check detailed logs for more information"
+            return error_summary
+        
+        # Overall status
+        if report.get('overall_match'):
+            status = "PERFECT MATCH"
+        else:
+            status = "DISCREPANCIES"
+        
+        # Wrap the entire summary generation in try-catch
+        try:
+            summary_lines = [
+                f"[{timestamp}] {sampling_method} - {status}:",
+                f"{dataset_id} → {database_schema_table}"
+            ]
+            
+            # Duplicate keys analysis - check for duplicate keys in match columns
+            # This checks if there are duplicate key combinations in the key columns used for matching
+            # (e.g., if using 'sku, asin' as keys, this detects multiple rows with same sku+asin combination)
+            duplicate_keys_info = ""
+            if comparison and hasattr(comparison, 'df1') and hasattr(comparison, 'df2'):
+                try:
+                    # Get join columns from the comparison object
+                    join_columns = getattr(comparison, 'join_columns', [])
+                    
+                    if join_columns:
+                        # Check for duplicate keys in Domo data (df1)
+                        domo_duplicates = comparison.df1.duplicated(subset=join_columns, keep=False).sum()
+                        # Check for duplicate keys in Snowflake data (df2)  
+                        sf_duplicates = comparison.df2.duplicated(subset=join_columns, keep=False).sum()
+                        
+                        if domo_duplicates > 0 or sf_duplicates > 0:
+                            # Show detailed duplicate key counts
+                            duplicates_detail = []
+                            if domo_duplicates > 0:
+                                duplicates_detail.append(f"Domo: {domo_duplicates}")
+                            if sf_duplicates > 0:
+                                duplicates_detail.append(f"Snowflake: {sf_duplicates}")
+                            
+                            duplicate_keys_info = f"❌ Duplicate keys detected"
+                            self.logger.info(f"🔍 Duplicate keys found - Domo: {domo_duplicates}, Snowflake: {sf_duplicates}")
+                        else:
+                            duplicate_keys_info = "✅ Duplicate keys: None found"
+                            
+                except Exception as e:
+                    self.logger.warning(f"Could not check for duplicate keys: {e}")
+                    duplicate_keys_info = "❌ Duplicate keys: Could not determine"
+            
+            # Add duplicate keys info to summary if available
+            if duplicate_keys_info:
+                summary_lines.append(duplicate_keys_info)
+
+            # Row count analysis
+            rows = report.get('row_count_comparison', {})
+            if rows and not rows.get('error'):
+                domo_rows = rows.get('domo_rows', 0)
+                sf_rows = rows.get('snowflake_rows', 0)
+                
+                if domo_rows > 0:
+                    error_pct = abs(sf_rows - domo_rows) / domo_rows * 100
+                    
+                    # Add visual indicator based on percentage difference
+                    if error_pct <= 1.0:
+                        row_indicator = "✅"
+                    elif error_pct <= 5.0:
+                        row_indicator = "⚠️"
+                    else:
+                        row_indicator = "❌"
+                    
+                    summary_lines.append(f"{row_indicator} Rows: Domo {domo_rows:,} vs Snowflake {sf_rows:,} ({error_pct:.2f}% difference)")
+                else:
+                    # Handle zero rows case
+                    if sf_rows == 0:
+                        summary_lines.append(f"✅ Rows: Domo {domo_rows:,} vs Snowflake {sf_rows:,}")
+                    else:
+                        summary_lines.append(f"❌ Rows: Domo {domo_rows:,} vs Snowflake {sf_rows:,}")
+            else:
+                failure_reasons.append(f"Row count comparison failed: {rows.get('error', 'No row data available') if rows else 'No row comparison data'}")
+                summary_lines.append(f"❌ Could not compare row counts")
+            
+            # Schema analysis - use datacompy comparison object if available, otherwise fallback to schema comparison
+            if comparison and hasattr(comparison, 'df1') and hasattr(comparison, 'df2'):
+                # Extract column information directly from datacompy comparison
+                domo_cols = len(comparison.df1.columns)
+                sf_cols = len(comparison.df2.columns)
+                
+                # Get missing and extra columns directly from dataframes first
+                domo_cols_set = set(comparison.df1.columns)
+                sf_cols_set = set(comparison.df2.columns)
+                missing_cols = list(domo_cols_set - sf_cols_set)
+                extra_cols = list(sf_cols_set - domo_cols_set)
+                
+                # Special logic for batch columns (technical metadata columns)
+                batch_columns = {'_batch_last_run_', '_batch_id_'}
+                missing_cols_set = set(missing_cols)
+                
+                # Check if missing columns are only batch columns
+                only_batch_missing = missing_cols_set.issubset(batch_columns)
+                has_non_batch_missing = bool(missing_cols_set - batch_columns)
+                
+                # Add visual indicator for column count comparison with special logic
+                if domo_cols == sf_cols:
+                    col_indicator = "✅"
+                elif len(missing_cols) <= 2 and only_batch_missing:
+                    # Special case: only batch columns missing (≤2)
+                    col_indicator = "✅"
+                else:
+                    col_indicator = "⚠️"
+                
+                summary_lines.append(f"{col_indicator} Columns: Domo {domo_cols} vs Snowflake {sf_cols}")
+                
+                # Missing columns with special batch column logic
+                if missing_cols:
+                    # Choose indicator based on whether non-batch columns are missing
+                    missing_indicator = "❌" if has_non_batch_missing else "✅"
+                    
+                    if len(missing_cols) <= 5:
+                        summary_lines.append(f"{missing_indicator} Missing Columns in Snowflake: {', '.join(missing_cols)}")
+                    else:
+                        summary_lines.append(f"{missing_indicator} Missing Columns in Snowflake: {', '.join(missing_cols[:5])}")
+                        summary_lines.append(f"... and {len(missing_cols) - 5} more missing columns")
+                
+                # Extra columns
+                if extra_cols:
+                    if len(extra_cols) <= 5:
+                        summary_lines.append(f"⚠️ Extra Columns in Snowflake: {', '.join(extra_cols)}")
+                    else:
+                        summary_lines.append(f"⚠️ Extra Columns in Snowflake: {', '.join(extra_cols[:5])}")
+                        summary_lines.append(f"... and {len(extra_cols) - 5} more extra columns")
+            
+            else:
+                # Fallback to schema comparison from report
+                schema = report.get('schema_comparison', {})
+                if not schema.get('error'):
+                    domo_cols = schema.get('domo_columns', 0)
+                    sf_cols = schema.get('snowflake_columns', 0)
+                
+                # Get missing columns from schema report for fallback logic
+                missing_cols = schema.get('missing_in_snowflake', [])
+                
+                # Special logic for batch columns (technical metadata columns)
+                batch_columns = {'_batch_last_run_', '_batch_id_'}
+                missing_cols_set = set(missing_cols)
+                
+                # Check if missing columns are only batch columns
+                only_batch_missing = missing_cols_set.issubset(batch_columns)
+                has_non_batch_missing = bool(missing_cols_set - batch_columns)
+                
+                # Add visual indicator for column count comparison with special logic
+                if domo_cols == sf_cols:
+                    col_indicator = "✅"
+                elif len(missing_cols) <= 2 and only_batch_missing:
+                    # Special case: only batch columns missing (≤2)
+                    col_indicator = "✅"
+                else:
+                    col_indicator = "⚠️"
+                
+                if domo_cols > 0:
+                    col_error_pct = abs(sf_cols - domo_cols) / domo_cols * 100
+                    summary_lines.append(f"{col_indicator} Columns: Domo {domo_cols} vs Snowflake {sf_cols} ({col_error_pct:.2f}% difference)")
+                else:
+                    summary_lines.append(f"{col_indicator} Columns: Domo {domo_cols} vs Snowflake {sf_cols}")
+                
+                # Data type errors
+                type_mismatches = schema.get('type_mismatches', [])
+                if type_mismatches:
+                    summary_lines.append(f"❌ Data Type Errors: {len(type_mismatches)} columns")
+                    mismatch_details = []
+                    for mismatch in type_mismatches[:5]:  # Show first 5
+                        col_name = mismatch.get('column', 'unknown')
+                        domo_type = mismatch.get('domo_type', 'unknown')
+                        sf_type = mismatch.get('snowflake_type', 'unknown')
+                        mismatch_details.append(f"{col_name} (Domo: {domo_type} vs SF: {sf_type})")
+                    
+                    summary_lines.append(f"Type Mismatches: {', '.join(mismatch_details)}")
+                    if len(type_mismatches) > 5:
+                        summary_lines.append(f"... and {len(type_mismatches) - 5} more type mismatches")
+                
+                # Missing columns with special batch column logic
+                if missing_cols:
+                    # Choose indicator based on whether non-batch columns are missing
+                    missing_indicator = "❌" if has_non_batch_missing else "✅"
+                    
+                    if len(missing_cols) <= 5:
+                        summary_lines.append(f"{missing_indicator} Missing Columns in Snowflake: {', '.join(missing_cols)}")
+                    else:
+                        summary_lines.append(f"{missing_indicator} Missing Columns in Snowflake: {', '.join(missing_cols[:5])}")
+                        summary_lines.append(f"... and {len(missing_cols) - 5} more missing columns")
+                
+                # Extra columns
+                extra_cols = schema.get('extra_in_snowflake', [])
+                if extra_cols:
+                    if len(extra_cols) <= 5:
+                        summary_lines.append(f"⚠️ Extra Columns in Snowflake: {', '.join(extra_cols)}")
+                    else:
+                        summary_lines.append(f"⚠️ Extra Columns in Snowflake: {', '.join(extra_cols[:5])}")
+                        summary_lines.append(f"... and {len(extra_cols) - 5} more extra columns")
+            
+            # Data comparison analysis - simplified approach
+            if comparison:
+                try:
+                    # Get basic row differences
+                    missing_in_sf = len(comparison.df1_unq_rows) if hasattr(comparison, 'df1_unq_rows') else 0
+                    extra_in_sf = len(comparison.df2_unq_rows) if hasattr(comparison, 'df2_unq_rows') else 0
+                    
+                    if missing_in_sf > 0:
+                        summary_lines.append(f"❌ Rows Missing in Snowflake: {missing_in_sf}")
+                    if extra_in_sf > 0:
+                        summary_lines.append(f"⚠️ Extra Rows in Snowflake: {extra_in_sf}")
+                    
+                    # Get columns with different values - more specific approach
+                    columns_with_diffs = []
+                    self.logger.info(f"🔍 Starting column difference analysis...")
+                    try:
+                        # Use column_stats if available, but be more specific about what we count
+                        if hasattr(comparison, 'column_stats') and comparison.column_stats is not None:
+                            self.logger.info(f"🔍 Column_stats available, type: {type(comparison.column_stats)}")
+                            if isinstance(comparison.column_stats, list):
+                                self.logger.info(f"🔍 Processing list with {len(comparison.column_stats)} elements")
+                                
+                                # Debug: Show first few entries
+                                if len(comparison.column_stats) > 0:
+                                    self.logger.info(f"🔍 First column_stat entry: {comparison.column_stats[0]}")
+                                
+                                # Count all columns with problems (will be overwritten below)
+                                pass
+                                
+                                # Get common columns
+                                common_cols = set(comparison.df1.columns) & set(comparison.df2.columns)
+                                self.logger.info(f"🔍 Common columns count: {len(common_cols)}")
+                                
+                                # Only count columns that have actual value differences, not just type mismatches
+                                # Filter for columns that have real data differences (not just type differences)
+                                columns_with_diffs = []
+                                for stat in comparison.column_stats:
+                                    col_name = stat.get('column')
+                                    unequal_cnt = stat.get('unequal_cnt', 0)
+                                    max_diff = stat.get('max_diff', 0)
+                                    null_diff = stat.get('null_diff', 0)
+                                    
+                                    # Only include if:
+                                    # 1. Column is in common columns
+                                    # 2. Has unequal values > 0 
+                                    # 3. AND either has max_diff > 0 OR null_diff > 0 (real value differences)
+                                    if (col_name in common_cols and 
+                                        unequal_cnt > 0 and 
+                                        (max_diff > 0 or null_diff > 0)):
+                                        columns_with_diffs.append(col_name)
+                                        self.logger.info(f"🔍 Column '{col_name}': unequal={unequal_cnt}, max_diff={max_diff}, null_diff={null_diff}")
+                                    elif col_name in common_cols and unequal_cnt > 0:
+                                        self.logger.info(f"🔍 SKIPPED '{col_name}': unequal={unequal_cnt}, max_diff={max_diff}, null_diff={null_diff} (type-only difference)")
+                                
+                                # Log more details about what we found
+                                all_unequal_cols = [s for s in comparison.column_stats if s.get('unequal_cnt', 0) > 0]
+                                type_only_diffs = len(all_unequal_cols) - len(columns_with_diffs)
+                                
+                                self.logger.info(f"🔍 SUMMARY:")
+                                self.logger.info(f"  📊 Total columns with unequal_cnt > 0: {len(all_unequal_cols)}")
+                                self.logger.info(f"  📊 Columns with type-only differences: {type_only_diffs}")
+                                self.logger.info(f"  📊 Columns with real value differences: {len(columns_with_diffs)}")
+                                self.logger.info(f"🔍 Final filtered columns with differences: {columns_with_diffs}")
+                                
+                            elif hasattr(comparison.column_stats, 'shape'):  # DataFrame case
+                                self.logger.info(f"🔍 Processing DataFrame with shape: {comparison.column_stats.shape}")
+                                # Filter for common columns only and real value differences
+                                common_cols = set(comparison.df1.columns) & set(comparison.df2.columns)
+                                mask = (
+                                    (comparison.column_stats['unequal_cnt'] > 0) & 
+                                    (comparison.column_stats['column'].isin(common_cols)) &
+                                    ((comparison.column_stats['max_diff'] > 0) | (comparison.column_stats['null_diff'] > 0))
+                                )
+                                columns_with_diffs = comparison.column_stats[mask]['column'].tolist()
+                                self.logger.info(f"🔍 DataFrame filtered columns with real differences: {len(columns_with_diffs)}")
+                        else:
+                            self.logger.info(f"🔍 Column_stats not available or None")
+                    except Exception as e:
+                        self.logger.error(f"❌ Error analyzing column differences: {e}")
+                        import traceback
+                        self.logger.error(f"❌ Traceback: {traceback.format_exc()}")
+                        pass  # Ignore errors, will use fallback
+                    
+                    # Show column differences - check case 0 first
+                    if len(columns_with_diffs) == 0:
+                        # Case when len(columns_with_diffs) == 0
+                        summary_lines.append("✅ All values matched")
+                    elif len(columns_with_diffs) <= 5:
+                        summary_lines.append(f"⚠️ Columns with Different Values: {', '.join(columns_with_diffs)}")
+                    else:
+                        summary_lines.append(f"⚠️ Columns with Different Values: {', '.join(columns_with_diffs[:5])}")
+                        summary_lines.append(f"... and {len(columns_with_diffs) - 5} more columns with differences")
+                    
+                except Exception as e:
+                    failure_reasons.append(f"Error analyzing comparison data: {str(e)}")
+                    summary_lines.append(f"❌ Could not analyze data differences: {str(e)}")
+            
+            # Fallback: use report data if comparison object failed
+            if not summary_lines or len([line for line in summary_lines if 'Different Values' in line or 'Missing' in line or 'Extra' in line or 'No column differences' in line]) == 0:
+                data = report.get('data_comparison', {})
+                if data and not data.get('error'):
+                    if data.get('missing_in_snowflake', 0) > 0:
+                        summary_lines.append(f"❌ Rows Missing in Snowflake: {data['missing_in_snowflake']}")
+                    
+                    if data.get('extra_in_snowflake', 0) > 0:
+                        summary_lines.append(f"⚠️ Extra Rows in Snowflake: {data['extra_in_snowflake']}")
+                    
+                    if data.get('rows_with_differences', 0) > 0:
+                        summary_lines.append(f"❌ Rows with Different Values: {data['rows_with_differences']} (column details unavailable)")
+                
+            # Add report file reference
+            report_data = report.get('data_comparison', {})
+            if report_data.get('report_file'):
+                summary_lines.append(f"📄 Detailed Report: {report_data['report_file']}")
+            
+            return '\n'.join(summary_lines)
+        
+        except Exception as e:
+            # If anything fails during summary generation, return error info
+            failure_summary = f"[{timestamp}] {sampling_method} - SUMMARY GENERATION FAILED:\n"
+            failure_summary += f"{dataset_id} → {database_schema_table}\n"
+            failure_summary += f"💥 Unexpected error: {str(e)}\n"
+            failure_summary += f"🔍 Error type: {type(e).__name__}\n"
+            if failure_reasons:
+                failure_summary += f"⚠️ Previous issues detected:\n"
+                for reason in failure_reasons:
+                    failure_summary += f"  • {reason}\n"
+            failure_summary += f"📊 Comparison object available: {comparison is not None}\n"
+            failure_summary += f"📊 Report keys: {list(report.keys()) if report else 'None'}\n"
+            failure_summary += f"📄 Check logs and detailed report file for more information"
+            
+            self.logger.error(f"❌ Executive summary generation failed: {e}")
+            return failure_summary
     
     def cleanup(self):
         """Clean up resources."""

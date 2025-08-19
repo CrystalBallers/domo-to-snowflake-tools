@@ -10,8 +10,9 @@ This module handles all Snowflake-related operations including:
 import os
 import logging
 import time
+import getpass
 from typing import Optional
-import polars as pl
+import pandas as pd
 from dotenv import load_dotenv
 
 try:
@@ -32,10 +33,14 @@ def show_current_totp_debug():
     """Show current TOTP passcode for debugging purposes"""
     passcode = os.getenv('SNOWFLAKE_PASSCODE')
     if passcode:
-        masked_passcode = passcode[:2] + '*' * (len(passcode) - 2) if len(passcode) > 2 else '***'
-        print(f"📱 Current TOTP passcode: {masked_passcode}")
-        print(f"⏰ Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"💡 Remember: TOTP codes expire every 30 seconds")
+        if passcode == "MANUAL":
+            print(f"📱 TOTP mode: MANUAL (interactive input)")
+            print(f"💡 You will be prompted to enter TOTP code when connecting")
+        else:
+            masked_passcode = passcode[:2] + '*' * (len(passcode) - 2) if len(passcode) > 2 else '***'
+            print(f"📱 Current TOTP passcode: {masked_passcode}")
+            print(f"⏰ Timestamp: {time.strftime('%Y-%m-%d %H:%M:%S')}")
+            print(f"💡 Remember: TOTP codes expire every 30 seconds")
     else:
         print("📱 No TOTP passcode found in environment variables")
 
@@ -125,9 +130,29 @@ class SnowflakeHandler:
                     logger.error("SNOWFLAKE_PASSWORD is required for MFA authentication")
                     return False
                 
-                if not passcode:
+                # Check if manual passcode input is requested
+                if passcode == "MANUAL":
+                    print("🔐 Manual TOTP passcode input requested")
+                    print("📱 Please enter your current MFA/TOTP code from your authenticator app")
+                    print("💡 TOTP codes expire every 30 seconds - use a fresh code")
+                    print()  # Add blank line for better readability
+                    
+                    try:
+                        passcode = getpass.getpass("Enter TOTP code (6 digits): ").strip()
+                    except KeyboardInterrupt:
+                        print("\n⚠️  Authentication cancelled by user")
+                        return False
+                    except Exception as e:
+                        print(f"❌ Error reading passcode: {e}")
+                        return False
+                    
+                    if not passcode:
+                        print("❌ No passcode entered")
+                        return False
+                
+                elif not passcode:
                     logger.error("SNOWFLAKE_PASSCODE is required for MFA authentication")
-                    logger.error("Set SNOWFLAKE_PASSCODE to your current TOTP code")
+                    logger.error("Set SNOWFLAKE_PASSCODE to your current TOTP code, or set to 'MANUAL' for interactive input")
                     logger.error("💡 TOTP codes expire every 30 seconds - make sure to use a fresh code")
                     return False
                 
@@ -223,8 +248,9 @@ class SnowflakeHandler:
         if os.getenv("SNOWFLAKE_PRIVATE_KEY_PATH"):
             return "key_pair"
         
-        # Check for MFA
-        if os.getenv("SNOWFLAKE_PASSCODE"):
+        # Check for MFA (including manual input)
+        passcode_env = os.getenv("SNOWFLAKE_PASSCODE")
+        if passcode_env and (passcode_env.isdigit() or passcode_env == "MANUAL"):
             return "mfa"
         
         # Check for SSO
@@ -234,7 +260,7 @@ class SnowflakeHandler:
         # Default to password authentication
         return "password"
     
-    def upload_data(self, df: pl.DataFrame, table_name: str, if_exists: str = 'replace', chunk_size: int = None) -> bool:
+    def upload_data(self, df: pd.DataFrame, table_name: str, if_exists: str = 'replace', chunk_size: int = None) -> bool:
         """
         Upload DataFrame to Snowflake table using cursor method.
         
@@ -259,7 +285,7 @@ class SnowflakeHandler:
             logger.error(f"Failed to upload data to Snowflake: {e}")
             return False 
     
-    def _upload_via_cursor(self, df: pl.DataFrame, table_name: str, if_exists: str = 'replace', chunk_size: int = None) -> bool:
+    def _upload_via_cursor(self, df: pd.DataFrame, table_name: str, if_exists: str = 'replace', chunk_size: int = None) -> bool:
         """
         Upload DataFrame using cursor method with proper SQL execution.
         
@@ -294,7 +320,7 @@ class SnowflakeHandler:
                 logger.info(f"Created table: {table_name}")
             
             # Prepare data for insertion
-            df_clean = df_normalized.fill_null('NULL')
+            df_clean = df_normalized.fillna('NULL')
             columns = list(df_clean.columns)
             
             # Handle column names for INSERT statement
@@ -322,8 +348,8 @@ class SnowflakeHandler:
             logger.info(f"📊 Batch size: {batch_size}")
             
             for i in range(0, total_rows, batch_size):
-                batch = df_clean.slice(i, batch_size)
-                values = [tuple(row) for row in batch.iter_rows()]
+                batch = df_clean.iloc[i:i + batch_size]
+                values = [tuple(row) for row in batch.values]
                 
                 insert_sql = f"INSERT INTO {escaped_table_name} ({', '.join(escaped_columns)}) VALUES ({placeholders})"
                 cursor.executemany(insert_sql, values)
@@ -337,8 +363,8 @@ class SnowflakeHandler:
         except Exception as e:
             logger.error(f"Cursor upload failed: {e}")
             return False
-    
-    def _normalize_column_names(self, df: pl.DataFrame) -> pl.DataFrame:
+
+    def _normalize_column_names(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Normalize column names for Snowflake compatibility.
         
@@ -354,7 +380,7 @@ class SnowflakeHandler:
             df: DataFrame with original column names
             
         Returns:
-            pl.DataFrame: DataFrame with normalized column names
+            pd.DataFrame: DataFrame with normalized column names
         """
         import re
         
@@ -460,7 +486,7 @@ class SnowflakeHandler:
         
         return batch_size
 
-    def _generate_create_table_sql(self, df: pl.DataFrame, table_name: str) -> str:
+    def _generate_create_table_sql(self, df: pd.DataFrame, table_name: str) -> str:
         """
         Generate CREATE TABLE SQL based on DataFrame schema.
         
@@ -473,15 +499,16 @@ class SnowflakeHandler:
         """
         columns = []
         
-        for col_name, dtype in df.schema.items():
-            # Map polars dtypes to Snowflake types
-            if dtype in [pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64]:
+        for col_name, dtype in df.dtypes.items():
+            # Map pandas dtypes to Snowflake types
+            dtype_str = str(dtype)
+            if 'int' in dtype_str:
                 sf_type = "INTEGER"
-            elif dtype in [pl.Float32, pl.Float64]:
+            elif 'float' in dtype_str:
                 sf_type = "FLOAT"
-            elif dtype == pl.Boolean:
+            elif dtype_str == 'bool':
                 sf_type = "BOOLEAN"
-            elif dtype in [pl.Datetime, pl.Datetime('ms'), pl.Datetime('us'), pl.Datetime('ns')]:
+            elif 'datetime' in dtype_str:
                 sf_type = "TIMESTAMP"
             else:
                 sf_type = "VARCHAR(16777216)"  # Snowflake max varchar size
@@ -536,15 +563,15 @@ class SnowflakeHandler:
             logger.error(f"Error verifying upload: {e}")
             return False
     
-    def execute_query(self, query: str) -> Optional[pl.DataFrame]:
+    def execute_query(self, query: str) -> Optional[pd.DataFrame]:
         """
-        Executes a SQL query and returns the result as a Polars DataFrame.
+        Executes a SQL query and returns the result as a pandas DataFrame.
 
         Args:
             query (str): The SQL query to execute.
 
         Returns:
-            Optional[pl.DataFrame]: A Polars DataFrame with the query results,
+            Optional[pd.DataFrame]: A pandas DataFrame with the query results,
                                     or None if the query fails.
         """
         if not self.conn:
@@ -556,17 +583,15 @@ class SnowflakeHandler:
             cursor = self.conn.cursor()
             cursor.execute(query)
             
-            # Fetch results into a pandas DataFrame first
+            # Fetch results directly into pandas DataFrame
             pandas_df = cursor.fetch_pandas_all()
 
             if pandas_df is not None and not pandas_df.empty:
-                # Convert to Polars DataFrame
-                polars_df = pl.from_pandas(pandas_df)
-                logger.info(f"✅ Query returned {len(polars_df)} rows.")
-                return polars_df
+                logger.info(f"✅ Query returned {len(pandas_df)} rows.")
+                return pandas_df
             else:
                 logger.info("ℹ️ Query executed successfully, but returned no rows.")
-                return pl.DataFrame() # Return empty DataFrame for consistency
+                return pd.DataFrame() # Return empty DataFrame for consistency
 
         except Exception as e:
             logger.error(f"❌ Failed to execute query: {e}")
@@ -575,9 +600,9 @@ class SnowflakeHandler:
             if 'cursor' in locals() and cursor:
                 cursor.close()
 
-    def get_table_columns(self, database: str, schema: str, table_name: str, role: str = "DBT_ROLE", warehouse: str = None) -> list[str]:
+    def get_table_columns(self, database: str, schema: str, table_name: str, role: str = "DBT_ROLE", warehouse: str = None) -> list[dict]:
         """
-        Get all column names from a specific table in Snowflake.
+        Get all column names and data types from a specific table in Snowflake.
         
         Args:
             database: Database name
@@ -587,7 +612,7 @@ class SnowflakeHandler:
             warehouse: Warehouse to use (if None, uses environment variable)
             
         Returns:
-            list[str]: List of column names, empty list if error or table not found
+            list[dict]: List of column info dicts with 'name' and 'data_type' keys, empty list if error or table not found
         """
         if not self.conn:
             logger.error("❌ No active Snowflake connection.")
@@ -608,7 +633,7 @@ class SnowflakeHandler:
             
             # Query to get column information from INFORMATION_SCHEMA
             query = f"""
-            SELECT COLUMN_NAME 
+            SELECT COLUMN_NAME, DATA_TYPE
             FROM {database}.INFORMATION_SCHEMA.COLUMNS 
             WHERE TABLE_SCHEMA = '{schema.upper()}' 
             AND TABLE_NAME = '{table_name.upper()}'
@@ -618,15 +643,15 @@ class SnowflakeHandler:
             logger.info(f"Getting columns for table: {database}.{schema}.{table_name} using role: {role}")
             cursor.execute(query)
             
-            # Fetch all column names
+            # Fetch all column names and data types
             results = cursor.fetchall()
-            columns = [row[0] for row in results]
+            columns = [{"name": row[0], "data_type": row[1]} for row in results]
             
             cursor.close()
             
             if columns:
                 logger.info(f"✅ Found {len(columns)} columns in {table_name}")
-                logger.debug(f"Columns: {columns}")
+                logger.debug(f"Columns with types: {columns}")
             else:
                 logger.warning(f"⚠️  No columns found for table {database}.{schema}.{table_name}")
                 logger.warning("   Table may not exist or you may not have permissions")

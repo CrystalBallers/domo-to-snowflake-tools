@@ -37,7 +37,9 @@ try:
     )
     from tools.utils import DomoHandler, SnowflakeHandler, DatasetComparator
     from tools.utils import show_mfa_debug_info, reload_environment
-    from tools.utils.domo import export_datasets_to_spreadsheet
+    from tools.utils.domo import export_datasets_to_spreadsheet, DomoHandler
+    from tools.get_all_stg_files import get_stg_files_data, generate_stg_files_from_dataframe
+    from tools.utils.create_source import generate_sources_from_spreadsheet
 except ImportError as e:
     logger.error(f"Failed to import required modules: {e}")
     sys.exit(1)
@@ -420,6 +422,8 @@ def handle_compare_command(args) -> int:
     else:
         logger.info(f"🔄 Column Name Transformation: Disabled")
     
+    logger.info(f"🎲 Sampling Method: {args.sampling_method}")
+    
     try:
         # Initialize the comparator
         comparator = DatasetComparator()
@@ -435,7 +439,8 @@ def handle_compare_command(args) -> int:
             snowflake_table=args.snowflake_table,
             key_columns=args.key_columns,
             sample_size=args.sample_size,
-            transform_names=args.transform_columns
+            transform_names=args.transform_columns,
+            sampling_method=args.sampling_method
         )
         
         # Print the report
@@ -501,7 +506,8 @@ def handle_compare_from_spreadsheet(args) -> int:
         results = comparator.compare_from_spreadsheet(
             spreadsheet_id=spreadsheet_id,
             sheet_name=args.sheet_name,
-            credentials_path=args.credentials
+            credentials_path=args.credentials,
+            sampling_method=args.sampling_method
         )
         
         # Determine exit code based on results
@@ -556,7 +562,8 @@ def handle_compare_from_inventory(args) -> int:
         
         # Run comparisons from inventory
         results = comparator.compare_from_inventory(
-            credentials_path=args.credentials
+            credentials_path=args.credentials,
+            sampling_method=args.sampling_method
         )
         
         # Determine exit code based on results
@@ -589,6 +596,159 @@ def handle_compare_from_inventory(args) -> int:
             comparator.cleanup()
         except:
             pass  # Ignore cleanup errors
+
+
+def handle_generate_stg_command(args) -> int:
+    """
+    Handle the generate-stg subcommand for generating staging SQL files.
+    
+    Args:
+        args: Parsed command line arguments
+        
+    Returns:
+        int: Exit code (0 for success, 1 for failure)
+    """
+    # Validate required configuration
+    if not args.database:
+        logger.error("❌ Database not specified. Use --database or set SNOWFLAKE_DATABASE environment variable.")
+        return 1
+    
+    if not args.credentials:
+        logger.error("❌ Google Sheets credentials not specified. Use --credentials or set GOOGLE_SHEETS_CREDENTIALS_FILE environment variable.")
+        return 1
+        
+    if not args.spreadsheet_id:
+        logger.error("❌ Spreadsheet ID not specified. Use --spreadsheet-id or set MIGRATION_SPREADSHEET_ID environment variable.")
+        return 1
+    
+    # Show configuration
+    logger.info("🚀 Starting staging files generation...")
+    logger.info(f"📊 Database: {args.database}")
+    logger.info(f"📂 Schema: {args.schema}")
+    logger.info(f"👤 Role: {args.role}")
+    logger.info(f"🏠 Warehouse: {args.warehouse}")
+    logger.info(f"📁 Output: {args.output_dir}")
+    logger.info(f"📄 Spreadsheet: {args.spreadsheet_id}")
+    
+    if args.read_only:
+        logger.info("⚠️  Read-only mode: Will not update Check column")
+    
+    if args.dry_run:
+        logger.info("🧪 Dry-run mode: Will not create files or update sheets")
+    
+    try:
+        # Get the data and Google Sheets client
+        df, gsheets, spreadsheet_id = get_stg_files_data()
+        
+        if df.empty:
+            logger.error("❌ Could not obtain data from spreadsheet.")
+            return 1
+
+        logger.info("✅ Data extracted successfully.")
+        
+        if gsheets and spreadsheet_id and not args.read_only:
+            logger.info("✅ Google Sheets write permissions confirmed.")
+        else:
+            logger.info("⚠️  Google Sheets updates disabled.")
+            gsheets = None  # Disable writing if read-only mode
+        
+        if args.dry_run:
+            logger.info("🧪 Dry-run mode - showing what would be processed:")
+            pending_rows = df[df['Check'].astype(str).str.lower() != 'true']
+            completed_rows = df[df['Check'].astype(str).str.lower() == 'true']
+            
+            logger.info(f"   ✅ Already completed: {len(completed_rows)} files")
+            logger.info(f"   🔄 Would process: {len(pending_rows)} files")
+            
+            if not pending_rows.empty:
+                logger.info("📋 Files that would be generated:")
+                for _, row in pending_rows.head(10).iterrows():
+                    logger.info(f"   • {row['Model']} (from {row['Name']})")
+                if len(pending_rows) > 10:
+                    logger.info(f"   ... and {len(pending_rows) - 10} more files")
+            
+            logger.info("🧪 Dry-run completed. Use without --dry-run to actually generate files.")
+            return 0
+        
+        # Generate SQL files automatically
+        logger.info("🔄 Starting automatic SQL file generation...")
+        generate_stg_files_from_dataframe(
+            df=df,
+            database=args.database,
+            schema=args.schema,
+            output_dir=args.output_dir,
+            role=args.role,
+            warehouse=args.warehouse,
+            gsheets=gsheets, 
+            spreadsheet_id=spreadsheet_id
+        )
+        
+        logger.info("🎉 Process completed successfully!")
+        return 0
+        
+    except KeyboardInterrupt:
+        logger.info("⚠️  STG generation cancelled by user")
+        return 1
+    except Exception as e:
+        logger.error(f"❌ STG generation failed: {e}")
+        logger.error("💡 Suggestions:")
+        logger.error("   - Verify that the spreadsheet ID and credentials are correct")
+        logger.error("   - Check that the 'Stg Files' tab exists in the spreadsheet")
+        logger.error("   - Verify Snowflake connection credentials and permissions")
+        logger.error("   - Ensure the database and schema exist in Snowflake")
+        return 1
+
+
+def handle_generate_sources_command(args) -> int:
+    """
+    Handle the generate-sources subcommand for generating dbt sources.yml files.
+    
+    Args:
+        args: Parsed command line arguments
+        
+    Returns:
+        int: Exit code (0 for success, 1 for failure)
+    """
+    # Validate required configuration
+    if not args.database:
+        logger.error("❌ Database not specified. Use --database or set SNOWFLAKE_DATABASE environment variable.")
+        return 1
+    
+    if not args.schema:
+        logger.error("❌ Schema not specified. Use --schema.")
+        return 1
+    
+    # Show configuration
+    logger.info("🚀 Starting dbt sources.yml generation...")
+    logger.info(f"📊 Database: {args.database}")
+    logger.info(f"📂 Schema: {args.schema}")
+    logger.info(f"📁 Output: {args.output}")
+    
+    try:
+        # Generate sources file from Google Sheets
+        success = generate_sources_from_spreadsheet(
+            database=args.database,
+            schema=args.schema,
+            output_file=args.output
+        )
+        
+        if success:
+            logger.info("🎉 Sources file generated successfully!")
+            return 0
+        else:
+            logger.error("❌ Sources generation failed!")
+            return 1
+        
+    except KeyboardInterrupt:
+        logger.info("⚠️  Sources generation cancelled by user")
+        return 1
+    except Exception as e:
+        logger.error(f"❌ Sources generation failed: {e}")
+        logger.error("💡 Suggestions:")
+        logger.error("   - Verify Google Sheets credentials and spreadsheet access")
+        logger.error("   - Check that the 'Stg Files' tab exists in the spreadsheet")
+        logger.error("   - Ensure the 'Name' column contains valid table names")
+        return 1
 
 
 def create_parser() -> argparse.ArgumentParser:
@@ -659,6 +819,27 @@ Features:
     🏔️  X-Small warehouse optimization
     📊 Intelligent batch sizing based on dataset size
     🔄 Progress tracking and detailed logging
+    
+    # Generate STG files with default configuration
+    python main.py generate-stg
+    
+    # Generate STG files with custom database and schema
+    python main.py generate-stg --database DW_REPORTS --schema TEMP_ARGO_RAW
+    
+    # Dry run - see what would be generated without creating files
+    python main.py generate-stg --dry-run
+    
+    # Read-only mode - don't update Check column in Google Sheets
+    python main.py generate-stg --read-only
+    
+    # Generate dbt sources.yml with default configuration
+    python main.py generate-sources
+    
+    # Generate sources.yml with custom database and schema
+    python main.py generate-sources --database DW_RAW --schema SRC
+    
+    # Generate sources.yml with custom output file
+    python main.py generate-sources --database DW_RAW --schema SRC --output my_sources.yml
     
 Environment Variables:
     EXPORT_DIR: Default export directory
@@ -860,6 +1041,13 @@ Environment Variables:
     )
     
     compare_parser.add_argument(
+        "--sampling-method",
+        choices=["random", "ordered"],
+        default="random",
+        help="Sampling method: 'random' (tries smart random with fallback to ordered) or 'ordered' (direct ordered sampling). Default: random"
+    )
+    
+    compare_parser.add_argument(
         "--test-connection",
         action="store_true",
         help="Test Domo and Snowflake connections for comparison"
@@ -895,6 +1083,93 @@ Environment Variables:
         help="Comparison sheet tab name (default: QA - Test)"
     )
     
+    # Generate STG subcommand
+    generate_stg_parser = subparsers.add_parser(
+        'generate-stg',
+        help='Generate staging SQL files from Google Sheets with Snowflake schema validation'
+    )
+    
+    # Snowflake configuration
+    generate_stg_parser.add_argument(
+        "--database", 
+        default=os.getenv("SNOWFLAKE_DATABASE"),
+        help="Snowflake database name (default: from SNOWFLAKE_DATABASE env var)"
+    )
+    
+    generate_stg_parser.add_argument(
+        "--schema", 
+        default="TEMP_ARGO_RAW",
+        help="Snowflake schema name (default: TEMP_ARGO_RAW)"
+    )
+    
+    generate_stg_parser.add_argument(
+        "--role", 
+        default="DBT_ROLE",
+        help="Snowflake role to use (default: DBT_ROLE)"
+    )
+    
+    generate_stg_parser.add_argument(
+        "--warehouse", 
+        default=os.getenv("SNOWFLAKE_WAREHOUSE"),
+        help="Snowflake warehouse to use (default: from SNOWFLAKE_WAREHOUSE env var)"
+    )
+    
+    generate_stg_parser.add_argument(
+        "--output-dir", 
+        default="sql/stg/",
+        help="Directory to save SQL files (default: sql/stg/)"
+    )
+    
+    # Google Sheets configuration
+    generate_stg_parser.add_argument(
+        "--credentials",
+        default=os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE"),
+        help="Path to Google Sheets credentials JSON file"
+    )
+    
+    generate_stg_parser.add_argument(
+        "--spreadsheet-id",
+        default=os.getenv("MIGRATION_SPREADSHEET_ID"),
+        help="Google Sheets spreadsheet ID"
+    )
+    
+    # Options
+    generate_stg_parser.add_argument(
+        "--read-only",
+        action="store_true",
+        help="Run in read-only mode (don't update Check column in Google Sheets)"
+    )
+    
+    generate_stg_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be generated without creating files or updating sheets"
+    )
+
+    # Generate Sources subcommand
+    generate_sources_parser = subparsers.add_parser(
+        'generate-sources',
+        help='Generate dbt sources.yml file from Google Sheets data'
+    )
+    
+    generate_sources_parser.add_argument(
+        "--database", 
+        default=os.getenv("SNOWFLAKE_DATABASE"),
+        help="Snowflake database name (default: from SNOWFLAKE_DATABASE env var)"
+    )
+    
+    generate_sources_parser.add_argument(
+        "--schema", 
+        default="SRC",
+        help="Snowflake schema name (default: SRC)"
+    )
+    
+    generate_sources_parser.add_argument(
+        "--output", 
+        default="sources_auto.yml",
+        help="Output file name (default: sources_auto.yml)"
+    )
+    
     return parser
 
 
@@ -922,6 +1197,10 @@ def main() -> int:
         return handle_datasets_command(args)
     elif args.command == 'compare':
         return handle_compare_command(args)
+    elif args.command == 'generate-stg':
+        return handle_generate_stg_command(args)
+    elif args.command == 'generate-sources':
+        return handle_generate_sources_command(args)
     
     # If we get here, unknown command
     logger.error(f"❌ Unknown command: {args.command}")

@@ -1,11 +1,13 @@
 import re
 
-def create_stg_sql_file(columns: list[str], source_schema_name: str, source_table_name: str, output_filename: str = "file.sql") -> str:
+def create_stg_sql_file(columns: list[dict], source_schema_name: str, source_table_name: str, output_filename: str = "file.sql") -> str:
     """
-    Crea un archivo SQL de staging a partir de una lista de columnas.
+    Crea un archivo SQL de staging a partir de una lista de columnas con sus tipos de datos.
     
     Args:
-        columns: Lista de nombres de columnas
+        columns: Lista de diccionarios con 'name' y 'data_type' keys
+        source_schema_name: Nombre del schema fuente
+        source_table_name: Nombre de la tabla fuente  
         output_filename: Nombre del archivo SQL a generar (por defecto "file.sql")
     
     Returns:
@@ -21,28 +23,95 @@ def create_stg_sql_file(columns: list[str], source_schema_name: str, source_tabl
         alias = re.sub(r"[^0-9A-Za-z_]", "", alias)
         return alias.lower()
 
-    def generate_sql(columns: list[str]) -> str:
+    def get_cast_expression(column_name: str, data_type: str) -> str:
         """
-        Dada una lista de nombres de columna, genera el bloque SQL:
+        Genera la expresión CAST apropiada con CAST explícito en TODAS las columnas.
+        Mantiene la compatibilidad Domo → Snowflake pero con tipos consistentes.
+        
+        Args:
+            column_name: Nombre de la columna
+            data_type: Tipo de dato (puede ser de Domo o Snowflake)
+            
+        Returns:
+            str: Expresión SQL con CAST explícito, keywords en minúsculas
+        """
+        # Convertir tipo de dato a minúsculas para consistencia
+        data_type_lower = data_type.lower()
+        
+        # TODAS las columnas tendrán CAST explícito para:
+        # 1. Documentación clara del tipo esperado
+        # 2. Consistencia en el patrón SQL
+        # 3. Validación explícita de tipos
+        # 4. Mejor mantenibilidad
+        return f'cast("{column_name}" as {data_type_lower})'
+
+    def generate_sql(columns: list[dict]) -> str:
+        """
+        Dada una lista de columnas con tipos, genera el bloque SQL con CAST explícito en TODAS las columnas:
         
         with
-            source as (select * from {{ source("source1", "source2") }})
+            source as (select * from {{ source("SRC", "VW_TABLE_NAME") }})
         select
-            "Columna Original" as columna_original,
+            cast("column_original" as varchar(255)) as column_original,
+            cast("created_at" as timestamp) as created_at,
+            cast("amount" as number(10,2)) as amount,
             ...
         from source
         """
+        # Convertir tabla a mayúsculas para el source
+        table_name_upper = source_table_name.upper()
+        schema_name_upper = source_schema_name.upper()
+        
         header = (
             "with\n"
-            f"    source as (select * from {{{{ source(\"{source_schema_name}\", \"{source_table_name}\") }}}})\n\n"
+            f"    source as (select * from {{{{ source(\"{schema_name_upper}\", \"{table_name_upper}\") }}}})\n\n"
             "select\n"
         )
+        
+        # Separate regular columns from commented columns
+        regular_columns = [col for col in columns if not col.get('commented', False)]
+        commented_columns = [col for col in columns if col.get('commented', False)]
+        
+        # Generate regular column lines
         body_lines = [
-            f'    "{col}" as {sanitize_column_name(col)}'
-            for col in columns
+            f'    {get_cast_expression(col["name"], col["data_type"])} as {sanitize_column_name(col["name"])}'
+            for col in regular_columns
         ]
         body = ",\n".join(body_lines)
+        
+        # Add commented columns at the end if any
         footer = "\n\nfrom source"
+        if commented_columns:
+            commented_lines = []
+            
+            # Separate different types of commented columns
+            domo_only = [col for col in commented_columns if col.get('comment_type') == 'domo_only']
+            snowflake_only = [col for col in commented_columns if col.get('comment_type') == 'snowflake_only']
+            other_commented = [col for col in commented_columns if not col.get('comment_type')]
+            
+            # Add Domo-only columns comments
+            if domo_only:
+                commented_lines.append("\n\n-- Columns found in Domo but not in Snowflake:")
+                for col in domo_only:
+                    commented_line = f"    -- {get_cast_expression(col['name'], col['data_type'])} as {sanitize_column_name(col['name'])}  -- Domo: {col.get('domo_name', col['name'])} ({col.get('domo_type', 'UNKNOWN')})"
+                    commented_lines.append(commented_line)
+            
+            # Add Snowflake-only columns comments
+            if snowflake_only:
+                commented_lines.append("\n\n-- Columns found in Snowflake but not in Domo:")
+                for col in snowflake_only:
+                    commented_line = f"    -- {get_cast_expression(col['name'], col['data_type'])} as {sanitize_column_name(col['name'])}  -- Snowflake: {col['name']} ({col['data_type']})"
+                    commented_lines.append(commented_line)
+            
+            # Add other commented columns (legacy support)
+            if other_commented:
+                commented_lines.append("\n\n-- Other columns:")
+                for col in other_commented:
+                    commented_line = f"    -- {get_cast_expression(col['name'], col['data_type'])} as {sanitize_column_name(col['name'])}  -- {col.get('domo_name', col['name'])} ({col.get('domo_type', 'UNKNOWN')})"
+                    commented_lines.append(commented_line)
+            
+            footer = "\n".join(commented_lines) + footer
+        
         return header + body + footer
 
     # Generar el SQL
@@ -59,78 +128,78 @@ def create_stg_sql_file(columns: list[str], source_schema_name: str, source_tabl
 
 # Ejemplo de uso (solo para testing)
 if __name__ == "__main__":
-    # Lista de ejemplo para testing
+    # Lista de ejemplo para testing - estructura nueva con nombres y tipos
     example_columns = [
-        "active",
-        "amazon_inbound_shipment_plan_id",
-        "amazon_reference_id",
-        "amazon_seller_id",
-        "are_cases_required",
-        "box_content_fee_per_unit",
-        "box_content_total_fee",
-        "box_content_total_units",
-        "box_contents_source",
-        "box_items_limit_allowed",
-        "carrier_description",
-        "carrier_id",
-        "closed_at",
-        "confirmed_need_by_date",
-        "country_id",
-        "created_at",
-        "deleted_at",
-        "deleted_by",
-        "destination_fulfillment_center_id",
-        "expiration_dates_required",
-        "fc_prep_required",
-        "fnsku_or_upc",
-        "from_add_line1",
-        "from_add_line2",
-        "from_city",
-        "from_postal",
-        "from_state",
-        "gate_packing",
-        "id",
-        "is_ns_transfer_order",
-        "label_prep_type",
-        "labeling_required",
-        "max_number_items_per_box",
-        "ns_warehouse_name_id",
-        "number_of_pallets",
-        "overweight",
-        "overweight_max",
-        "settlement_amount",
-        "settlement_id",
-        "settlement_report_id",
-        "settlement_transaction_id",
-        "shipment_address_id",
-        "shipment_id",
-        "shipment_name",
-        "shipment_status",
-        "shipping_labels_1000",
-        "shipping_labels_required",
-        "tracking_no",
-        "transparent_by",
-        "transparent_on",
-        "transport_estimated_cost",
-        "transport_shipment_type",
-        "transport_status",
-        "updated_at",
-        "updated_source",
-        "warehouse_id",
-        "weight_of_all_pallets",
-        "whs_status_at",
-        "whs_status_by",
-        "whs_status_id",
-        "whs_statuses_json",
-        "warehouse_shipped_date",
-        "_BATCH_ID_",
-        "_BATCH_LAST_RUN_"
+        {"name": "active", "data_type": "BOOLEAN"},
+        {"name": "amazon_inbound_shipment_plan_id", "data_type": "VARCHAR(100)"},
+        {"name": "amazon_reference_id", "data_type": "VARCHAR(50)"},
+        {"name": "amazon_seller_id", "data_type": "VARCHAR(50)"},
+        {"name": "are_cases_required", "data_type": "BOOLEAN"},
+        {"name": "box_content_fee_per_unit", "data_type": "NUMBER(10,2)"},
+        {"name": "box_content_total_fee", "data_type": "NUMBER(10,2)"},
+        {"name": "box_content_total_units", "data_type": "INTEGER"},
+        {"name": "box_contents_source", "data_type": "VARCHAR(100)"},
+        {"name": "box_items_limit_allowed", "data_type": "INTEGER"},
+        {"name": "carrier_description", "data_type": "VARCHAR(255)"},
+        {"name": "carrier_id", "data_type": "VARCHAR(50)"},
+        {"name": "closed_at", "data_type": "TIMESTAMP"},
+        {"name": "confirmed_need_by_date", "data_type": "DATE"},
+        {"name": "country_id", "data_type": "VARCHAR(10)"},
+        {"name": "created_at", "data_type": "TIMESTAMP"},
+        {"name": "deleted_at", "data_type": "TIMESTAMP"},
+        {"name": "deleted_by", "data_type": "VARCHAR(100)"},
+        {"name": "destination_fulfillment_center_id", "data_type": "VARCHAR(50)"},
+        {"name": "expiration_dates_required", "data_type": "BOOLEAN"},
+        {"name": "fc_prep_required", "data_type": "BOOLEAN"},
+        {"name": "fnsku_or_upc", "data_type": "VARCHAR(50)"},
+        {"name": "from_add_line1", "data_type": "VARCHAR(255)"},
+        {"name": "from_add_line2", "data_type": "VARCHAR(255)"},
+        {"name": "from_city", "data_type": "VARCHAR(100)"},
+        {"name": "from_postal", "data_type": "VARCHAR(20)"},
+        {"name": "from_state", "data_type": "VARCHAR(50)"},
+        {"name": "gate_packing", "data_type": "VARCHAR(100)"},
+        {"name": "id", "data_type": "INTEGER"},
+        {"name": "is_ns_transfer_order", "data_type": "BOOLEAN"},
+        {"name": "label_prep_type", "data_type": "VARCHAR(100)"},
+        {"name": "labeling_required", "data_type": "BOOLEAN"},
+        {"name": "max_number_items_per_box", "data_type": "INTEGER"},
+        {"name": "ns_warehouse_name_id", "data_type": "VARCHAR(50)"},
+        {"name": "number_of_pallets", "data_type": "INTEGER"},
+        {"name": "overweight", "data_type": "BOOLEAN"},
+        {"name": "overweight_max", "data_type": "NUMBER(10,2)"},
+        {"name": "settlement_amount", "data_type": "NUMBER(15,2)"},
+        {"name": "settlement_id", "data_type": "VARCHAR(100)"},
+        {"name": "settlement_report_id", "data_type": "VARCHAR(100)"},
+        {"name": "settlement_transaction_id", "data_type": "VARCHAR(100)"},
+        {"name": "shipment_address_id", "data_type": "INTEGER"},
+        {"name": "shipment_id", "data_type": "INTEGER"},
+        {"name": "shipment_name", "data_type": "VARCHAR(255)"},
+        {"name": "shipment_status", "data_type": "VARCHAR(50)"},
+        {"name": "shipping_labels_1000", "data_type": "INTEGER"},
+        {"name": "shipping_labels_required", "data_type": "BOOLEAN"},
+        {"name": "tracking_no", "data_type": "VARCHAR(100)"},
+        {"name": "transparent_by", "data_type": "VARCHAR(100)"},
+        {"name": "transparent_on", "data_type": "TIMESTAMP"},
+        {"name": "transport_estimated_cost", "data_type": "NUMBER(10,2)"},
+        {"name": "transport_shipment_type", "data_type": "VARCHAR(50)"},
+        {"name": "transport_status", "data_type": "VARCHAR(50)"},
+        {"name": "updated_at", "data_type": "TIMESTAMP"},
+        {"name": "updated_source", "data_type": "VARCHAR(100)"},
+        {"name": "warehouse_id", "data_type": "INTEGER"},
+        {"name": "weight_of_all_pallets", "data_type": "NUMBER(10,2)"},
+        {"name": "whs_status_at", "data_type": "TIMESTAMP"},
+        {"name": "whs_status_by", "data_type": "VARCHAR(100)"},
+        {"name": "whs_status_id", "data_type": "INTEGER"},
+        {"name": "whs_statuses_json", "data_type": "VARCHAR(16777216)"},
+        {"name": "warehouse_shipped_date", "data_type": "DATE"},
+        {"name": "_BATCH_ID_", "data_type": "VARCHAR(100)"},
+        {"name": "_BATCH_LAST_RUN_", "data_type": "TIMESTAMP"}
     ]
     
     # Crear el archivo SQL usando las columnas de ejemplo
     create_stg_sql_file(
         columns=example_columns,
-        source_schema_name="raw_domo",
-        source_table_name="amazon_shipments",
+        source_schema_name="src",
+        source_table_name="vw_amazon_shipments",
         output_filename="stg_amazon_shipments.sql"
     )
