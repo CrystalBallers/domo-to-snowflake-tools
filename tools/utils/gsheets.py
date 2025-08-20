@@ -99,7 +99,7 @@ class GoogleSheets:
         self, spreadsheet_id: str, range_name: str, header: bool = True
     ) -> pd.DataFrame:
         """
-        Read data from a specific range in a spreadsheet into a polars DataFrame
+        Read data from a specific range in a spreadsheet into a pandas DataFrame
 
         Args:
             spreadsheet_id (str): The ID of the spreadsheet
@@ -107,7 +107,7 @@ class GoogleSheets:
             header (bool): Whether to treat the first row as column names
 
         Returns:
-            pd.DataFrame: The data as a polars DataFrame
+            pd.DataFrame: The data as a pandas DataFrame
         """
         values = self.read_range(spreadsheet_id, range_name)
 
@@ -121,16 +121,13 @@ class GoogleSheets:
             # Get the data rows
             data_rows = values[1:] if len(values) > 1 else []
 
-            # Create pandas DataFrame first, then convert to polars
+            # Create pandas DataFrame
             pandas_df = pd.DataFrame(data_rows, columns=headers)
-            df = pl.from_pandas(pandas_df)
-
-            return df
+            return pandas_df
         else:
-            # For non-header data, create pandas DataFrame first, then convert to polars
+            # For non-header data, create pandas DataFrame
             pandas_df = pd.DataFrame(values)
-            df = pl.from_pandas(pandas_df)
-            return df
+            return pandas_df
 
     def write_range(
         self, spreadsheet_id: str, range_name: str, values: List[List[Any]]
@@ -181,7 +178,7 @@ class GoogleSheets:
         include_header: bool = True,
     ) -> "UpdateValuesResponse":
         """
-        Write a polars DataFrame to a specific range in a spreadsheet
+        Write a pandas DataFrame to a specific range in a spreadsheet
 
         Args:
             df (pd.DataFrame): The DataFrame to write
@@ -201,8 +198,8 @@ class GoogleSheets:
             )
 
         try:
-            # Convert polars DataFrame to pandas for easier handling
-            pandas_df = df.to_pandas()
+            # DataFrame is already pandas, no conversion needed
+            pandas_df = df
 
             # Convert DataFrame to list of lists
             if include_header:
