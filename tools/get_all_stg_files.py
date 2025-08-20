@@ -71,12 +71,12 @@ def get_stg_files_data():
         print("📊 Reading data from 'Stg Files' tab...")
         df = gsheets.read_to_dataframe(spreadsheet_id, "Stg Files!A:Z", header=True)
         
-        if df.is_empty():
+        if df.empty:
             print("❌ No data found in 'Stg Files' tab.")
             return pd.DataFrame(), None, None
         
-        # Convert from polars to pandas
-        pandas_df = df.to_pandas()
+        # DataFrame is already pandas
+        pandas_df = df
         
         print(f"✅ Found {len(pandas_df)} datasets to process.")
         
@@ -183,8 +183,10 @@ def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, sc
             # Mapeo de tipos Domo → Snowflake compatible
             if domo_type_upper in ['DATETIME', 'DATE', 'TIMESTAMP']:
                 return 'timestamp'
-            elif domo_type_upper in ['LONG', 'DOUBLE', 'DECIMAL']:
-                return 'number'
+            elif domo_type_upper in ['DOUBLE', 'DECIMAL']:
+                return 'float'  # Usar float para números con decimales
+            elif domo_type_upper == 'LONG':
+                return 'number'  # Mantener number solo para enteros
             elif domo_type_upper == 'STRING':
                 return 'varchar(16777216)'  # Snowflake max VARCHAR
             elif domo_type_upper == 'TEXT':
