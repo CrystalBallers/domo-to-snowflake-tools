@@ -193,12 +193,26 @@ class DatasetComparator:
             
             # Apply column name transformation if enabled
             if transform_names:
-                self.logger.info("🔄 Applying column name transformation...")
+                self.logger.info("🔄 Applying column name transformation to Domo columns...")
+                self.logger.info(f"🔍 Original Domo columns: {list(domo_columns.keys())}")
                 transformed_domo_columns = {}
+                # Store the mapping for reverse lookup
+                self._domo_original_columns = {}
                 for original_name, col_type in domo_columns.items():
                     transformed_name = transform_column_name(original_name)
                     transformed_domo_columns[transformed_name] = col_type
+                    # Store mapping: transformed_name -> original_name (for reverse lookup)
+                    self._domo_original_columns[transformed_name] = original_name
+                    self.logger.debug(f"  '{original_name}' → '{transformed_name}'")
                 domo_columns = transformed_domo_columns
+                self.logger.info(f"✅ Domo columns transformed: {len(domo_columns)} columns")
+                self.logger.info(f"🔍 Transformed Domo columns: {list(domo_columns.keys())}")
+                self.logger.info(f"📋 Stored reverse mapping for {len(self._domo_original_columns)} columns")
+                self.logger.info(f"🔍 Mapping example: 'SITE_CODE' → '{self._domo_original_columns.get('SITE_CODE', 'NOT_FOUND')}'")
+            else:
+                self.logger.info("⚠️ Column name transformation DISABLED for Domo")
+                # Even without transformation, store the mapping for consistency
+                self._domo_original_columns = {col: col for col in domo_columns.keys()}
                 
         except Exception as e:
             self.add_error("Domo Schema", "Could not get Domo schema", str(e))
@@ -218,6 +232,21 @@ class DatasetComparator:
             if sf_result is not None:
                 sf_schema_df = sf_result  # Already pandas DataFrame
                 sf_columns = {row['COLUMN_NAME']: row['DATA_TYPE'] for _, row in sf_schema_df.iterrows()}
+                
+                # Apply column name transformation to Snowflake columns if enabled
+                if transform_names:
+                    self.logger.info("🔄 Applying column name transformation to Snowflake columns...")
+                    self.logger.info(f"🔍 Original Snowflake columns: {list(sf_columns.keys())}")
+                    transformed_sf_columns = {}
+                    for original_name, col_type in sf_columns.items():
+                        transformed_name = transform_column_name(original_name)
+                        transformed_sf_columns[transformed_name] = col_type
+                        self.logger.debug(f"  '{original_name}' → '{transformed_name}'")
+                    sf_columns = transformed_sf_columns
+                    self.logger.info(f"✅ Snowflake columns transformed: {len(sf_columns)} columns")
+                    self.logger.info(f"🔍 Transformed Snowflake columns: {list(sf_columns.keys())}")
+                else:
+                    self.logger.info("⚠️ Column name transformation DISABLED for Snowflake")
             else:
                 raise Exception("Failed to get Snowflake schema")
                 
@@ -229,9 +258,22 @@ class DatasetComparator:
         domo_cols_set = set(domo_columns.keys())
         sf_cols_set = set(sf_columns.keys())
         
+        self.logger.info(f"🔍 Final column sets for comparison:")
+        self.logger.info(f"  Domo columns ({len(domo_cols_set)}): {sorted(list(domo_cols_set))}")
+        self.logger.info(f"  Snowflake columns ({len(sf_cols_set)}): {sorted(list(sf_cols_set))}")
+        
         missing_in_sf = list(domo_cols_set - sf_cols_set)
         extra_in_sf = list(sf_cols_set - domo_cols_set)
         common_cols = domo_cols_set & sf_cols_set
+        
+        self.logger.info(f"📊 Comparison results:")
+        self.logger.info(f"  Common columns: {len(common_cols)}")
+        self.logger.info(f"  Missing in Snowflake: {len(missing_in_sf)}")
+        self.logger.info(f"  Extra in Snowflake: {len(extra_in_sf)}")
+        if missing_in_sf:
+            self.logger.info(f"  Missing columns: {missing_in_sf}")
+        if extra_in_sf:
+            self.logger.info(f"  Extra columns: {extra_in_sf}")
         
         # Check type compatibility for common columns
         type_mismatches = []
@@ -385,6 +427,42 @@ class DatasetComparator:
         """
         self.logger.info("🔍 Comparing data samples...")
         
+        # Always normalize key columns for comparison (regardless of transform_names setting)
+        # This ensures compatibility between Domo and Snowflake column names
+        normalized_key_columns = [transform_column_name(col) for col in key_columns]
+        self.logger.info(f"🔄 Key columns normalized for comparison: {key_columns} → {normalized_key_columns}")
+        
+        # Create reverse mapping from normalized names back to original Domo names
+        # This is needed because Domo queries need original column names
+        domo_column_mapping = {}
+        if hasattr(self, '_domo_original_columns') and self._domo_original_columns:
+            # _domo_original_columns already has the correct mapping: {transformed_name: original_name}
+            domo_column_mapping = self._domo_original_columns.copy()
+            self.logger.info(f"🔍 Created domo_column_mapping with {len(domo_column_mapping)} entries")
+            self.logger.info(f"🔍 Example mapping: 'SITE_CODE' → '{domo_column_mapping.get('SITE_CODE', 'NOT_FOUND')}'")
+        
+        # Map normalized key columns back to original Domo names for queries
+        domo_key_columns = []
+        self.logger.info(f"🔍 Debugging column mapping:")
+        self.logger.info(f"  Normalized key columns: {normalized_key_columns}")
+        self.logger.info(f"  Domo column mapping available: {hasattr(self, '_domo_original_columns')}")
+        if hasattr(self, '_domo_original_columns'):
+            self.logger.info(f"  _domo_original_columns keys: {list(self._domo_original_columns.keys())}")
+            self.logger.info(f"  _domo_original_columns values: {list(self._domo_original_columns.values())}")
+        
+        for normalized_key in normalized_key_columns:
+            self.logger.info(f"🔍 Looking for '{normalized_key}' in domo_column_mapping...")
+            self.logger.info(f"  Available keys: {list(domo_column_mapping.keys())}")
+            if normalized_key in domo_column_mapping:
+                domo_key_columns.append(domo_column_mapping[normalized_key])
+                self.logger.info(f"  ✅ '{normalized_key}' → '{domo_column_mapping[normalized_key]}'")
+            else:
+                # Fallback: assume the key column name is already in Domo format
+                domo_key_columns.append(normalized_key)
+                self.logger.info(f"  ⚠️ '{normalized_key}' → '{normalized_key}' (no mapping found)")
+        
+        self.logger.info(f"🔄 Key columns mapped back to Domo format: {normalized_key_columns} → {domo_key_columns}")
+        
         # Get total count and calculate sample size if needed
         try:
             # Use DomoHandler for count query
@@ -449,7 +527,7 @@ class DatasetComparator:
                 # Fallback to original deterministic sampling
                 try:
                     # Get Domo sample using original method
-                    key_cols_str = _escape_domo_column_list(key_columns)
+                    key_cols_str = _escape_domo_column_list(domo_key_columns)
                     sample_query = f"SELECT * FROM table ORDER BY {key_cols_str} LIMIT {sample_size}"
                     
                     domo_df = self.domo_handler.extract_data(
@@ -475,11 +553,6 @@ class DatasetComparator:
                 except Exception as fallback_error:
                     self.add_error("Sample Extraction", "Both smart and fallback sampling failed", str(fallback_error))
                     return self._get_error_data_result(sample_size)
-        
-        # Always normalize key columns for comparison (regardless of transform_names setting)
-        # This ensures compatibility between Domo and Snowflake column names
-        normalized_key_columns = [transform_column_name(col) for col in key_columns]
-        self.logger.info(f"🔄 Key columns normalized for comparison: {key_columns} → {normalized_key_columns}")
         
         # Apply column transformation if enabled (applies to both sampling methods)
         if transform_names:
@@ -707,15 +780,28 @@ class DatasetComparator:
         
         Args:
             domo_dataset_id: ID del dataset de Domo
-            key_columns: Lista de columnas que actúan como keys
+            key_columns: Lista de columnas que actúan como keys (normalizadas)
             
         Returns:
             DataFrame con todas las combinaciones únicas de keys
         """
-        key_cols_str = _escape_domo_column_list(key_columns)
+        # Map normalized key columns back to original Domo names for queries
+        domo_key_columns = []
+        if hasattr(self, '_domo_original_columns') and self._domo_original_columns:
+            for normalized_key in key_columns:
+                if normalized_key in self._domo_original_columns:
+                    domo_key_columns.append(self._domo_original_columns[normalized_key])
+                else:
+                    # Fallback: assume the key column name is already in Domo format
+                    domo_key_columns.append(normalized_key)
+        else:
+            # No mapping available, use as-is
+            domo_key_columns = key_columns
+        
+        key_cols_str = _escape_domo_column_list(domo_key_columns)
         all_keys_query = f"SELECT DISTINCT {key_cols_str} FROM table"
         
-        self.logger.info(f"📋 Getting all unique key combinations for columns: {key_columns}")
+        self.logger.info(f"📋 Getting all unique key combinations for columns: {key_columns} → {domo_key_columns}")
         
         all_keys_df = self.domo_handler.extract_data(
             dataset_id=domo_dataset_id,
@@ -735,7 +821,7 @@ class DatasetComparator:
         
         Args:
             sampled_keys_df: DataFrame con las combinaciones de keys seleccionadas
-            key_columns: Lista de columnas que actúan como keys
+            key_columns: Lista de columnas que actúan como keys (normalizadas)
             
         Returns:
             String con la cláusula WHERE optimizada y compatible con MySQL
@@ -743,10 +829,23 @@ class DatasetComparator:
         if sampled_keys_df.empty:
             raise Exception("No sampled keys provided")
         
-        if len(key_columns) == 1:
+        # Map normalized key columns back to original Domo names for queries
+        domo_key_columns = []
+        if hasattr(self, '_domo_original_columns') and self._domo_original_columns:
+            for normalized_key in key_columns:
+                if normalized_key in self._domo_original_columns:
+                    domo_key_columns.append(self._domo_original_columns[normalized_key])
+                else:
+                    # Fallback: assume the key column name is already in Domo format
+                    domo_key_columns.append(normalized_key)
+        else:
+            # No mapping available, use as-is
+            domo_key_columns = key_columns
+        
+        if len(domo_key_columns) == 1:
             # Un solo key column: usar simple IN (muy eficiente)
-            col = key_columns[0]
-            values = sampled_keys_df[col].dropna().tolist()
+            col = domo_key_columns[0]
+            values = sampled_keys_df[key_columns[0]].dropna().tolist()  # Use normalized name for DataFrame access
             
             # Manejar diferentes tipos de datos
             if all(isinstance(v, str) for v in values):
@@ -783,18 +882,31 @@ class DatasetComparator:
         
         Args:
             sampled_keys_df: DataFrame con las combinaciones de keys seleccionadas  
-            key_columns: Lista de columnas que actúan como keys
+            key_columns: Lista de columnas que actúan como keys (normalizadas)
             
         Returns:
             String con la cláusula WHERE usando ORs
         """
+        # Map normalized key columns back to original Domo names for queries
+        domo_key_columns = []
+        if hasattr(self, '_domo_original_columns') and self._domo_original_columns:
+            for normalized_key in key_columns:
+                if normalized_key in self._domo_original_columns:
+                    domo_key_columns.append(self._domo_original_columns[normalized_key])
+                else:
+                    # Fallback: assume the key column name is already in Domo format
+                    domo_key_columns.append(normalized_key)
+        else:
+            # No mapping available, use as-is
+            domo_key_columns = key_columns
+        
         where_conditions = []
         
         for _, row in sampled_keys_df.iterrows():
             row_conditions = []
             
-            for col in key_columns:
-                value = row[col]
+            for i, col in enumerate(domo_key_columns):
+                value = row[key_columns[i]]  # Use normalized name for DataFrame access
                 escaped_col = _escape_domo_column_name(col)
                 
                 # Manejar diferentes tipos de datos

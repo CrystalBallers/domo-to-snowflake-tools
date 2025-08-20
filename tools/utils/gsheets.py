@@ -123,13 +123,13 @@ class GoogleSheets:
 
             # Create pandas DataFrame first, then convert to polars
             pandas_df = pd.DataFrame(data_rows, columns=headers)
-            df = pd.from_pandas(pandas_df)
+            df = pl.from_pandas(pandas_df)
 
             return df
         else:
             # For non-header data, create pandas DataFrame first, then convert to polars
             pandas_df = pd.DataFrame(values)
-            df = pd.from_pandas(pandas_df)
+            df = pl.from_pandas(pandas_df)
             return df
 
     def write_range(
