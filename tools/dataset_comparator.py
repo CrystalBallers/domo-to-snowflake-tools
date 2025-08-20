@@ -15,7 +15,7 @@ import pandas as pd
 import datacompy
 from datetime import datetime
 
-from .utils.common import transform_column_name, get_snowflake_table_full_name, setup_dual_connections, get_env_config
+from .utils.common import transform_column_name, get_snowflake_table_full_name, setup_dual_connections, get_env_config, get_transform_columns_setting
 from .utils.domo import DomoHandler
 from .utils.snowflake import SnowflakeHandler
 from .utils.gsheets import GoogleSheets, READ_WRITE_SCOPES
