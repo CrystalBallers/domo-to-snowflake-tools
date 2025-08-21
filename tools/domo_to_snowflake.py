@@ -241,17 +241,15 @@ class MigrationManager:
             logger.info(f"📝 Updating status for {len(successful_migrations)} successful migrations in spreadsheet")
             
             # Read current data to find row numbers
-            polars_df = gsheets_client.read_to_dataframe(
+            df = gsheets_client.read_to_dataframe(
                 spreadsheet_id=spreadsheet_id,
                 range_name=f"{sheet_name}!A:Z",
                 header=True
             )
             
-            if polars_df is None or len(polars_df) == 0:
+            if df is None or len(df) == 0:
                 logger.warning("⚠️  No data found in spreadsheet for status update")
                 return False
-            
-            df = polars_df.to_pandas()
             
             # Find the Status column
             status_column = None
@@ -431,17 +429,15 @@ def migrate_from_spreadsheet(spreadsheet_id: str, sheet_name: str = "Migration",
         logger.info(f"📊 Reading migration data from spreadsheet: {spreadsheet_id}")
         
         # Read the migration sheet
-        polars_df = gsheets_client.read_to_dataframe(
+        df = gsheets_client.read_to_dataframe(
             spreadsheet_id=spreadsheet_id,
             range_name=f"{sheet_name}!A:Z",
             header=True
         )
         
-        if polars_df is None or len(polars_df) == 0:
+        if df is None or len(df) == 0:
             logger.warning("⚠️  No data found in spreadsheet")
             return {"success": 0, "failed": 0, "total": 0, "errors": ["No data found in spreadsheet"]}
-        
-        df = polars_df.to_pandas()
         logger.info(f"📋 Found {len(df)} rows in spreadsheet")
         
         # Log first few rows for debugging

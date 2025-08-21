@@ -13,6 +13,7 @@ import time
 import getpass
 from typing import Optional
 import pandas as pd
+import numpy as np
 from dotenv import load_dotenv
 
 try:
@@ -287,7 +288,7 @@ class SnowflakeHandler:
     
     def _upload_via_cursor(self, df: pd.DataFrame, table_name: str, if_exists: str = 'replace', chunk_size: int = None) -> bool:
         """
-        Upload DataFrame using cursor method with proper SQL execution.
+        Upload DataFrame using cursor method with automatic type coercion fallback.
         
         Args:
             df: DataFrame to upload
@@ -299,70 +300,162 @@ class SnowflakeHandler:
             bool: True if upload successful, False otherwise
         """
         try:
-            cursor = self.conn.cursor()
-            
-            # Escape table name for SQL operations
-            escaped_table_name = f'"{table_name.upper()}"'
-            
-            # Normalize column names for Snowflake compatibility FIRST
-            logger.info("🔧 Normalizing columns...")
-            df_normalized = self._normalize_column_names(df)
-            
-            # Handle table existence
-            if if_exists == 'replace':
-                cursor.execute(f"DROP TABLE IF EXISTS {escaped_table_name}")
-                logger.info(f"Dropped existing table: {table_name}")
-            
-            # Create table if it doesn't exist (using normalized columns)
-            if if_exists in ['replace', 'fail']:
-                create_sql = self._generate_create_table_sql(df_normalized, table_name)
-                cursor.execute(create_sql)
-                logger.info(f"Created table: {table_name}")
-            
-            # Prepare data for insertion
-            df_clean = df_normalized.fillna('NULL')
-            columns = list(df_clean.columns)
-            
-            # Handle column names for INSERT statement
-            # Columns that are already quoted (reserved words) don't need additional escaping
-            escaped_columns = []
-            for col in columns:
-                if col.startswith('"') and col.endswith('"'):
-                    # Already quoted (reserved word), use as is
-                    escaped_columns.append(col)
-                else:
-                    # Regular column, add quotes
-                    escaped_columns.append(f'"{col}"')
-            
-            placeholders = ', '.join(['%s'] * len(columns))
-            
-            # Insert data in batches
-            if chunk_size is None:
-                # X-Small warehouse optimized batch size determination
-                batch_size = self._calculate_xsmall_optimized_batch_size(df_clean)
-                total_rows = len(df_clean)
-            else:
-                batch_size = chunk_size
-                total_rows = len(df_clean)
-            
-            logger.info(f"📊 Batch size: {batch_size}")
-            
-            for i in range(0, total_rows, batch_size):
-                batch = df_clean.iloc[i:i + batch_size]
-                values = [tuple(row) for row in batch.values]
-                
-                insert_sql = f"INSERT INTO {escaped_table_name} ({', '.join(escaped_columns)}) VALUES ({placeholders})"
-                cursor.executemany(insert_sql, values)
-                
-                logger.info(f"Inserted batch {i//batch_size + 1}/{(total_rows + batch_size - 1)//batch_size}")
-            
-            cursor.close()
-            logger.info(f"✅ Uploaded {total_rows} rows via cursor method")
-            return True
+            # First attempt: Normal upload
+            return self._attempt_upload(df, table_name, if_exists, chunk_size)
             
         except Exception as e:
-            logger.error(f"Cursor upload failed: {e}")
-            return False
+            error_msg = str(e)
+            
+            # Check if it's a type conversion error
+            if any(keyword in error_msg.lower() for keyword in ['numeric value', 'invalid identifier', 'type mismatch', 'not recognized']):
+                logger.warning(f"⚠️  Type conversion error detected: {error_msg}")
+                
+                # Extract problematic column name from error message
+                problematic_column = self._extract_column_from_error(error_msg)
+                
+                if problematic_column:
+                    logger.info(f"🔄 Attempting upload with string coercion for column: {problematic_column}")
+                    
+                    try:
+                        # Fallback: Convert only the problematic column to string
+                        df_fallback = self._coerce_specific_column(df, problematic_column)
+                        return self._attempt_upload(df_fallback, table_name, if_exists, chunk_size)
+                    except Exception as fallback_error:
+                        logger.error(f"❌ Fallback upload also failed: {fallback_error}")
+                        return False
+                else:
+                    logger.error(f"❌ Could not identify problematic column from error: {error_msg}")
+                    return False
+            else:
+                # Re-raise if it's not a type error
+                logger.error(f"❌ Cursor upload failed: {e}")
+                return False
+
+    def _attempt_upload(self, df: pd.DataFrame, table_name: str, if_exists: str = 'replace', chunk_size: int = None) -> bool:
+        """
+        Attempt the actual upload operation.
+        
+        Args:
+            df: DataFrame to upload
+            table_name: Target table name
+            if_exists: What to do if table exists
+            chunk_size: Optional batch size for uploads
+            
+        Returns:
+            bool: True if upload successful, False otherwise
+        """
+        cursor = self.conn.cursor()
+        
+        # Escape table name for SQL operations
+        escaped_table_name = f'"{table_name.upper()}"'
+        
+        # Normalize column names for Snowflake compatibility FIRST
+        logger.info("🔧 Normalizing columns...")
+        df_normalized = self._normalize_column_names(df)
+    
+        # Handle table existence
+        if if_exists == 'replace':
+            cursor.execute(f"DROP TABLE IF EXISTS {escaped_table_name}")
+            logger.info(f"Dropped existing table: {table_name}")
+        
+        # Create table if it doesn't exist (using normalized columns)
+        if if_exists in ['replace', 'fail']:
+            create_sql = self._generate_create_table_sql(df_normalized, table_name)
+            cursor.execute(create_sql)
+            logger.info(f"Created table: {table_name}")
+        
+        # Prepare data for insertion
+        columns = list(df_normalized.columns)
+        
+        # Handle column names for INSERT statement
+        # Columns that are already quoted (reserved words) don't need additional escaping
+        escaped_columns = []
+        for col in columns:
+            if col.startswith('"') and col.endswith('"'):
+                # Already quoted (reserved word), use as is
+                escaped_columns.append(col)
+            else:
+                # Regular column, add quotes
+                escaped_columns.append(f'"{col}"')
+        
+        placeholders = ', '.join(['%s'] * len(columns))
+        
+        # Insert data in batches
+        if chunk_size is None:
+            # X-Small warehouse optimized batch size determination
+            batch_size = self._calculate_xsmall_optimized_batch_size(df_normalized)
+            total_rows = len(df_normalized)
+        else:
+            batch_size = chunk_size
+            total_rows = len(df_normalized)
+        
+        logger.info(f"📊 Batch size: {batch_size}")
+        
+        for i in range(0, total_rows, batch_size):
+            batch = df_normalized.iloc[i:i + batch_size]
+            values = [tuple(row) for row in batch.values]
+            
+            insert_sql = f"INSERT INTO {escaped_table_name} ({', '.join(escaped_columns)}) VALUES ({placeholders})"
+            cursor.executemany(insert_sql, values)
+            
+            logger.info(f"Inserted batch {i//batch_size + 1}/{(total_rows + batch_size - 1)//batch_size}")
+        
+        cursor.close()
+        logger.info(f"✅ Uploaded {total_rows} rows via cursor method")
+        return True
+
+    def _extract_column_from_error(self, error_msg: str) -> str:
+        """
+        Extract column name from Snowflake error message.
+        
+        Args:
+            error_msg: Error message from Snowflake
+            
+        Returns:
+            str: Column name that caused the error, or None if not found
+        """
+        import re
+        
+        # Pattern for "failed on column COLUMN_NAME with error"
+        pattern = r"failed on column ([A-Za-z_][A-Za-z0-9_\s]*) with error"
+        match = re.search(pattern, error_msg)
+        
+        if match:
+            column_name = match.group(1).strip()
+            logger.info(f"🔍 Identified problematic column: {column_name}")
+            return column_name
+        
+        logger.warning(f"⚠️  Could not extract column name from error: {error_msg}")
+        return None
+
+    def _coerce_specific_column(self, df: pd.DataFrame, column_name: str) -> pd.DataFrame:
+        """
+        Convert a specific column to string type while preserving other columns.
+        
+        Args:
+            df: DataFrame with potential type issues
+            column_name: Name of the column to convert to string
+            
+        Returns:
+            pd.DataFrame: DataFrame with only the specified column converted to string
+        """
+        df_coerced = df.copy()
+        
+        # Find the actual column name (case-insensitive and handle normalized names)
+        actual_column = None
+        for col in df_coerced.columns:
+            if col.upper() == column_name.upper():
+                actual_column = col
+                break
+        
+        if actual_column:
+            logger.info(f"🔧 Converting column '{actual_column}' to string type")
+            df_coerced[actual_column] = df_coerced[actual_column].astype(str)
+            logger.info(f"✅ Successfully converted column '{actual_column}' to string")
+        else:
+            logger.warning(f"⚠️  Column '{column_name}' not found in DataFrame. Available columns: {list(df_coerced.columns)}")
+        
+        return df_coerced
 
     def _normalize_column_names(self, df: pd.DataFrame) -> pd.DataFrame:
         """
