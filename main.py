@@ -630,6 +630,11 @@ def handle_generate_stg_command(args) -> int:
     logger.info(f"📁 Output: {args.output_dir}")
     logger.info(f"📄 Spreadsheet: {args.spreadsheet_id}")
     
+    if args.use_cast:
+        logger.info("🔧 CAST mode: Will use explicit CAST statements in SQL")
+    else:
+        logger.info("🔧 No CAST mode: Will generate SQL without explicit CAST statements (default)")
+    
     if args.read_only:
         logger.info("⚠️  Read-only mode: Will not update Check column")
     
@@ -680,7 +685,8 @@ def handle_generate_stg_command(args) -> int:
             role=args.role,
             warehouse=args.warehouse,
             gsheets=gsheets, 
-            spreadsheet_id=spreadsheet_id
+            spreadsheet_id=spreadsheet_id,
+            use_cast=args.use_cast
         )
         
         logger.info("🎉 Process completed successfully!")
@@ -831,6 +837,9 @@ Features:
     
     # Read-only mode - don't update Check column in Google Sheets
     python main.py generate-stg --read-only
+    
+    # Generate with explicit CAST statements (legacy mode) 
+    python main.py generate-stg --use-cast
     
     # Generate dbt sources.yml with default configuration
     python main.py generate-sources
@@ -1144,6 +1153,12 @@ Environment Variables:
         "--dry-run",
         action="store_true",
         help="Show what would be generated without creating files or updating sheets"
+    )
+    
+    generate_stg_parser.add_argument(
+        "--use-cast",
+        action="store_true",
+        help="Use explicit CAST statements in generated SQL (disabled by default)"
     )
 
     # Generate Sources subcommand

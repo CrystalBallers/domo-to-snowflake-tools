@@ -19,6 +19,7 @@ from .utils.common import transform_column_name, get_snowflake_table_full_name, 
 from .utils.domo import DomoHandler
 from .utils.snowflake import SnowflakeHandler
 from .utils.gsheets import GoogleSheets, READ_WRITE_SCOPES
+from .utils.file_logger import get_file_logger, setup_file_logging
 
 
 def _escape_domo_column_name(column_name: str) -> str:
@@ -94,6 +95,10 @@ class DatasetComparator:
         self._domo_connected = False
         self._snowflake_connected = False
         self.logger = logging.getLogger("DatasetComparator")
+        
+        # Setup file logging
+        self.file_logger = get_file_logger()
+        self.general_file_logger, self.error_file_logger = setup_file_logging()
     
     def setup_connections(self) -> bool:
         """Setup connections to both Domo and Snowflake."""
@@ -119,6 +124,9 @@ class DatasetComparator:
         self.logger.error(f"Error in {section}: {error}")
         if details:
             self.logger.error(f"Details: {details}")
+        
+        # Log to file
+        self.file_logger.log_error(section, error, details or "No additional details")
     
     def calculate_sample_size(self, total_rows: int, confidence_level: float = 0.95, 
                             margin_of_error: float = 0.05) -> int:
@@ -949,15 +957,11 @@ class DatasetComparator:
             values = sampled_keys_df[col].dropna().tolist()
             
             # Manejar diferentes tipos de datos
-            if all(isinstance(v, str) for v in values):
-                # String values: escapar comillas
-                escaped_values = []
-                for v in values:
-                    escaped_val = str(v).replace("'", "''")  # Escapar comillas simples
-                    escaped_values.append(f"'{escaped_val}'")
-            else:
-                # Numeric or other values
-                escaped_values = [str(v) for v in values]
+            # Siempre tratar como strings para evitar problemas de conversión de tipos
+            escaped_values = []
+            for v in values:
+                escaped_val = str(v).replace("'", "''")  # Escapar comillas simples
+                escaped_values.append(f"'{escaped_val}'")
             
             values_str = ', '.join(escaped_values)
             where_clause = f"{normalized_col} IN ({values_str})"
@@ -998,14 +1002,13 @@ class DatasetComparator:
                 # Manejar diferentes tipos de datos
                 if pd.isna(value) or value is None:
                     row_conditions.append(f"{normalized_col} IS NULL")
-                elif isinstance(value, str):
-                    if value.strip() == '':
+                else:
+                    # Siempre tratar como string para evitar problemas de conversión de tipos
+                    escaped_value = str(value).replace("'", "''")
+                    if escaped_value.strip() == '':
                         row_conditions.append(f"({normalized_col} = '' OR {normalized_col} IS NULL)")
                     else:
-                        escaped_value = str(value).replace("'", "''")
                         row_conditions.append(f"{normalized_col} = '{escaped_value}'")
-                else:
-                    row_conditions.append(f"{normalized_col} = {value}")
             
             # Unir condiciones de esta fila con AND
             row_condition = "(" + " AND ".join(row_conditions) + ")"
@@ -1064,8 +1067,12 @@ class DatasetComparator:
             for i in range(0, len(sampled_keys_df), max_batch_size):
                 batch_end = min(i + max_batch_size, len(sampled_keys_df))
                 batch_keys_df = sampled_keys_df.iloc[i:batch_end].reset_index(drop=True)
+                batch_num = i//max_batch_size + 1
                 
-                self.logger.info(f"📦 Processing batch {i//max_batch_size + 1}: {len(batch_keys_df)} keys (rows {i+1}-{batch_end})")
+                self.logger.info(f"📦 Processing batch {batch_num}: {len(batch_keys_df)} keys (rows {i+1}-{batch_end})")
+                
+                # Set current batch number for error logging
+                self._current_batch_num = batch_num
                 
                 # Procesar este batch
                 domo_batch_df, sf_batch_df = self._get_batch_data(
@@ -1155,6 +1162,12 @@ class DatasetComparator:
         if sf_df is None or sf_df.empty:
             self.logger.warning(f"⚠️ No data returned from Snowflake for this batch")
             sf_df = pd.DataFrame()
+            # Log batch failure to file
+            batch_num = getattr(self, '_current_batch_num', 0)
+            self.file_logger.log_batch_failure(
+                batch_num, len(domo_df), 0, 
+                "No data returned from Snowflake - possible query execution error"
+            )
         
         self.logger.info(f"✅ Batch completed: Domo {len(domo_df)} rows, Snowflake {len(sf_df)} rows")
         return domo_df, sf_df
@@ -1177,6 +1190,11 @@ class DatasetComparator:
             Complete comparison report dictionary
         """
         self.logger.info(f"🚀 Starting comparison: {domo_dataset_id} vs {snowflake_table}")
+        
+        # Log to file
+        self.file_logger.log_comparison_start(
+            domo_dataset_id, snowflake_table, key_columns, transform_names
+        )
         
         # Clear previous errors
         self.errors = []
@@ -1203,7 +1221,8 @@ class DatasetComparator:
                            row_count_ok and 
                            data_comparison.get('data_match', False))
         
-        return {
+        # Build result
+        result = {
             'domo_dataset_id': domo_dataset_id,
             'snowflake_table': snowflake_table,
             'key_columns': key_columns,
@@ -1215,6 +1234,11 @@ class DatasetComparator:
             'timestamp': pd.Timestamp.now().isoformat(),
             'transform_applied': transform_names
         }
+        
+        # Log result to file
+        self.file_logger.log_comparison_result(result)
+        
+        return result
     
     def _get_connection_error_report(self, domo_dataset_id: str, snowflake_table: str, 
                                    key_columns: List[str], transform_names: bool) -> Dict[str, Any]:
@@ -2249,4 +2273,7 @@ class DatasetComparator:
     def cleanup(self):
         """Clean up resources."""
         if self.snowflake_handler:
-            self.snowflake_handler.cleanup() 
+            self.snowflake_handler.cleanup()
+        
+        # Close file logging
+        self.file_logger.close_loggers() 

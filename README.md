@@ -232,10 +232,11 @@ python main.py generate-stg [options]
 - `--spreadsheet-id`: Google Sheets spreadsheet ID
 - `--read-only`: Run in read-only mode (don't update Check column)
 - `--dry-run`: Show what would be generated without creating files
+- `--use-cast`: Use explicit CAST statements in generated SQL (disabled by default)
 
 **Features:**
 - ✅ **Smart Skip**: Automatically skips rows where Check = "True"
-- ✅ **Auto CAST**: Generates appropriate CAST statements based on Snowflake data types
+- ✅ **Optional CAST**: Can generate explicit CAST statements when needed (use --use-cast)
 - ✅ **Progress Tracking**: Writes "True" to Check column when files are created successfully
 - ✅ **Schema Validation**: Connects to Snowflake to get real column names and types
 
@@ -292,6 +293,9 @@ Examples:
     
     # Full custom configuration
     python main.py generate-stg --database DW_RAW --schema SRC --role DBT_ROLE --warehouse DBT_WH --output-dir results/sql/stg
+    
+    # Generate with explicit CAST statements (legacy mode)
+    python main.py generate-stg --use-cast
 
 ## 📝 Project Structure
 
