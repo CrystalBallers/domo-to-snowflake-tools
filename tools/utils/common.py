@@ -211,7 +211,37 @@ def get_env_config() -> Dict[str, Optional[str]]:
         'MIGRATION_SHEET_NAME': os.getenv('MIGRATION_SHEET_NAME', 'Migration'),
         'COMPARISON_SHEET_NAME': os.getenv('COMPARISON_SHEET_NAME', 'QA - Test'),
         'INTERMEDIATE_MODELS_SHEET_NAME': os.getenv('INTERMEDIATE_MODELS_SHEET_NAME', 'Inventory'),
+        
+        # Comparison configuration
+        'TRANSFORM_COLUMNS': os.getenv('TRANSFORM_COLUMNS'),
     }
+
+
+def get_transform_columns_setting(cli_arg: Optional[bool] = None) -> bool:
+    """
+    Determine whether to transform column names based on priority:
+    1. CLI argument (if provided)
+    2. Environment variable TRANSFORM_COLUMNS
+    3. Default: False
+    
+    Args:
+        cli_arg: Value from CLI argument (True if --transform-columns passed, None if not)
+        
+    Returns:
+        bool: Whether to transform column names
+    """
+    # Priority 1: CLI argument
+    if cli_arg is not None:
+        return cli_arg
+    
+    # Priority 2: Environment variable
+    env_value = os.getenv('TRANSFORM_COLUMNS')
+    if env_value:
+        env_value_lower = env_value.lower()
+        return env_value_lower in ['true', '1', 'yes', 'y', 'enabled']
+    
+    # Priority 3: Default
+    return False
 
 
 def setup_dual_connections(domo_handler=None, snowflake_handler=None) -> tuple[bool, Optional[object], Optional[object]]:

@@ -87,11 +87,11 @@ def get_stg_files_data():
         return pd.DataFrame(), None, None
 
 
-def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, schema: str = "TEMP_ARGO_RAW", output_dir: str = "sql/stg/", role: str = "DBT_ROLE", warehouse: str = None, gsheets=None, spreadsheet_id: str = None):
+def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, schema: str = "TEMP_ARGO_RAW", output_dir: str = "sql/stg/", role: str = "DBT_ROLE", warehouse: str = None, gsheets=None, spreadsheet_id: str = None, use_cast: bool = False):
     """
     Iterates through each row of the DataFrame and generates staging SQL files.
     Gets real column names and types from Domo datasets (source of truth).
-    Maps Domo types to Snowflake-compatible types with intelligent CAST.
+    Maps Domo types to Snowflake-compatible types with optional CAST.
     Writes "True" to the Check column when files are created successfully.
     
     Args:
@@ -103,6 +103,7 @@ def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, sc
         warehouse: Snowflake warehouse to use (if None, uses environment variable)
         gsheets: GoogleSheets client for writing back to spreadsheet
         spreadsheet_id: ID of the Google Spreadsheet
+        use_cast: Whether to use explicit CAST statements in generated SQL (default: False)
     """
     if df.empty:
         print("❌ DataFrame is empty. Cannot generate files.")
@@ -408,7 +409,8 @@ def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, sc
                     columns=columns,
                     source_schema_name=schema,
                     source_table_name=name,
-                    output_filename=output_path
+                    output_filename=output_path,
+                    use_cast=use_cast
                 )
                 
                 print(f"   🎯 Created: {output_path}")

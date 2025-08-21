@@ -1,6 +1,6 @@
 import re
 
-def create_stg_sql_file(columns: list[dict], source_schema_name: str, source_table_name: str, output_filename: str = "file.sql") -> str:
+def create_stg_sql_file(columns: list[dict], source_schema_name: str, source_table_name: str, output_filename: str = "file.sql", use_cast: bool = False) -> str:
     """
     Crea un archivo SQL de staging a partir de una lista de columnas con sus tipos de datos.
     
@@ -9,6 +9,7 @@ def create_stg_sql_file(columns: list[dict], source_schema_name: str, source_tab
         source_schema_name: Nombre del schema fuente
         source_table_name: Nombre de la tabla fuente  
         output_filename: Nombre del archivo SQL a generar (por defecto "file.sql")
+        use_cast: Si se debe usar CAST explícito en las columnas (por defecto False)
     
     Returns:
         str: El contenido SQL generado
@@ -45,7 +46,7 @@ def create_stg_sql_file(columns: list[dict], source_schema_name: str, source_tab
         # 4. Mejor mantenibilidad
         return f'cast("{column_name}" as {data_type_lower})'
 
-    def generate_sql(columns: list[dict]) -> str:
+    def generate_sql(columns: list[dict], use_cast_param: bool = False) -> str:
         """
         Dada una lista de columnas con tipos, genera el bloque SQL con CAST explícito en TODAS las columnas:
         
@@ -73,10 +74,16 @@ def create_stg_sql_file(columns: list[dict], source_schema_name: str, source_tab
         commented_columns = [col for col in columns if col.get('commented', False)]
         
         # Generate regular column lines
-        body_lines = [
-            f'    {get_cast_expression(col["name"], col["data_type"])} as {sanitize_column_name(col["name"])}'
-            for col in regular_columns
-        ]
+        if use_cast_param:
+            body_lines = [
+                f'    {get_cast_expression(col["name"], col["data_type"])} as {sanitize_column_name(col["name"])}'
+                for col in regular_columns
+            ]
+        else:
+            body_lines = [
+                f'    "{col["name"]}" as {sanitize_column_name(col["name"])}'
+                for col in regular_columns
+            ]
         body = ",\n".join(body_lines)
         
         # Add commented columns at the end if any
@@ -93,21 +100,30 @@ def create_stg_sql_file(columns: list[dict], source_schema_name: str, source_tab
             if domo_only:
                 commented_lines.append("\n\n-- Columns found in Domo but not in Snowflake:")
                 for col in domo_only:
-                    commented_line = f"    -- {get_cast_expression(col['name'], col['data_type'])} as {sanitize_column_name(col['name'])}  -- Domo: {col.get('domo_name', col['name'])} ({col.get('domo_type', 'UNKNOWN')})"
+                    if use_cast_param:
+                        commented_line = f"    -- {get_cast_expression(col['name'], col['data_type'])} as {sanitize_column_name(col['name'])}  -- Domo: {col.get('domo_name', col['name'])} ({col.get('domo_type', 'UNKNOWN')})"
+                    else:
+                        commented_line = f"    -- \"{col['name']}\" as {sanitize_column_name(col['name'])}  -- Domo: {col.get('domo_name', col['name'])} ({col.get('domo_type', 'UNKNOWN')})"
                     commented_lines.append(commented_line)
             
             # Add Snowflake-only columns comments
             if snowflake_only:
                 commented_lines.append("\n\n-- Columns found in Snowflake but not in Domo:")
                 for col in snowflake_only:
-                    commented_line = f"    -- {get_cast_expression(col['name'], col['data_type'])} as {sanitize_column_name(col['name'])}  -- Snowflake: {col['name']} ({col['data_type']})"
+                    if use_cast_param:
+                        commented_line = f"    -- {get_cast_expression(col['name'], col['data_type'])} as {sanitize_column_name(col['name'])}  -- Snowflake: {col['name']} ({col['data_type']})"
+                    else:
+                        commented_line = f"    -- \"{col['name']}\" as {sanitize_column_name(col['name'])}  -- Snowflake: {col['name']} ({col['data_type']})"
                     commented_lines.append(commented_line)
             
             # Add other commented columns (legacy support)
             if other_commented:
                 commented_lines.append("\n\n-- Other columns:")
                 for col in other_commented:
-                    commented_line = f"    -- {get_cast_expression(col['name'], col['data_type'])} as {sanitize_column_name(col['name'])}  -- {col.get('domo_name', col['name'])} ({col.get('domo_type', 'UNKNOWN')})"
+                    if use_cast_param:
+                        commented_line = f"    -- {get_cast_expression(col['name'], col['data_type'])} as {sanitize_column_name(col['name'])}  -- {col.get('domo_name', col['name'])} ({col.get('domo_type', 'UNKNOWN')})"
+                    else:
+                        commented_line = f"    -- \"{col['name']}\" as {sanitize_column_name(col['name'])}  -- {col.get('domo_name', col['name'])} ({col.get('domo_type', 'UNKNOWN')})"
                     commented_lines.append(commented_line)
             
             footer = "\n".join(commented_lines) + footer
@@ -115,7 +131,7 @@ def create_stg_sql_file(columns: list[dict], source_schema_name: str, source_tab
         return header + body + footer
 
     # Generar el SQL
-    sql_content = generate_sql(columns)
+    sql_content = generate_sql(columns, use_cast)
     
     # Escribir el archivo
     with open(output_filename, "w", encoding="utf-8") as f:
@@ -201,5 +217,6 @@ if __name__ == "__main__":
         columns=example_columns,
         source_schema_name="src",
         source_table_name="vw_amazon_shipments",
-        output_filename="stg_amazon_shipments.sql"
+        output_filename="stg_amazon_shipments.sql",
+        use_cast=False  # Ejemplo sin CAST por defecto
     )

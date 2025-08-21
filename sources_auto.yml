@@ -11,6 +11,8 @@ sources:
         identifier: VW_ACTIVE_SUPPRESSED_AND_OUT_OF_STOCK_BB
       - name: VW_ADVERTISING_ASIN_METRICS
         identifier: VW_ADVERTISING_ASIN_METRICS
+      - name: VW_ADVERTISING_BILLING_DETAILS
+        identifier: VW_ADVERTISING_BILLING_DETAILS
       - name: VW_ADVERTISING_CAMPAIGN_PERFORMANCE
         identifier: VW_ADVERTISING_CAMPAIGN_PERFORMANCE
       - name: VW_ADVERTISING_CAMPAIGNS
@@ -19,20 +21,22 @@ sources:
         identifier: VW_ADVERTISING_KEYWORDS
       - name: VW_ADVERTISING_METRICS
         identifier: VW_ADVERTISING_METRICS
-      - name: VW_ADVERTISING_PORTFOLIOS_WITH_BRANDS
-        identifier: VW_ADVERTISING_PORTFOLIOS_WITH_BRANDS
+      - name: VW_ADVERTISING_MONTHLY_DETAILS
+        identifier: VW_ADVERTISING_MONTHLY_DETAILS
       - name: VW_ADVERTISING_PORTFOLIOS
         identifier: VW_ADVERTISING_PORTFOLIOS
+      - name: VW_ADVERTISING_PORTFOLIOS_WITH_BRANDS
+        identifier: VW_ADVERTISING_PORTFOLIOS_WITH_BRANDS
       - name: VW_ADVERTISING_TARGETS
         identifier: VW_ADVERTISING_TARGETS
       - name: VW_ADVERTISING_WALMART_METRICS
         identifier: VW_ADVERTISING_WALMART_METRICS
       - name: VW_AMAZON_ASIN_PERFORMANCE
         identifier: VW_AMAZON_ASIN_PERFORMANCE
-      - name: VW_AMAZON_ASIN_TRANSPARENCY_STATUS_LOG
-        identifier: VW_AMAZON_ASIN_TRANSPARENCY_STATUS_LOG
       - name: VW_AMAZON_ASIN_TRANSPARENCY
         identifier: VW_AMAZON_ASIN_TRANSPARENCY
+      - name: VW_AMAZON_ASIN_TRANSPARENCY_STATUS_LOG
+        identifier: VW_AMAZON_ASIN_TRANSPARENCY_STATUS_LOG
       - name: VW_AMAZON_ASINS
         identifier: VW_AMAZON_ASINS
       - name: VW_AMAZON_FBA_INVENTORY_HEALTH
@@ -41,6 +45,8 @@ sources:
         identifier: VW_AMAZON_FBA_LONGTERM_STORAGE_FEE_CHARGES
       - name: VW_AMAZON_FBA_REMOVAL_ORDER_DETAIL
         identifier: VW_AMAZON_FBA_REMOVAL_ORDER_DETAIL
+      - name: VW_AMAZON_FBA_SHIPMENT_PARTNER_COSTS
+        identifier: VW_AMAZON_FBA_SHIPMENT_PARTNER_COSTS
       - name: VW_AMAZON_FBA_STORAGE_FEE_CHARGES
         identifier: VW_AMAZON_FBA_STORAGE_FEE_CHARGES
       - name: VW_AMAZON_FULFILLMENTS
@@ -55,28 +61,40 @@ sources:
         identifier: VW_AMAZON_INBOUND_SHIPMENTS
       - name: VW_AMAZON_INVENTORY_LOG
         identifier: VW_AMAZON_INVENTORY_LOG
-      - name: VW_AMAZON_ORDER_ITEMS_LAST_48H
-        identifier: VW_AMAZON_ORDER_ITEMS_LAST_48H
       - name: VW_AMAZON_ORDER_ITEMS
         identifier: VW_AMAZON_ORDER_ITEMS
+      - name: VW_AMAZON_ORDER_ITEMS_LAST_48H
+        identifier: VW_AMAZON_ORDER_ITEMS_LAST_48H
       - name: VW_AMAZON_SELLER_CENTRAL_ACCOUNTS
         identifier: VW_AMAZON_SELLER_CENTRAL_ACCOUNTS
+      - name: VW_AMAZON_SELLER_CENTRAL_PURCHASE_ORDERS
+        identifier: VW_AMAZON_SELLER_CENTRAL_PURCHASE_ORDERS
       - name: VW_AMAZON_SETTLEMENT_ITEMS
         identifier: VW_AMAZON_SETTLEMENT_ITEMS
       - name: VW_AMAZON_SETTLEMENTS
         identifier: VW_AMAZON_SETTLEMENTS
       - name: VW_AMAZON_SKUS
         identifier: VW_AMAZON_SKUS
+      - name: VW_ASIN_UPCS_MOM_LIST
+        identifier: VW_ASIN_UPCS_MOM_LIST
+      - name: VW_ASIN_UPCS_QOQ_LIST
+        identifier: VW_ASIN_UPCS_QOQ_LIST
+      - name: VW_ASIN_UPCS_YOY_LIST
+        identifier: VW_ASIN_UPCS_YOY_LIST
+      - name: VW_ATLANTA_FIREFLY_DAILY_PARTNER_SKU_SALES_COGS
+        identifier: VW_ATLANTA_FIREFLY_DAILY_PARTNER_SKU_SALES_COGS
+      - name: VW_ATLANTA_FIREFLY_DAILY_PRODUCTS_DIM
+        identifier: VW_ATLANTA_FIREFLY_DAILY_PRODUCTS_DIM
       - name: VW_BP_AMAZON_SELLER_BRANDS
         identifier: VW_BP_AMAZON_SELLER_BRANDS
       - name: VW_BP_ASIN_CHANGELOG
         identifier: VW_BP_ASIN_CHANGELOG
       - name: VW_BP_ASIN_SELLER_INVENTORY
         identifier: VW_BP_ASIN_SELLER_INVENTORY
-      - name: VW_BP_BRANDS_MAPPING
-        identifier: VW_BP_BRANDS_MAPPING
       - name: VW_BP_BRANDS
         identifier: VW_BP_BRANDS
+      - name: VW_BP_BRANDS_MAPPING
+        identifier: VW_BP_BRANDS_MAPPING
       - name: VW_BP_ENFORCEMENT_SETTINGS
         identifier: VW_BP_ENFORCEMENT_SETTINGS
       - name: VW_BRAND_DOC_ATTRIBUTES
@@ -85,6 +103,8 @@ sources:
         identifier: VW_BRANDS
       - name: VW_CALENDAR_DAYS_WEEKS_CONSTANTS
         identifier: VW_CALENDAR_DAYS_WEEKS_CONSTANTS
+      - name: VW_CALENDAR_DOMO
+        identifier: VW_CALENDAR_DOMO
       - name: VW_CLIENTS
         identifier: VW_CLIENTS
       - name: VW_CO_HORIZONTAL_DS
@@ -99,26 +119,46 @@ sources:
         identifier: VW_DEFAULT_CLASS_PARTNER_BRAND_BY_VENDOR_XLSX
       - name: VW_DEMAND_FORECAST
         identifier: VW_DEMAND_FORECAST
+      - name: VW_DEV_PUBLIC_ADS_CONVERSION_STREAM
+        identifier: VW_DEV_PUBLIC_ADS_CONVERSION_STREAM
+      - name: VW_DEV_PUBLIC_ADSP_CONVERSION
+        identifier: VW_DEV_PUBLIC_ADSP_CONVERSION
+      - name: VW_DEV_PUBLIC_ADSP_TRAFFIC
+        identifier: VW_DEV_PUBLIC_ADSP_TRAFFIC
+      - name: VW_DEV_PUBLIC_ASDP_TRAFFIC_STREAM
+        identifier: VW_DEV_PUBLIC_ASDP_TRAFFIC_STREAM
       - name: VW_DUMMY_PORTFOLIOS
         identifier: VW_DUMMY_PORTFOLIOS
       - name: VW_EXCLUDE_FROM_NS_VID_OFFERS_XLSX
         identifier: VW_EXCLUDE_FROM_NS_VID_OFFERS_XLSX
+      - name: VW_FBA_CUSTOMER_RETURNS
+        identifier: VW_FBA_CUSTOMER_RETURNS
+      - name: VW_FEE_PREVIEW
+        identifier: VW_FEE_PREVIEW
       - name: VW_GOOGLE_ADS_CAMPAIGNS_BY_DAY
         identifier: VW_GOOGLE_ADS_CAMPAIGNS_BY_DAY
       - name: VW_HISTORICAL_1P_2P_SALES_DATA_PRO_FORMA
         identifier: VW_HISTORICAL_1P_2P_SALES_DATA_PRO_FORMA
       - name: VW_IDQ_REPORT
         identifier: VW_IDQ_REPORT
+      - name: VW_INVENTORY_REORDERING
+        identifier: VW_INVENTORY_REORDERING
       - name: VW_INVENTORY_VENDORS
         identifier: VW_INVENTORY_VENDORS
+      - name: VW_ITEM_VENDOR_MEMBERS.SQL
+        identifier: VW_ITEM_VENDOR_MEMBERSSQL
       - name: VW_LOREAL_445_CALENDAR_6_10_21_XLSX
         identifier: VW_LOREAL_445_CALENDAR_6_10_21_XLSX
       - name: VW_MELTABLES_2025
         identifier: VW_MELTABLES_2025
+      - name: VW_NG_COGS_HISTORICAL
+        identifier: VW_NG_COGS_HISTORICAL
       - name: VW_NG_PRICING_LEVELS
         identifier: VW_NG_PRICING_LEVELS
       - name: VW_NS_AMAZON_OFFERS
         identifier: VW_NS_AMAZON_OFFERS
+      - name: VW_NS_ITEM_INVENTORY_BY_LOCATIONS_NG
+        identifier: VW_NS_ITEM_INVENTORY_BY_LOCATIONS_NG
       - name: VW_NS_ITEM_RECEIPTS
         identifier: VW_NS_ITEM_RECEIPTS
       - name: VW_NS_LOCAL_INVENTORY_BY_SKU
@@ -127,18 +167,18 @@ sources:
         identifier: VW_NS_LOCAL_INVENTORY_MFN_BY_SKU
       - name: VW_NS_LOCATIONS
         identifier: VW_NS_LOCATIONS
-      - name: VS_NS_NETSUITE_ITEMS
-        identifier: VS_NS_NETSUITE_ITEMS
+      - name: VW_NS_NETSUITE_ITEMS
+        identifier: VW_NS_NETSUITE_ITEMS
+      - name: VW_NS_NGCOGS_2025_YTD
+        identifier: VW_NS_NGCOGS_2025_YTD
       - name: VW_NS_NONSELLABLE_INVENTORY_BY_SKU
         identifier: VW_NS_NONSELLABLE_INVENTORY_BY_SKU
       - name: VW_NS_PO_QTY_BY_SKU
         identifier: VW_NS_PO_QTY_BY_SKU
-      - name: VS_NS_POS_W_BILLS
-        identifier: VS_NS_POS_W_BILLS
+      - name: VW_NS_POS_W_BILLS
+        identifier: VW_NS_POS_W_BILLS
       - name: VW_NS_PURCHASE_ORDERS
         identifier: VW_NS_PURCHASE_ORDERS
-      - name: VW_ATLANTA_FIREFLY_DAILY_PRODUCTS_DIM
-        identifier: VW_ATLANTA_FIREFLY_DAILY_PRODUCTS_DIM
       - name: VW_OFFERS_STOREFRONTS_BY_DATE
         identifier: VW_OFFERS_STOREFRONTS_BY_DATE
       - name: VW_OPEN_EXCHANGE_CURRENCY_CONVERSION
@@ -147,85 +187,41 @@ sources:
         identifier: VW_PCN_OFFERS_LATEST
       - name: VW_PORTFOLIO_OPCS
         identifier: VW_PORTFOLIO_OPCS
+      - name: VW_POSTAL_CODES
+        identifier: VW_POSTAL_CODES
       - name: VW_PRODUCT_UPCS
         identifier: VW_PRODUCT_UPCS
+      - name: VW_PRODUCTS
+        identifier: VW_PRODUCTS
       - name: VW_PRODUCTS_W_CATEGORIES_V2
         identifier: VW_PRODUCTS_W_CATEGORIES_V2
       - name: VW_PURCHASE_ORDER_LINE_ITEMS
         identifier: VW_PURCHASE_ORDER_LINE_ITEMS
       - name: VW_PURCHASE_ORDERS
         identifier: VW_PURCHASE_ORDERS
+      - name: VW_RAIDAR_WORKING_DB_TABLE
+        identifier: VW_RAIDAR_WORKING_DB_TABLE
+      - name: VW_REPRICING_SKU_STRATEGY_AUDIT
+        identifier: VW_REPRICING_SKU_STRATEGY_AUDIT
       - name: VW_REPURPOSE_SETTLEMENTS_CACHE
         identifier: VW_REPURPOSE_SETTLEMENTS_CACHE
       - name: VW_SALES_BY_PRODUCTS_ARCHIVE
         identifier: VW_SALES_BY_PRODUCTS_ARCHIVE
       - name: VW_SCRAPED_ASINS
         identifier: VW_SCRAPED_ASINS
-      - name: VW_ATLANTA_FIREFLY_DAILY_PARTNER_SKU_SALES_COGS
-        identifier: VW_ATLANTA_FIREFLY_DAILY_PARTNER_SKU_SALES_COGS
-      - name: VW_SUBSCRIBE_SAVE_SUBSCRIPTIONS
-        identifier: VW_SUBSCRIBE_SAVE_SUBSCRIPTIONS
+      - name: VW_STOKKE_AS_FAMILY_MAP
+        identifier: VW_STOKKE_AS_FAMILY_MAP
       - name: VW_SUBSCRIBE_SAVE
         identifier: VW_SUBSCRIBE_SAVE
+      - name: VW_SUBSCRIBE_SAVE_SUBSCRIPTIONS
+        identifier: VW_SUBSCRIBE_SAVE_SUBSCRIPTIONS
+      - name: VW_UPCS
+        identifier: VW_UPCS
       - name: VW_UPCS_TAG_CATEGORIES
         identifier: VW_UPCS_TAG_CATEGORIES
       - name: VW_UPCS_W_CATEGORIES_V2
         identifier: VW_UPCS_W_CATEGORIES_V2
-      - name: VW_UPCS
-        identifier: VW_UPCS
-      - name: VW_INVENTORY_REORDERING
-        identifier: VW_INVENTORY_REORDERING
-      - name: VW_PRODUCTS
-        identifier: VW_PRODUCTS
-      - name: VW_WARE2GO_INVENTORY
-        identifier: VW_WARE2GO_INVENTORY
-      - name: 
-        identifier: 
-      - name: VW_AMAZON_FBA_SHIPMENT_PARTNER_COSTS
-        identifier: VW_AMAZON_FBA_SHIPMENT_PARTNER_COSTS
-      - name: VW_AMAZON_SELLER_CENTRAL_PURCHASE_ORDERS
-        identifier: VW_AMAZON_SELLER_CENTRAL_PURCHASE_ORDERS
-      - name: VW_DEV_PUBLIC_ADSP_TRAFFIC
-        identifier: VW_DEV_PUBLIC_ADSP_TRAFFIC
-      - name: VW_DEV_PUBLIC_ADSP_CONVERSION
-        identifier: VW_DEV_PUBLIC_ADSP_CONVERSION
-      - name: VW_DEV_PUBLIC_ASDP_TRAFFIC_STREAM
-        identifier: VW_DEV_PUBLIC_ASDP_TRAFFIC_STREAM
-      - name: VW_DEV_PUBLIC_ADS_CONVERSION_STREAM
-        identifier: VW_DEV_PUBLIC_ADS_CONVERSION_STREAM
-      - name: VW_CALENDAR_DOMO
-        identifier: VW_CALENDAR_DOMO
-      - name: VW_ADVERTISING_BILLING_DETAILS
-        identifier: VW_ADVERTISING_BILLING_DETAILS
-      - name: VW_ADVERTISING_MONTHLY_DETAILS
-        identifier: VW_ADVERTISING_MONTHLY_DETAILS
-      - name: VW_STOKKE_AS_FAMILY_MAP
-        identifier: VW_STOKKE_AS_FAMILY_MAP
-      - name: VW_ASIN_UPCS_MOM_LIST
-        identifier: VW_ASIN_UPCS_MOM_LIST
-      - name: VW_ASIN_UPCS_QOQ_LIST
-        identifier: VW_ASIN_UPCS_QOQ_LIST
-      - name: VW_ASIN_UPCS_YOY_LIST
-        identifier: VW_ASIN_UPCS_YOY_LIST
-      - name: VW_FBA_CUSTOMER_RETURNS
-        identifier: VW_FBA_CUSTOMER_RETURNS
-      - name: VW_FEE_PREVIEW
-        identifier: VW_FEE_PREVIEW
-      - name: VW_ITEM_VENDOR_MEMBERS.SQL
-        identifier: VW_ITEM_VENDOR_MEMBERSSQL
-      - name: VW_NG_COGS_HISTORICAL
-        identifier: VW_NG_COGS_HISTORICAL
-      - name: VW_NS_ITEM_INVENTORY_BY_LOCATIONS_NG
-        identifier: VW_NS_ITEM_INVENTORY_BY_LOCATIONS_NG
-      - name: VW_NS_NGCOGS_2025_YTD
-        identifier: VW_NS_NGCOGS_2025_YTD
-      - name: VW_POSTAL_CODES
-        identifier: VW_POSTAL_CODES
-      - name: VW_RAIDAR_WORKING_DB_TABLE
-        identifier: VW_RAIDAR_WORKING_DB_TABLE
-      - name: VW_REPRICING_SKU_STRATEGY_AUDIT
-        identifier: VW_REPRICING_SKU_STRATEGY_AUDIT
       - name: VW_USER_INPUT_REQUIRED
         identifier: VW_USER_INPUT_REQUIRED
-      - name: #N/A
-        identifier: NA
+      - name: VW_WARE2GO_INVENTORY
+        identifier: VW_WARE2GO_INVENTORY
