@@ -62,22 +62,31 @@ def _escape_domo_column_list(column_names: List[str]) -> str:
     escaped_columns = [_escape_domo_column_name(col) for col in column_names]
     return ', '.join(escaped_columns)
 
-def _normalize_snowflake_column_list(column_names: List[str]) -> str:
+def _normalize_snowflake_column_list(column_names: List[str], transform: bool = True) -> str:
     """
     Normaliza una lista de nombres de columnas para consultas SQL de Snowflake.
     
     Args:
         column_names: Lista de nombres de columnas
+        transform: Si True, aplica transformación completa. Si False, mantiene nombres originales
         
     Returns:
         String con nombres de columnas normalizados, separados por comas
         
     Examples:
-        >>> _normalize_snowflake_column_list(["Site Code", "Total Revenue"])
+        >>> _normalize_snowflake_column_list(["Site Code", "Total Revenue"], transform=True)
         'SITE_CODE, TOTAL_REVENUE'
+        >>> _normalize_snowflake_column_list(["Franchise ID"], transform=False)
+        '"Franchise ID"'
     """
-    normalized_columns = [transform_column_name(col) for col in column_names]
-    return ', '.join(normalized_columns)
+    if transform:
+        # Apply full transformation (original behavior)
+        normalized_columns = [transform_column_name(col) for col in column_names]
+        return ', '.join(normalized_columns)
+    else:
+        # Keep original names, just escape them for Snowflake SQL
+        escaped_columns = [f'"{col}"' for col in column_names]
+        return ', '.join(escaped_columns)
 
 
 class DatasetComparator:
@@ -417,7 +426,7 @@ class DatasetComparator:
     def compare_data_samples(self, domo_dataset_id: str, snowflake_table: str, 
                            key_columns: List[str], sample_size: Optional[int] = None, 
                            transform_names: bool = False, schema_comparison: Dict[str, Any] = None, 
-                           sampling_method: str = "random") -> Dict[str, Any]:
+                           sampling_method: str = "random", schema_str: Optional[str] = None) -> Dict[str, Any]:
         """
         Compare data samples using datacompy.
         
@@ -435,10 +444,15 @@ class DatasetComparator:
         """
         self.logger.info("🔍 Comparing data samples...")
         
-        # Always normalize key columns for comparison (regardless of transform_names setting)
-        # This ensures compatibility between Domo and Snowflake column names
-        normalized_key_columns = [transform_column_name(col) for col in key_columns]
-        self.logger.info(f"🔄 Key columns normalized for comparison: {key_columns} → {normalized_key_columns}")
+        # Normalize key columns based on transform_names setting
+        if transform_names:
+            # Apply full transformation to key columns
+            normalized_key_columns = [transform_column_name(col) for col in key_columns]
+            self.logger.info(f"🔄 Key columns normalized for comparison: {key_columns} → {normalized_key_columns}")
+        else:
+            # Keep original key column names, just clean them for compatibility
+            normalized_key_columns = [col.strip('"').strip() for col in key_columns]
+            self.logger.info(f"🔄 Key columns kept original (no transformation): {key_columns} → {normalized_key_columns}")
         
         # Create reverse mapping from normalized names back to original Domo names
         # This is needed because Domo queries need original column names
@@ -458,16 +472,22 @@ class DatasetComparator:
             self.logger.info(f"  _domo_original_columns keys: {list(self._domo_original_columns.keys())}")
             self.logger.info(f"  _domo_original_columns values: {list(self._domo_original_columns.values())}")
         
-        for normalized_key in normalized_key_columns:
-            self.logger.info(f"🔍 Looking for '{normalized_key}' in domo_column_mapping...")
-            self.logger.info(f"  Available keys: {list(domo_column_mapping.keys())}")
-            if normalized_key in domo_column_mapping:
-                domo_key_columns.append(domo_column_mapping[normalized_key])
-                self.logger.info(f"  ✅ '{normalized_key}' → '{domo_column_mapping[normalized_key]}'")
-            else:
-                # Fallback: assume the key column name is already in Domo format
-                domo_key_columns.append(normalized_key)
-                self.logger.info(f"  ⚠️ '{normalized_key}' → '{normalized_key}' (no mapping found)")
+        if transform_names:
+            # When transforming, use the mapping to get back to original Domo names
+            for normalized_key in normalized_key_columns:
+                self.logger.info(f"🔍 Looking for '{normalized_key}' in domo_column_mapping...")
+                self.logger.info(f"  Available keys: {list(domo_column_mapping.keys())}")
+                if normalized_key in domo_column_mapping:
+                    domo_key_columns.append(domo_column_mapping[normalized_key])
+                    self.logger.info(f"  ✅ '{normalized_key}' → '{domo_column_mapping[normalized_key]}'")
+                else:
+                    # Fallback: assume the key column name is already in Domo format
+                    domo_key_columns.append(normalized_key)
+                    self.logger.info(f"  ⚠️ '{normalized_key}' → '{normalized_key}' (no mapping found)")
+        else:
+            # When not transforming, use the original key columns directly
+            domo_key_columns = key_columns.copy()
+            self.logger.info(f"  ✅ Using original key columns without transformation: {domo_key_columns}")
         
         self.logger.info(f"🔄 Key columns mapped back to Domo format: {normalized_key_columns} → {domo_key_columns}")
         
@@ -494,7 +514,7 @@ class DatasetComparator:
             actual_sampling_method = "Ordered Sampling"
             try:
                 # Get Domo sample using ordered method
-                key_cols_str = _escape_domo_column_list(key_columns)
+                key_cols_str = _escape_domo_column_list(domo_key_columns)
                 sample_query = f"SELECT * FROM table ORDER BY {key_cols_str} LIMIT {sample_size}"
                 
                 domo_df = self.domo_handler.extract_data(
@@ -508,7 +528,12 @@ class DatasetComparator:
                     raise Exception("No data returned from Domo")
                 
                 # Get Snowflake sample using ordered method  
-                sf_key_cols_str = _normalize_snowflake_column_list(key_columns)
+                if transform_names:
+                    # Use normalized column names for Snowflake when transforming
+                    sf_key_cols_str = _normalize_snowflake_column_list(normalized_key_columns, transform=True)
+                else:
+                    # Use original column names for Snowflake when not transforming
+                    sf_key_cols_str = _normalize_snowflake_column_list(key_columns, transform=False)
                 sf_query = f"SELECT * FROM {snowflake_table} ORDER BY {sf_key_cols_str} LIMIT {sample_size}"
                 sf_df = self.snowflake_handler.execute_query(sf_query)
                 
@@ -524,7 +549,7 @@ class DatasetComparator:
             try:
                 # Use the new smart random sampling approach
                 domo_df, sf_df = self._get_smart_random_samples(
-                    domo_dataset_id, snowflake_table, key_columns, sample_size
+                    domo_dataset_id, snowflake_table, key_columns, sample_size, transform_names, schema_str
                 )
                 
             except Exception as e:
@@ -538,18 +563,25 @@ class DatasetComparator:
                     key_cols_str = _escape_domo_column_list(domo_key_columns)
                     sample_query = f"SELECT * FROM table ORDER BY {key_cols_str} LIMIT {sample_size}"
                     
+                    # If schema is provided, disable auto type conversion to prevent pandas from inferring types
+                    enable_auto_conversion = not bool(schema_str) if 'schema_str' in locals() else True
+                    
                     domo_df = self.domo_handler.extract_data(
                         dataset_id=domo_dataset_id, 
                         query=sample_query,
                         chunk_size=999999999,  # Force single chunk to avoid pagination issues
-                        enable_auto_type_conversion=True
+                        enable_auto_type_conversion=enable_auto_conversion
                     )
                     
                     if domo_df is None or domo_df.empty:
                         raise Exception("No data returned from Domo")
                     
+                    # Apply schema after data extraction if provided
+                    if schema_str and domo_df is not None and not domo_df.empty:
+                        domo_df = self._apply_schema_to_dataframe(domo_df, schema_str)
+                    
                     # Get Snowflake sample using original method  
-                    sf_key_cols_str = _normalize_snowflake_column_list(key_columns)
+                    sf_key_cols_str = _normalize_snowflake_column_list(key_columns, transform=transform_names)
                     sf_query = f"SELECT * FROM {snowflake_table} ORDER BY {sf_key_cols_str} LIMIT {sample_size}"
                     sf_df = self.snowflake_handler.execute_query(sf_query)
                     
@@ -732,6 +764,64 @@ class DatasetComparator:
                     
                     # Write the modified report
                     f.write('\n'.join(modified_lines))
+                    
+                    # Add duplicate keys information after the datacompy report
+                    f.write("\n\n" + "="*80 + "\n")
+                    f.write("DUPLICATE KEYS ANALYSIS\n")
+                    f.write("="*80 + "\n")
+                    
+                    # Check for duplicate keys in both datasets
+                    join_columns = getattr(comparison, 'join_columns', [])
+                    if join_columns:
+                        # Check Domo duplicates
+                        domo_duplicates = comparison.df1.duplicated(subset=join_columns, keep=False).sum()
+                        if domo_duplicates > 0:
+                            f.write(f"\n❌ DUPLICATE KEYS IN DOMO: {domo_duplicates} rows\n")
+                            f.write(f"Key columns: {', '.join(join_columns)}\n")
+                            
+                            # Get specific duplicate keys
+                            domo_duplicate_keys = comparison.df1[comparison.df1.duplicated(subset=join_columns, keep=False)][join_columns].drop_duplicates()
+                            f.write(f"Unique duplicate key combinations: {len(domo_duplicate_keys)}\n")
+                            
+                            if len(domo_duplicate_keys) <= 20:  # Show all if 20 or fewer
+                                f.write("All duplicate key combinations:\n")
+                                for i, (_, row) in enumerate(domo_duplicate_keys.iterrows(), 1):
+                                    key_str = " | ".join([f"{col}={val}" for col, val in zip(join_columns, row)])
+                                    f.write(f"  {i}. {key_str}\n")
+                            else:
+                                f.write("First 20 duplicate key combinations:\n")
+                                for i, (_, row) in enumerate(domo_duplicate_keys.head(20).iterrows(), 1):
+                                    key_str = " | ".join([f"{col}={val}" for col, val in zip(join_columns, row)])
+                                    f.write(f"  {i}. {key_str}\n")
+                                f.write(f"... and {len(domo_duplicate_keys) - 20} more combinations\n")
+                        else:
+                            f.write(f"\n✅ NO DUPLICATE KEYS IN DOMO\n")
+                        
+                        # Check Snowflake duplicates
+                        sf_duplicates = comparison.df2.duplicated(subset=join_columns, keep=False).sum()
+                        if sf_duplicates > 0:
+                            f.write(f"\n❌ DUPLICATE KEYS IN SNOWFLAKE: {sf_duplicates} rows\n")
+                            f.write(f"Key columns: {', '.join(join_columns)}\n")
+                            
+                            # Get specific duplicate keys
+                            sf_duplicate_keys = comparison.df2[comparison.df2.duplicated(subset=join_columns, keep=False)][join_columns].drop_duplicates()
+                            f.write(f"Unique duplicate key combinations: {len(sf_duplicate_keys)}\n")
+                            
+                            if len(sf_duplicate_keys) <= 20:  # Show all if 20 or fewer
+                                f.write("All duplicate key combinations:\n")
+                                for i, (_, row) in enumerate(sf_duplicate_keys.iterrows(), 1):
+                                    key_str = " | ".join([f"{col}={val}" for col, val in zip(join_columns, row)])
+                                    f.write(f"  {i}. {key_str}\n")
+                            else:
+                                f.write("First 20 duplicate key combinations:\n")
+                                for i, (_, row) in enumerate(sf_duplicate_keys.head(20).iterrows(), 1):
+                                    key_str = " | ".join([f"{col}={val}" for col, val in zip(join_columns, row)])
+                                    f.write(f"  {i}. {key_str}\n")
+                                f.write(f"... and {len(sf_duplicate_keys) - 20} more combinations\n")
+                        else:
+                            f.write(f"\n✅ NO DUPLICATE KEYS IN SNOWFLAKE\n")
+                    else:
+                        f.write("\n⚠️ Could not determine key columns for duplicate analysis\n")
                 else:
                     # Write the original report if no schema comparison available
                     f.write(datacompy_report)
@@ -936,7 +1026,7 @@ class DatasetComparator:
         # Unir todas las filas con OR
         return " OR ".join(where_conditions)
     
-    def _build_snowflake_where_clause(self, sampled_keys_df: pd.DataFrame, key_columns: List[str]) -> str:
+    def _build_snowflake_where_clause(self, sampled_keys_df: pd.DataFrame, key_columns: List[str], transform_names: bool = False) -> str:
         """
         Construye cláusula WHERE para Snowflake usando nombres de columnas normalizados.
         
@@ -953,7 +1043,14 @@ class DatasetComparator:
         if len(key_columns) == 1:
             # Un solo key column: usar simple IN (muy eficiente)
             col = key_columns[0]
-            normalized_col = transform_column_name(col)
+            if transform_names:
+                normalized_col = transform_column_name(col)
+            else:
+                # Solo agregar comillas si el nombre tiene espacios
+                if ' ' in col:
+                    normalized_col = f'"{col}"'
+                else:
+                    normalized_col = col
             values = sampled_keys_df[col].dropna().tolist()
             
             # Manejar diferentes tipos de datos
@@ -968,18 +1065,18 @@ class DatasetComparator:
             
         elif len(key_columns) == 2:
             # Dos key columns: usar ORs para máxima compatibilidad
-            where_clause = self._build_snowflake_or_where_clause(sampled_keys_df, key_columns)
+            where_clause = self._build_snowflake_or_where_clause(sampled_keys_df, key_columns, transform_names)
                 
         else:
             # 3+ columns: usar approach de ORs
-            where_clause = self._build_snowflake_or_where_clause(sampled_keys_df, key_columns)
+            where_clause = self._build_snowflake_or_where_clause(sampled_keys_df, key_columns, transform_names)
         
         self.logger.info(f"🔍 Built Snowflake WHERE clause for {len(sampled_keys_df)} combinations")
         self.logger.debug(f"Snowflake WHERE clause (first 200 chars): {where_clause[:200]}...")
         
         return where_clause
     
-    def _build_snowflake_or_where_clause(self, sampled_keys_df: pd.DataFrame, key_columns: List[str]) -> str:
+    def _build_snowflake_or_where_clause(self, sampled_keys_df: pd.DataFrame, key_columns: List[str], transform_names: bool = False) -> str:
         """
         Construye cláusula WHERE para Snowflake usando ORs para casos complejos.
         
@@ -997,7 +1094,14 @@ class DatasetComparator:
             
             for col in key_columns:
                 value = row[col]
-                normalized_col = transform_column_name(col)
+                if transform_names:
+                    normalized_col = transform_column_name(col)
+                else:
+                    # Solo agregar comillas si el nombre tiene espacios
+                    if ' ' in col:
+                        normalized_col = f'"{col}"'
+                    else:
+                        normalized_col = col
                 
                 # Manejar diferentes tipos de datos
                 if pd.isna(value) or value is None:
@@ -1018,7 +1122,8 @@ class DatasetComparator:
         return " OR ".join(where_conditions)
     
     def _get_smart_random_samples(self, domo_dataset_id: str, snowflake_table: str, 
-                                 key_columns: List[str], sample_size: int) -> Tuple[pd.DataFrame, pd.DataFrame]:
+                                 key_columns: List[str], sample_size: int, transform_names: bool = False,
+                                 schema_str: Optional[str] = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Obtiene muestras aleatorias sincronizadas usando random determinístico en Python.
         
@@ -1076,7 +1181,7 @@ class DatasetComparator:
                 
                 # Procesar este batch
                 domo_batch_df, sf_batch_df = self._get_batch_data(
-                    domo_dataset_id, snowflake_table, key_columns, batch_keys_df
+                    domo_dataset_id, snowflake_table, key_columns, batch_keys_df, transform_names, schema_str
                 )
                 
                 if domo_batch_df is not None and not domo_batch_df.empty:
@@ -1096,7 +1201,7 @@ class DatasetComparator:
             # Sample size pequeño, usar método original
             self.logger.info(f"📦 Single batch processing: {len(sampled_keys_df)} keys")
             domo_df, sf_df = self._get_batch_data(
-                domo_dataset_id, snowflake_table, key_columns, sampled_keys_df
+                domo_dataset_id, snowflake_table, key_columns, sampled_keys_df, transform_names, schema_str
             )
         
         # Verificar que ambos DataFrames tienen datos
@@ -1121,7 +1226,8 @@ class DatasetComparator:
         return domo_df, sf_df
     
     def _get_batch_data(self, domo_dataset_id: str, snowflake_table: str, 
-                       key_columns: List[str], batch_keys_df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+                       key_columns: List[str], batch_keys_df: pd.DataFrame, transform_names: bool = False,
+                       schema_str: Optional[str] = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
         Obtiene datos para un batch específico de keys.
         
@@ -1138,17 +1244,32 @@ class DatasetComparator:
         domo_where_clause = self._build_efficient_where_clause(batch_keys_df, key_columns)
         
         # Construir WHERE clause para Snowflake (con nombres normalizados)
-        sf_where_clause = self._build_snowflake_where_clause(batch_keys_df, key_columns)
+        sf_where_clause = self._build_snowflake_where_clause(batch_keys_df, key_columns, transform_names)
         
         # Ejecutar query en Domo
         self.logger.info(f"📥 Getting {len(batch_keys_df)} rows from Domo...")
         domo_query = f"SELECT * FROM table WHERE {domo_where_clause}"
+        
+        # Apply schema if provided to prevent pandas type inference
+        if schema_str:
+            self.logger.info(f"🔧 Applying schema to prevent type inference: {schema_str[:100]}...")
+            # Parse schema string and convert to pandas dtypes
+            schema_dtypes = self._parse_schema_string(schema_str)
+            self.logger.info(f"🔧 Parsed schema dtypes: {schema_dtypes}")
+        
+        # If schema is provided, disable auto type conversion to prevent pandas from inferring types
+        enable_auto_conversion = not bool(schema_str)
+        
         domo_df = self.domo_handler.extract_data(
             dataset_id=domo_dataset_id,
             query=domo_query,
             chunk_size=999999999,  # Force single chunk to avoid pagination issues with WHERE clauses
-            enable_auto_type_conversion=True
+            enable_auto_type_conversion=enable_auto_conversion
         )
+        
+        # Apply schema after data extraction if provided
+        if schema_str and domo_df is not None and not domo_df.empty:
+            domo_df = self._apply_schema_to_dataframe(domo_df, schema_str)
         
         if domo_df is None or domo_df.empty:
             self.logger.warning(f"⚠️ No data returned from Domo for this batch")
@@ -1172,9 +1293,151 @@ class DatasetComparator:
         self.logger.info(f"✅ Batch completed: Domo {len(domo_df)} rows, Snowflake {len(sf_df)} rows")
         return domo_df, sf_df
     
+    def _parse_schema_string(self, schema_str: str) -> Dict[str, str]:
+        """
+        Parse schema string in format: COLUMN_NAME:TYPE,COLUMN_NAME:TYPE
+        
+        Args:
+            schema_str: Schema string like "ID:TEXT,DATE:DATE,AMOUNT:NUMBER"
+            
+        Returns:
+            Dictionary mapping column names to pandas dtypes
+        """
+        schema_dtypes = {}
+        
+        try:
+            # Split by comma and parse each column definition
+            column_definitions = [col.strip() for col in schema_str.split(',') if col.strip()]
+            
+            for col_def in column_definitions:
+                if ':' in col_def:
+                    col_name, col_type = col_def.split(':', 1)
+                    col_name = col_name.strip()
+                    col_type = col_type.strip().upper()
+                    
+                    # Map Snowflake types to pandas dtypes
+                    if col_type in ['TEXT', 'VARCHAR', 'STRING', 'CHAR']:
+                        schema_dtypes[col_name] = 'string'
+                    elif col_type in ['NUMBER', 'DECIMAL', 'FLOAT', 'DOUBLE', 'INT', 'INTEGER', 'BIGINT']:
+                        schema_dtypes[col_name] = 'float64'  # Use float64 to handle NaN values
+                    elif col_type in ['DATE', 'DATETIME', 'TIMESTAMP', 'TIMESTAMP_NTZ']:
+                        schema_dtypes[col_name] = 'datetime64[ns]'
+                    elif col_type in ['BOOLEAN', 'BOOL']:
+                        schema_dtypes[col_name] = 'boolean'
+                    else:
+                        # Default to string for unknown types
+                        schema_dtypes[col_name] = 'string'
+                        self.logger.warning(f"⚠️ Unknown type '{col_type}' for column '{col_name}', defaulting to string")
+            
+            self.logger.info(f"🔧 Parsed {len(schema_dtypes)} column types from schema")
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error parsing schema string: {e}")
+            self.logger.error(f"Schema string: {schema_str}")
+        
+        return schema_dtypes
+    
+    def _is_scientific_notation(self, value: str) -> bool:
+        """
+        Check if a string value is in scientific notation (e.g., '5.942683660313343e+17').
+        
+        Args:
+            value: String value to check
+            
+        Returns:
+            True if value is in scientific notation, False otherwise
+        """
+        if not isinstance(value, str):
+            return False
+        
+        # Check for scientific notation pattern: number + 'e' + number
+        import re
+        scientific_pattern = r'^-?\d+\.\d+e[+-]\d+$'
+        return bool(re.match(scientific_pattern, value))
+    
+    def _apply_schema_to_dataframe(self, df: pd.DataFrame, schema_str: str) -> pd.DataFrame:
+        """
+        Apply schema to DataFrame to force data types and prevent pandas inference.
+        
+        Args:
+            df: DataFrame to apply schema to
+            schema_str: Schema string in format COLUMN_NAME:TYPE,COLUMN_NAME:TYPE
+            
+        Returns:
+            DataFrame with applied schema
+        """
+        try:
+            # Parse schema
+            schema_dtypes = self._parse_schema_string(schema_str)
+            
+            if not schema_dtypes:
+                self.logger.warning("⚠️ No valid schema parsed, returning original DataFrame")
+                return df
+            
+            # Create a copy to avoid modifying original
+            df_with_schema = df.copy()
+            
+            # Apply schema to each column
+            for col_name, target_dtype in schema_dtypes.items():
+                if col_name in df_with_schema.columns:
+                    try:
+                        if target_dtype == 'string':
+                            # Convert to string, handling NaN values properly
+                            df_with_schema[col_name] = df_with_schema[col_name].fillna('').astype(str)
+                            # Replace 'nan' strings with empty string to preserve original meaning
+                            df_with_schema[col_name] = df_with_schema[col_name].replace('nan', '')
+                            # Convert scientific notation numbers to normal format for string columns
+                            # This handles cases where Domo sends large numbers in scientific notation
+                            self.logger.info(f"🔬 Processing column '{col_name}' as string type")
+                            
+                            # Check for scientific notation before conversion
+                            scientific_count = df_with_schema[col_name].apply(self._is_scientific_notation).sum()
+                            if scientific_count > 0:
+                                self.logger.info(f"🔬 Found {scientific_count} values in scientific notation in column '{col_name}'")
+                                # Show some examples
+                                examples = df_with_schema[col_name][df_with_schema[col_name].apply(self._is_scientific_notation)].head(3).tolist()
+                                self.logger.info(f"🔬 Examples: {examples}")
+                            
+                            df_with_schema[col_name] = df_with_schema[col_name].apply(
+                                lambda x: f"{float(x):.0f}" if self._is_scientific_notation(x) else x
+                            )
+                            
+                            # Check after conversion
+                            scientific_count_after = df_with_schema[col_name].apply(self._is_scientific_notation).sum()
+                            if scientific_count_after == 0 and scientific_count > 0:
+                                self.logger.info(f"✅ Successfully converted {scientific_count} scientific notation values in column '{col_name}'")
+                            elif scientific_count_after > 0:
+                                self.logger.warning(f"⚠️ Still have {scientific_count_after} scientific notation values after conversion in column '{col_name}'")
+                        elif target_dtype == 'float64':
+                            # Convert to float64, keeping NaN values
+                            df_with_schema[col_name] = pd.to_numeric(df_with_schema[col_name], errors='coerce')
+                        elif target_dtype == 'datetime64[ns]':
+                            # Convert to datetime, handling empty strings and NaN
+                            df_with_schema[col_name] = pd.to_datetime(df_with_schema[col_name], errors='coerce')
+                        elif target_dtype == 'boolean':
+                            # Convert to boolean
+                            df_with_schema[col_name] = df_with_schema[col_name].astype(bool)
+                        
+                        self.logger.debug(f"🔧 Applied {target_dtype} to column '{col_name}'")
+                        
+                    except Exception as e:
+                        self.logger.warning(f"⚠️ Could not apply {target_dtype} to column '{col_name}': {e}")
+                        # Keep original column as is
+                        continue
+                else:
+                    self.logger.debug(f"🔍 Column '{col_name}' not found in DataFrame")
+            
+            self.logger.info(f"🔧 Schema applied successfully to DataFrame with {len(df_with_schema.columns)} columns")
+            return df_with_schema
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error applying schema to DataFrame: {e}")
+            return df
+    
     def generate_report(self, domo_dataset_id: str, snowflake_table: str, 
                        key_columns: List[str], sample_size: Optional[int] = None,
-                       transform_names: bool = False, sampling_method: str = "random") -> Dict[str, Any]:
+                       transform_names: bool = False, sampling_method: str = "random",
+                       schema_str: Optional[str] = None) -> Dict[str, Any]:
         """
         Generate complete comparison report.
         
@@ -1209,7 +1472,7 @@ class DatasetComparator:
         schema_comparison = self.compare_schemas(domo_dataset_id, snowflake_table, transform_names)
         row_count_comparison = self.compare_row_counts(domo_dataset_id, snowflake_table)
         data_comparison = self.compare_data_samples(domo_dataset_id, snowflake_table, 
-                                                   key_columns, sample_size, transform_names, schema_comparison, sampling_method)
+                                                   key_columns, sample_size, transform_names, schema_comparison, sampling_method, schema_str)
         
         # Determine overall match
         overall_match = False
@@ -1345,7 +1608,8 @@ class DatasetComparator:
         print("="*80)
     
     def compare_from_spreadsheet(self, spreadsheet_id: str, sheet_name: str = None,
-                                credentials_path: str = None, sampling_method: str = "random") -> Dict[str, Any]:
+                                credentials_path: str = None, sampling_method: str = "random", 
+                                use_schema: bool = False) -> Dict[str, Any]:
         """
         Compare multiple datasets from Google Sheets configuration.
         
@@ -1479,6 +1743,21 @@ class DatasetComparator:
                     notes_column = col
                     break
             
+            # Find Schema column (optional, only used when use_schema=True)
+            schema_column = None
+            if use_schema:
+                possible_schema_columns = ['Schema', 'schema', 'Data Types', 'data_types', 'Column Types', 'column_types']
+                for col in possible_schema_columns:
+                    if col in df.columns:
+                        schema_column = col
+                        break
+                
+                if schema_column:
+                    self.logger.info(f"🔧 Schema column found: {schema_column}")
+                else:
+                    self.logger.warning(f"⚠️  Schema column not found but --use-schema was specified")
+                    self.logger.info(f"📋 Available columns: {list(df.columns)}")
+            
             # Validate required columns
             if dataset_id_column is None:
                 raise Exception("Required column 'Output ID' not found in spreadsheet")
@@ -1550,6 +1829,17 @@ class DatasetComparator:
                     transform_value = str(row[transform_columns_column]).lower()
                     transform_columns = transform_value in ['true', '1', 'yes', 'y', 'enabled']
                 
+                # Parse schema if available
+                schema_str = None
+                if use_schema and schema_column and not pd.isna(row.get(schema_column)):
+                    schema_str = str(row[schema_column]).strip()
+                    if schema_str:
+                        self.logger.info(f"🔧 Using schema for dataset {dataset_id}: {schema_str[:100]}...")
+                    else:
+                        self.logger.warning(f"⚠️  Row {index + 2}: Empty schema, will use pandas inference")
+                elif use_schema:
+                    self.logger.warning(f"⚠️  Row {index + 2}: No schema provided but --use-schema was specified")
+                
                 self.logger.info(f"🔄 Comparing dataset {dataset_id} vs table {table_name}")
                 
                 try:
@@ -1560,7 +1850,8 @@ class DatasetComparator:
                         key_columns=key_columns,
                         sample_size=sample_size,
                         transform_names=transform_columns,
-                        sampling_method=sampling_method
+                        sampling_method=sampling_method,
+                        schema_str=schema_str
                     )
                     
                     # Check if comparison was successful
@@ -1970,14 +2261,40 @@ class DatasetComparator:
                         sf_duplicates = comparison.df2.duplicated(subset=join_columns, keep=False).sum()
                         
                         if domo_duplicates > 0 or sf_duplicates > 0:
-                            # Show detailed duplicate key counts
+                            # Show detailed duplicate key counts and specific duplicate keys
                             duplicates_detail = []
+                            duplicate_keys_info = f"❌ Duplicate keys detected"
+                            
                             if domo_duplicates > 0:
                                 duplicates_detail.append(f"Domo: {domo_duplicates}")
+                                # Get specific duplicate keys from Domo
+                                domo_duplicate_keys = comparison.df1[comparison.df1.duplicated(subset=join_columns, keep=False)][join_columns].drop_duplicates()
+                                if len(domo_duplicate_keys) <= 10:  # Show up to 10 duplicate key combinations
+                                    domo_keys_str = ", ".join([f"({', '.join([f'{col}={val}' for col, val in zip(join_columns, row)])})" for _, row in domo_duplicate_keys.iterrows()])
+                                    duplicates_detail.append(f"  Domo duplicate keys: {domo_keys_str}")
+                                else:
+                                    duplicates_detail.append(f"  Domo duplicate keys: {len(domo_duplicate_keys)} unique combinations (showing first 5)")
+                                    first_5_keys = domo_duplicate_keys.head(5)
+                                    domo_keys_str = ", ".join([f"({', '.join([f'{col}={val}' for col, val in zip(join_columns, row)])})" for _, row in first_5_keys.iterrows()])
+                                    duplicates_detail.append(f"    First 5: {domo_keys_str}")
+                                    
                             if sf_duplicates > 0:
                                 duplicates_detail.append(f"Snowflake: {sf_duplicates}")
+                                # Get specific duplicate keys from Snowflake
+                                sf_duplicate_keys = comparison.df2[comparison.df2.duplicated(subset=join_columns, keep=False)][join_columns].drop_duplicates()
+                                if len(sf_duplicate_keys) <= 10:  # Show up to 10 duplicate key combinations
+                                    sf_keys_str = ", ".join([f"({', '.join([f'{col}={val}' for col, val in zip(join_columns, row)])})" for _, row in sf_duplicate_keys.iterrows()])
+                                    duplicates_detail.append(f"  Snowflake duplicate keys: {sf_keys_str}")
+                                else:
+                                    duplicates_detail.append(f"  Snowflake duplicate keys: {len(sf_duplicate_keys)} unique combinations (showing first 5)")
+                                    first_5_keys = sf_duplicate_keys.head(5)
+                                    sf_keys_str = ", ".join([f"({', '.join([f'{col}={val}' for col, val in zip(join_columns, row)])})" for _, row in first_5_keys.iterrows()])
+                                    duplicates_detail.append(f"    First 5: {sf_keys_str}")
                             
-                            duplicate_keys_info = f"❌ Duplicate keys detected"
+                            # Add the detailed duplicate information to the summary
+                            for detail in duplicates_detail:
+                                summary_lines.append(detail)
+                                
                             self.logger.info(f"🔍 Duplicate keys found - Domo: {domo_duplicates}, Snowflake: {sf_duplicates}")
                         else:
                             duplicate_keys_info = "✅ Duplicate keys: None found"

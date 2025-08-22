@@ -507,7 +507,8 @@ def handle_compare_from_spreadsheet(args) -> int:
             spreadsheet_id=spreadsheet_id,
             sheet_name=args.sheet_name,
             credentials_path=args.credentials,
-            sampling_method=args.sampling_method
+            sampling_method=args.sampling_method,
+            use_schema=args.use_schema
         )
         
         # Determine exit code based on results
@@ -1090,6 +1091,12 @@ Environment Variables:
         "--sheet-name",
         default=os.getenv("COMPARISON_SHEET_NAME", "QA - Test"),
         help="Comparison sheet tab name (default: QA - Test)"
+    )
+    
+    compare_parser.add_argument(
+        "--use-schema",
+        action="store_true",
+        help="Use Schema column from spreadsheet to force data types (prevents pandas type inference)"
     )
     
     # Generate STG subcommand
