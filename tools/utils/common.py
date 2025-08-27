@@ -8,6 +8,7 @@ across multiple components in the migration pipeline.
 import os
 import re
 import logging
+import pandas as pd
 from typing import TypedDict, List, Optional, Dict
 from dotenv import load_dotenv
 
@@ -80,6 +81,53 @@ def transform_column_name(column_name: str) -> str:
     name = re.sub(r"_+", "_", name).strip("_")
     
     return name.upper()
+
+
+def transform_dataframe_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Transform DataFrame column names to match Snowflake naming conventions,
+    ensuring uniqueness by adding suffixes when needed.
+    
+    Args:
+        df: DataFrame with original column names
+        
+    Returns:
+        DataFrame with transformed column names (guaranteed unique)
+        
+    Examples:
+        >>> df = pd.DataFrame({'BRAND': [1], 'BRAND_': [2]})
+        >>> df_transformed = transform_dataframe_columns(df)
+        >>> list(df_transformed.columns)
+        ['BRAND', 'BRAND_1']
+    """
+    
+    # Transform all column names first
+    transformed_names = [transform_column_name(col) for col in df.columns]
+    
+    # Handle duplicates by adding suffixes
+    final_names = []
+    name_counts = {}
+    
+    for i, name in enumerate(transformed_names):
+        if name in name_counts:
+            name_counts[name] += 1
+            final_name = f"{name}_{name_counts[name]}"
+        else:
+            name_counts[name] = 0
+            final_name = name
+        
+        final_names.append(final_name)
+    
+    # Create new DataFrame with transformed column names
+    df_transformed = df.copy()
+    df_transformed.columns = final_names
+    
+    # Log any changes for debugging
+    for original, final in zip(df.columns, final_names):
+        if original != final:
+            logger.info(f"🔄 Column transformed: '{original}' → '{final}'")
+    
+    return df_transformed
 
 
 def check_env_vars(required_vars: Optional[List[str]] = None) -> bool:

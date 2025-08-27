@@ -15,7 +15,7 @@ import pandas as pd
 import datacompy
 from datetime import datetime
 
-from .utils.common import transform_column_name, get_snowflake_table_full_name, setup_dual_connections, get_env_config, get_transform_columns_setting
+from .utils.common import transform_column_name, transform_dataframe_columns, get_snowflake_table_full_name, setup_dual_connections, get_env_config, get_transform_columns_setting
 from .utils.domo import DomoHandler
 from .utils.snowflake import SnowflakeHandler
 from .utils.gsheets import GoogleSheets, READ_WRITE_SCOPES
@@ -598,15 +598,13 @@ class DatasetComparator:
         if transform_names:
             self.logger.info("🔄 Applying full column name transformation...")
             
-            # Transform Domo columns
+            # Transform Domo columns using the new function that handles duplicates
             original_domo_columns = domo_df.columns.tolist()
-            transformed_domo_columns = [transform_column_name(col) for col in original_domo_columns]
-            domo_df.columns = transformed_domo_columns
+            domo_df = transform_dataframe_columns(domo_df)
             
-            # Transform Snowflake columns (may have different case)
+            # Transform Snowflake columns using the new function that handles duplicates
             original_sf_columns = sf_df.columns.tolist()
-            transformed_sf_columns = [transform_column_name(col) for col in original_sf_columns]
-            sf_df.columns = transformed_sf_columns
+            sf_df = transform_dataframe_columns(sf_df)
             
             # Use normalized key columns (already transformed above)
             key_columns_for_comparison = normalized_key_columns
