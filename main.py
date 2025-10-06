@@ -31,8 +31,13 @@ try:
     from tools.inventory_handler import export_dataflows_to_sql, InventoryHandler
     from tools.domo_to_snowflake import (
         migrate_dataset, 
+        migrate_dataset_to_stage,
+        load_from_stage_to_table,
+        migrate_dataset_via_stage,
+
         batch_migrate_datasets, 
-        migrate_from_spreadsheet, 
+        migrate_from_spreadsheet,
+        migrate_from_spreadsheet_to_stage,
         MigrationManager
     )
     from tools.utils import DomoHandler, SnowflakeHandler, DatasetComparator
@@ -183,31 +188,155 @@ def handle_migrate_command(args) -> int:
         success = test_migration_connections()
         return 0 if success else 1
     
-    # Spreadsheet migration
-    if args.from_spreadsheet:
-        logger.info("🚀 Starting spreadsheet-based migration...")
-        logger.info(f"📋 Spreadsheet ID: {args.spreadsheet_id}")
-        logger.info(f"📄 Sheet name: {args.sheet_name}")
+    # Single dataset migration to stage
+    if args.to_stage and args.dataset_id and args.stage_name:
+        logger.info("🚀 Starting migration to stage...")
+        logger.info(f"📊 Dataset ID: {args.dataset_id}")
+        logger.info(f"🏗️  Stage name: {args.stage_name}")
         
-        if args.full_table:
-            logger.info("📊 Full table mode: Will upload entire datasets (no row limit)")
-        elif args.auto_chunk_size:
-            logger.info("📊 X-Small optimized auto-chunk mode: Will automatically determine optimal chunk size based on dataset size for X-Small warehouse")
+        if args.auto_chunk_size:
+            logger.info("📊 X-Small optimized auto-chunk mode enabled")
+            chunk_size = "auto"
+        elif args.full_table:
+            logger.info("📊 Full table mode: Will upload entire dataset")
+            chunk_size = None
         else:
-            logger.info("📊 Limited mode: Will upload first 1000 rows per dataset")
-        
-        logger.info("🔧 Column normalization: Automatic Snowflake compatibility (UPPERCASE)")
+            logger.info("📊 Limited mode: Will upload first 1000 rows")
+            chunk_size = 1000
         
         # Show TOTP debug info if using MFA
         show_mfa_debug_info()
         
-        results = migrate_from_spreadsheet(
-            spreadsheet_id=args.spreadsheet_id,
-            sheet_name=args.sheet_name,
-            credentials_path=args.credentials,
-            full_table=args.full_table,
-            auto_chunk_size=args.auto_chunk_size
+        success = migrate_dataset_to_stage(
+            dataset_id=args.dataset_id,
+            stage_name=args.stage_name,
+            chunk_size=chunk_size
         )
+        
+        if success:
+            logger.info("✅ Migration to stage completed successfully")
+            return 0
+        else:
+            logger.error("❌ Migration to stage failed")
+            return 1
+    
+    # Load from stage to table
+    if args.from_stage and args.stage_name and args.target_table:
+        logger.info("🚀 Starting load from stage to table...")
+        logger.info(f"🏗️  Stage name: {args.stage_name}")
+        logger.info(f"📊 Target table: {args.target_table}")
+        logger.info(f"📁 File pattern: {args.file_pattern}")
+        logger.info(f"🔄 If exists: {args.if_exists}")
+        
+        # Show TOTP debug info if using MFA
+        show_mfa_debug_info()
+        
+        success = load_from_stage_to_table(
+            stage_name=args.stage_name,
+            target_table=args.target_table,
+            file_pattern=args.file_pattern,
+            if_exists=args.if_exists
+        )
+        
+        if success:
+            logger.info("✅ Load from stage to table completed successfully")
+            return 0
+        else:
+            logger.error("❌ Load from stage to table failed")
+            return 1
+    
+    # Complete migration via stage (Domo → Stage → Table)
+    if args.dataset_id and args.stage_name and args.target_table:
+        logger.info("🚀 Starting complete migration via stage...")
+        logger.info(f"📊 Dataset ID: {args.dataset_id}")
+        logger.info(f"🏗️  Stage name: {args.stage_name}")
+        logger.info(f"📊 Target table: {args.target_table}")
+        
+        if args.auto_chunk_size:
+            logger.info("📊 X-Small optimized auto-chunk mode enabled")
+            chunk_size = "auto"
+        elif args.full_table:
+            logger.info("📊 Full table mode: Will upload entire dataset")
+            chunk_size = None
+        else:
+            logger.info("📊 Limited mode: Will upload first 1000 rows")
+            chunk_size = 1000
+        
+        logger.info(f"🔄 If exists: {args.if_exists}")
+        
+        # Show TOTP debug info if using MFA
+        show_mfa_debug_info()
+        
+        success = migrate_dataset_via_stage(
+            dataset_id=args.dataset_id,
+            stage_name=args.stage_name,
+            target_table=args.target_table,
+            chunk_size=chunk_size,
+            if_exists=args.if_exists
+        )
+        
+        if success:
+            logger.info("✅ Complete migration via stage completed successfully")
+            return 0
+        else:
+            logger.error("❌ Complete migration via stage failed")
+            return 1
+    
+    # Spreadsheet migration
+    if args.from_spreadsheet:
+        # Check if this is a stage-based migration
+        if args.to_stage and args.stage_name:
+            logger.info("🚀 Starting spreadsheet-based migration to stage...")
+            logger.info(f"📋 Spreadsheet ID: {args.spreadsheet_id}")
+            logger.info(f"📄 Sheet name: {args.sheet_name}")
+            logger.info(f"🏗️  Stage name: {args.stage_name}")
+            
+            if args.full_table:
+                logger.info("📊 Full table mode: Will upload entire datasets (no row limit)")
+            elif args.auto_chunk_size:
+                logger.info("📊 X-Small optimized auto-chunk mode: Will automatically determine optimal chunk size based on dataset size for X-Small warehouse")
+            else:
+                logger.info("📊 Limited mode: Will upload first 1000 rows per dataset")
+            
+            logger.info("🔧 Column normalization: Automatic Snowflake compatibility (UPPERCASE)")
+            
+            # Show TOTP debug info if using MFA
+            show_mfa_debug_info()
+            
+            # Use the new stage-based migration for spreadsheet
+            results = migrate_from_spreadsheet_to_stage(
+                spreadsheet_id=args.spreadsheet_id,
+                sheet_name=args.sheet_name,
+                stage_name=args.stage_name,
+                credentials_path=args.credentials,
+                full_table=args.full_table,
+                auto_chunk_size=args.auto_chunk_size
+            )
+        else:
+            # Traditional spreadsheet migration (Domo → Table)
+            logger.info("🚀 Starting spreadsheet-based migration...")
+            logger.info(f"📋 Spreadsheet ID: {args.spreadsheet_id}")
+            logger.info(f"📄 Sheet name: {args.sheet_name}")
+            
+            if args.full_table:
+                logger.info("📊 Full table mode: Will upload entire datasets (no row limit)")
+            elif args.auto_chunk_size:
+                logger.info("📊 X-Small optimized auto-chunk mode: Will automatically determine optimal chunk size based on dataset size for X-Small warehouse")
+            else:
+                logger.info("📊 Limited mode: Will upload first 1000 rows per dataset")
+            
+            logger.info("🔧 Column normalization: Automatic Snowflake compatibility (UPPERCASE)")
+            
+            # Show TOTP debug info if using MFA
+            show_mfa_debug_info()
+            
+            results = migrate_from_spreadsheet(
+                spreadsheet_id=args.spreadsheet_id,
+                sheet_name=args.sheet_name,
+                credentials_path=args.credentials,
+                full_table=args.full_table,
+                auto_chunk_size=args.auto_chunk_size
+            )
         
         if 'errors' in results and results['errors']:
             logger.error("❌ Spreadsheet migration failed due to errors:")
@@ -599,6 +728,82 @@ def handle_compare_from_inventory(args) -> int:
             pass  # Ignore cleanup errors
 
 
+def handle_stage_command(args) -> int:
+    """
+    Handle the stage subcommand.
+    
+    Args:
+        args: Parsed command line arguments
+        
+    Returns:
+        int: Exit code (0 for success, 1 for failure)
+    """
+    if not args.stage_action:
+        logger.error("❌ No stage action specified. Use 'create', 'list', 'drop', or 'clean'")
+        return 1
+    
+    # Test connections first
+    if not test_migration_connections():
+        logger.error("❌ Connection test failed")
+        return 1
+    
+    try:
+        with MigrationManager() as manager:
+            if args.stage_action == 'create':
+                logger.info(f"🏗️  Creating stage: {args.stage_name}")
+                success = manager.stage_handler.create_stage(args.stage_name)
+                if success:
+                    logger.info(f"✅ Stage '{args.stage_name}' created successfully")
+                    return 0
+                else:
+                    logger.error(f"❌ Failed to create stage '{args.stage_name}'")
+                    return 1
+            
+            elif args.stage_action == 'list':
+                logger.info(f"📁 Listing files in stage: {args.stage_name}")
+                files = manager.stage_handler.list_stage_files(args.stage_name)
+                if files is not None:
+                    if files:
+                        logger.info(f"📁 Found {len(files)} file(s) in stage '{args.stage_name}':")
+                        for file_info in files:
+                            logger.info(f"   - {file_info['name']} ({file_info['size']} bytes, {file_info['last_modified']})")
+                    else:
+                        logger.info(f"📁 Stage '{args.stage_name}' is empty")
+                    return 0
+                else:
+                    logger.error(f"❌ Failed to list files in stage '{args.stage_name}'")
+                    return 1
+            
+            elif args.stage_action == 'drop':
+                logger.info(f"🗑️  Dropping stage: {args.stage_name}")
+                success = manager.stage_handler.drop_stage(args.stage_name)
+                if success:
+                    logger.info(f"✅ Stage '{args.stage_name}' dropped successfully")
+                    return 0
+                else:
+                    logger.error(f"❌ Failed to drop stage '{args.stage_name}'")
+                    return 1
+            
+            elif args.stage_action == 'clean':
+                logger.info(f"🧹 Cleaning files from stage: {args.stage_name}")
+                logger.info(f"📁 File pattern: {args.file_pattern}")
+                success = manager.stage_handler.remove_stage_files(args.stage_name, args.file_pattern)
+                if success:
+                    logger.info(f"✅ Files cleaned from stage '{args.stage_name}'")
+                    return 0
+                else:
+                    logger.error(f"❌ Failed to clean files from stage '{args.stage_name}'")
+                    return 1
+            
+            else:
+                logger.error(f"❌ Unknown stage action: {args.stage_action}")
+                return 1
+                
+    except Exception as e:
+        logger.error(f"❌ Stage operation failed: {e}")
+        return 1
+
+
 def handle_generate_stg_command(args) -> int:
     """
     Handle the generate-stg subcommand for generating staging SQL files.
@@ -967,6 +1172,62 @@ Environment Variables:
         help="Automatically determine optimal chunk size for X-Small warehouse based on dataset size (default: False, uses fixed 1000 row chunks)"
     )
     
+    # Stage-related arguments
+    migrate_parser.add_argument(
+        "--to-stage",
+        action="store_true",
+        help="Migrate data to Snowflake stage instead of directly to table"
+    )
+    
+    migrate_parser.add_argument(
+        "--stage-name",
+        help="Snowflake stage name for stage-based migration"
+    )
+    
+    migrate_parser.add_argument(
+        "--from-stage",
+        action="store_true",
+        help="Load data from existing stage to table"
+    )
+    
+    migrate_parser.add_argument(
+        "--file-pattern",
+        default="*.csv",
+        help="File pattern to match in stage when loading from stage (default: *.csv)"
+    )
+    
+    migrate_parser.add_argument(
+        "--if-exists",
+        choices=['replace', 'append', 'fail'],
+        default='replace',
+        help="What to do if target table exists (default: replace)"
+    )
+    
+    # Stage subcommand
+    stage_parser = subparsers.add_parser(
+        'stage',
+        help='Manage Snowflake stages for data migration'
+    )
+    
+    stage_subparsers = stage_parser.add_subparsers(dest='stage_action', help='Stage actions')
+    
+    # Stage create
+    stage_create_parser = stage_subparsers.add_parser('create', help='Create a new stage')
+    stage_create_parser.add_argument('--stage-name', required=True, help='Name of the stage to create')
+    
+    # Stage list
+    stage_list_parser = stage_subparsers.add_parser('list', help='List files in a stage')
+    stage_list_parser.add_argument('--stage-name', required=True, help='Name of the stage to list')
+    
+    # Stage drop
+    stage_drop_parser = stage_subparsers.add_parser('drop', help='Drop a stage')
+    stage_drop_parser.add_argument('--stage-name', required=True, help='Name of the stage to drop')
+    
+    # Stage clean
+    stage_clean_parser = stage_subparsers.add_parser('clean', help='Clean files from a stage')
+    stage_clean_parser.add_argument('--stage-name', required=True, help='Name of the stage to clean')
+    stage_clean_parser.add_argument('--file-pattern', default='*', help='File pattern to match for cleaning (default: *)')
+    
     # Datasets subcommand
     datasets_parser = subparsers.add_parser(
         'datasets',
@@ -1215,6 +1476,8 @@ def main() -> int:
         return handle_inventory_command(args)
     elif args.command == 'migrate':
         return handle_migrate_command(args)
+    elif args.command == 'stage':
+        return handle_stage_command(args)
     elif args.command == 'datasets':
         return handle_datasets_command(args)
     elif args.command == 'compare':

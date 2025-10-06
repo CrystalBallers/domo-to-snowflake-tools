@@ -92,7 +92,7 @@ class DomoHandler:
             return False
     
     def extract_data(self, dataset_id: str, query: Optional[str] = None, 
-                    chunk_size: int = 1000000, enable_auto_type_conversion: bool = False) -> Optional[pd.DataFrame]:
+                    chunk_size: int = None, enable_auto_type_conversion: bool = False) -> Optional[pd.DataFrame]:
         """
         Extract data from Domo dataset.
         
@@ -129,11 +129,19 @@ class DomoHandler:
             logger.info(f"Dataset {dataset_id} has {total_rows} rows")
             
             # Extract data
-            if chunk_size is None or total_rows <= chunk_size:
-                # Single chunk extraction (either no limit or dataset fits in chunk)
+            if chunk_size is None:
+                # No limit specified - use pagination with reasonable chunk size for large datasets
+                if total_rows > 1000000:
+                    # For large datasets, use pagination with 1M chunks
+                    return self._extract_with_pagination(dataset_id, base_query, 1000000, total_rows, enable_auto_type_conversion)
+                else:
+                    # For smaller datasets, use single chunk
+                    return self._extract_single_chunk(dataset_id, base_query, enable_auto_type_conversion)
+            elif total_rows <= chunk_size:
+                # Single chunk extraction (dataset fits in specified chunk size)
                 return self._extract_single_chunk(dataset_id, base_query, enable_auto_type_conversion)
             else:
-                # Paginated extraction
+                # Paginated extraction with specified chunk size
                 return self._extract_with_pagination(dataset_id, base_query, chunk_size, total_rows, enable_auto_type_conversion)
                 
         except Exception as e:

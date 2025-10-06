@@ -62,6 +62,23 @@ def _escape_domo_column_list(column_names: List[str]) -> str:
     escaped_columns = [_escape_domo_column_name(col) for col in column_names]
     return ', '.join(escaped_columns)
 
+def _escape_domo_column_list_with_nulls_last(column_names: List[str]) -> str:
+    """
+    Escapa una lista de nombres de columnas para consultas SQL de Domo con NULLS LAST.
+    
+    Args:
+        column_names: Lista de nombres de columnas
+        
+    Returns:
+        String con nombres de columnas escapados y NULLS LAST, separados por comas
+        
+    Examples:
+        >>> _escape_domo_column_list_with_nulls_last(["Site Code", "Total Revenue"])
+        '"Site Code" NULLS LAST, "Total Revenue" NULLS LAST'
+    """
+    escaped_columns = [_escape_domo_column_name(col) for col in column_names]
+    return ', '.join([f"{col} NULLS LAST" for col in escaped_columns])
+
 def _normalize_snowflake_column_list(column_names: List[str], transform: bool = True) -> str:
     """
     Normaliza una lista de nombres de columnas para consultas SQL de Snowflake.
@@ -87,6 +104,32 @@ def _normalize_snowflake_column_list(column_names: List[str], transform: bool = 
         # Keep original names, just escape them for Snowflake SQL
         escaped_columns = [f'"{col}"' for col in column_names]
         return ', '.join(escaped_columns)
+
+def _normalize_snowflake_column_list_with_nulls_last(column_names: List[str], transform: bool = True) -> str:
+    """
+    Normaliza una lista de nombres de columnas para consultas SQL de Snowflake con NULLS LAST.
+    
+    Args:
+        column_names: Lista de nombres de columnas
+        transform: Si True, aplica transformación completa. Si False, mantiene nombres originales
+        
+    Returns:
+        String con nombres de columnas normalizados y NULLS LAST, separados por comas
+        
+    Examples:
+        >>> _normalize_snowflake_column_list_with_nulls_last(["Site Code", "Total Revenue"], transform=True)
+        'SITE_CODE NULLS LAST, TOTAL_REVENUE NULLS LAST'
+        >>> _normalize_snowflake_column_list_with_nulls_last(["Franchise ID"], transform=False)
+        '"Franchise ID" NULLS LAST'
+    """
+    if transform:
+        # Apply full transformation (original behavior)
+        normalized_columns = [transform_column_name(col) for col in column_names]
+        return ', '.join([f"{col} NULLS LAST" for col in normalized_columns])
+    else:
+        # Keep original names, just escape them for Snowflake SQL
+        escaped_columns = [f'"{col}"' for col in column_names]
+        return ', '.join([f"{col} NULLS LAST" for col in escaped_columns])
 
 
 class DatasetComparator:
@@ -514,7 +557,7 @@ class DatasetComparator:
             actual_sampling_method = "Ordered Sampling"
             try:
                 # Get Domo sample using ordered method
-                key_cols_str = _escape_domo_column_list(domo_key_columns)
+                key_cols_str = _escape_domo_column_list_with_nulls_last(domo_key_columns)
                 sample_query = f"SELECT * FROM table ORDER BY {key_cols_str} LIMIT {sample_size}"
                 
                 domo_df = self.domo_handler.extract_data(
@@ -527,18 +570,26 @@ class DatasetComparator:
                 if domo_df is None or domo_df.empty:
                     raise Exception("No data returned from Domo")
                 
+                # Apply schema to Domo DataFrame if provided
+                if schema_str and domo_df is not None and not domo_df.empty:
+                    domo_df = self._apply_schema_to_dataframe(domo_df, schema_str, normalized_key_columns)
+                
                 # Get Snowflake sample using ordered method  
                 if transform_names:
                     # Use normalized column names for Snowflake when transforming
-                    sf_key_cols_str = _normalize_snowflake_column_list(normalized_key_columns, transform=True)
+                    sf_key_cols_str = _normalize_snowflake_column_list_with_nulls_last(normalized_key_columns, transform=True)
                 else:
                     # Use original column names for Snowflake when not transforming
-                    sf_key_cols_str = _normalize_snowflake_column_list(key_columns, transform=False)
+                    sf_key_cols_str = _normalize_snowflake_column_list_with_nulls_last(key_columns, transform=False)
                 sf_query = f"SELECT * FROM {snowflake_table} ORDER BY {sf_key_cols_str} LIMIT {sample_size}"
                 sf_df = self.snowflake_handler.execute_query(sf_query)
                 
                 if sf_df is None or sf_df.empty:
                     raise Exception("No data returned from Snowflake")
+                
+                # Apply schema to Snowflake DataFrame if provided
+                if schema_str and sf_df is not None and not sf_df.empty:
+                    sf_df = self._apply_schema_to_dataframe(sf_df, schema_str, normalized_key_columns)
                     
             except Exception as ordered_error:
                 self.add_error("Data Sampling", "Both random and ordered sampling failed", str(ordered_error))
@@ -560,7 +611,7 @@ class DatasetComparator:
                 # Fallback to original deterministic sampling
                 try:
                     # Get Domo sample using original method
-                    key_cols_str = _escape_domo_column_list(domo_key_columns)
+                    key_cols_str = _escape_domo_column_list_with_nulls_last(domo_key_columns)
                     sample_query = f"SELECT * FROM table ORDER BY {key_cols_str} LIMIT {sample_size}"
                     
                     # If schema is provided, disable auto type conversion to prevent pandas from inferring types
@@ -578,15 +629,19 @@ class DatasetComparator:
                     
                     # Apply schema after data extraction if provided
                     if schema_str and domo_df is not None and not domo_df.empty:
-                        domo_df = self._apply_schema_to_dataframe(domo_df, schema_str)
+                        domo_df = self._apply_schema_to_dataframe(domo_df, schema_str, normalized_key_columns)
                     
                     # Get Snowflake sample using original method  
-                    sf_key_cols_str = _normalize_snowflake_column_list(key_columns, transform=transform_names)
+                    sf_key_cols_str = _normalize_snowflake_column_list_with_nulls_last(key_columns, transform=transform_names)
                     sf_query = f"SELECT * FROM {snowflake_table} ORDER BY {sf_key_cols_str} LIMIT {sample_size}"
                     sf_df = self.snowflake_handler.execute_query(sf_query)
                     
                     if sf_df is None or sf_df.empty:
                         raise Exception("Failed to get Snowflake sample")
+                    
+                    # Apply schema to Snowflake DataFrame if provided
+                    if schema_str and sf_df is not None and not sf_df.empty:
+                        sf_df = self._apply_schema_to_dataframe(sf_df, schema_str, normalized_key_columns)
                     
                     self.logger.info("✅ Fallback sampling completed")
                     
@@ -645,11 +700,13 @@ class DatasetComparator:
                     
                     self.logger.info(f"Key column '{col}': Domo '{domo_col}'={domo_dtype}, Snowflake '{sf_col}'={sf_dtype}")
                     
-                    # If types are different, convert both to string for compatibility
-                    if domo_dtype != sf_dtype:
+                    # If types are different and no schema is provided, convert both to string for compatibility
+                    if domo_dtype != sf_dtype and not schema_str:
                         self.logger.info(f"Converting column '{col}' to string for compatibility")
                         domo_df[domo_col] = domo_df[domo_col].astype(str)
                         sf_df[sf_col] = sf_df[sf_col].astype(str)
+                    elif domo_dtype != sf_dtype:
+                        self.logger.info(f"Schema provided - keeping original types for column '{col}' (Domo: {domo_dtype}, Snowflake: {sf_dtype})")
                     
                     # Rename columns to match key_columns for datacompy compatibility
                     if domo_col != col:
@@ -1044,11 +1101,8 @@ class DatasetComparator:
             if transform_names:
                 normalized_col = transform_column_name(col)
             else:
-                # Solo agregar comillas si el nombre tiene espacios
-                if ' ' in col:
-                    normalized_col = f'"{col}"'
-                else:
-                    normalized_col = col
+                # Cuando transform_names=False, siempre agregar comillas dobles para Snowflake
+                normalized_col = f'"{col}"'
             values = sampled_keys_df[col].dropna().tolist()
             
             # Manejar diferentes tipos de datos
@@ -1095,11 +1149,8 @@ class DatasetComparator:
                 if transform_names:
                     normalized_col = transform_column_name(col)
                 else:
-                    # Solo agregar comillas si el nombre tiene espacios
-                    if ' ' in col:
-                        normalized_col = f'"{col}"'
-                    else:
-                        normalized_col = col
+                    # Cuando transform_names=False, siempre agregar comillas dobles para Snowflake
+                    normalized_col = f'"{col}"'
                 
                 # Manejar diferentes tipos de datos
                 if pd.isna(value) or value is None:
@@ -1267,7 +1318,7 @@ class DatasetComparator:
         
         # Apply schema after data extraction if provided
         if schema_str and domo_df is not None and not domo_df.empty:
-            domo_df = self._apply_schema_to_dataframe(domo_df, schema_str)
+            domo_df = self._apply_schema_to_dataframe(domo_df, schema_str, key_columns)
         
         if domo_df is None or domo_df.empty:
             self.logger.warning(f"⚠️ No data returned from Domo for this batch")
@@ -1281,6 +1332,10 @@ class DatasetComparator:
         if sf_df is None or sf_df.empty:
             self.logger.warning(f"⚠️ No data returned from Snowflake for this batch")
             sf_df = pd.DataFrame()
+        else:
+            # Apply schema to Snowflake DataFrame if provided
+            if schema_str and sf_df is not None and not sf_df.empty:
+                sf_df = self._apply_schema_to_dataframe(sf_df, schema_str, key_columns)
             # Log batch failure to file
             batch_num = getattr(self, '_current_batch_num', 0)
             self.file_logger.log_batch_failure(
@@ -1316,8 +1371,10 @@ class DatasetComparator:
                     # Map Snowflake types to pandas dtypes
                     if col_type in ['TEXT', 'VARCHAR', 'STRING', 'CHAR']:
                         schema_dtypes[col_name] = 'string'
-                    elif col_type in ['NUMBER', 'DECIMAL', 'FLOAT', 'DOUBLE', 'INT', 'INTEGER', 'BIGINT']:
-                        schema_dtypes[col_name] = 'float64'  # Use float64 to handle NaN values
+                    elif col_type in ['INT', 'INTEGER', 'BIGINT']:
+                        schema_dtypes[col_name] = 'int64'  # Use int64 for integer types
+                    elif col_type in ['NUMBER', 'DECIMAL', 'FLOAT', 'DOUBLE']:
+                        schema_dtypes[col_name] = 'float64'  # Use float64 for decimal/float types
                     elif col_type in ['DATE', 'DATETIME', 'TIMESTAMP', 'TIMESTAMP_NTZ']:
                         schema_dtypes[col_name] = 'datetime64[ns]'
                     elif col_type in ['BOOLEAN', 'BOOL']:
@@ -1353,13 +1410,14 @@ class DatasetComparator:
         scientific_pattern = r'^-?\d+\.\d+e[+-]\d+$'
         return bool(re.match(scientific_pattern, value))
     
-    def _apply_schema_to_dataframe(self, df: pd.DataFrame, schema_str: str) -> pd.DataFrame:
+    def _apply_schema_to_dataframe(self, df: pd.DataFrame, schema_str: str, key_columns: List[str] = None) -> pd.DataFrame:
         """
         Apply schema to DataFrame to force data types and prevent pandas inference.
         
         Args:
             df: DataFrame to apply schema to
             schema_str: Schema string in format COLUMN_NAME:TYPE,COLUMN_NAME:TYPE
+            key_columns: List of key columns that should be converted to string type for comparison compatibility
             
         Returns:
             DataFrame with applied schema
@@ -1406,6 +1464,9 @@ class DatasetComparator:
                                 self.logger.info(f"✅ Successfully converted {scientific_count} scientific notation values in column '{col_name}'")
                             elif scientific_count_after > 0:
                                 self.logger.warning(f"⚠️ Still have {scientific_count_after} scientific notation values after conversion in column '{col_name}'")
+                        elif target_dtype == 'int64':
+                            # Convert to int64, handling NaN values with nullable integer type
+                            df_with_schema[col_name] = pd.to_numeric(df_with_schema[col_name], errors='coerce').astype('Int64')
                         elif target_dtype == 'float64':
                             # Convert to float64, keeping NaN values
                             df_with_schema[col_name] = pd.to_numeric(df_with_schema[col_name], errors='coerce')
@@ -1424,6 +1485,29 @@ class DatasetComparator:
                         continue
                 else:
                     self.logger.debug(f"🔍 Column '{col_name}' not found in DataFrame")
+            
+            # Ensure key columns are converted to string type for comparison compatibility
+            if key_columns:
+                for key_col in key_columns:
+                    if key_col in df_with_schema.columns and key_col not in schema_dtypes:
+                        try:
+                            self.logger.info(f"🔧 Converting key column '{key_col}' to string for comparison compatibility")
+                            # Convert to string, handling NaN values properly
+                            df_with_schema[key_col] = df_with_schema[key_col].fillna('').astype(str)
+                            # Replace 'nan' strings with empty string to preserve original meaning
+                            df_with_schema[key_col] = df_with_schema[key_col].replace('nan', '')
+                            
+                            # Check for scientific notation and convert if needed
+                            scientific_count = df_with_schema[key_col].apply(self._is_scientific_notation).sum()
+                            if scientific_count > 0:
+                                self.logger.info(f"🔬 Found {scientific_count} values in scientific notation in key column '{key_col}'")
+                                df_with_schema[key_col] = df_with_schema[key_col].apply(
+                                    lambda x: f"{float(x):.0f}" if self._is_scientific_notation(x) else x
+                                )
+                                self.logger.info(f"✅ Converted {scientific_count} scientific notation values in key column '{key_col}'")
+                            
+                        except Exception as e:
+                            self.logger.warning(f"⚠️ Could not convert key column '{key_col}' to string: {e}")
             
             self.logger.info(f"🔧 Schema applied successfully to DataFrame with {len(df_with_schema.columns)} columns")
             return df_with_schema
