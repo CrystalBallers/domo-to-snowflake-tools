@@ -2,7 +2,13 @@
 Dataset comparison utilities for validating data migration between Domo and Snowflake.
 
 This module provides the DatasetComparator class which uses datacompy to perform
-comprehensive comparisons between Domo datasets and Snowflake tables.
+comprehensive comparisons between:
+- Domo datasets and Snowflake tables
+- Domo datasets and CSV files
+- Multiple datasets from Google Sheets configurations
+
+The comparator supports schema comparison, row count validation, and detailed data comparison
+with configurable sampling methods and column name transformations.
 """
 
 import os
@@ -2669,6 +2675,947 @@ class DatasetComparator:
             self.logger.error(f"❌ Executive summary generation failed: {e}")
             return failure_summary
     
+    def compare_with_csv(self, domo_dataset_id: str, csv_file_path: str, 
+                        key_columns: List[str], sample_size: Optional[int] = None,
+                        transform_names: bool = False, sampling_method: str = "random",
+                        csv_encoding: str = "utf-8", csv_separator: str = ",") -> Dict[str, Any]:
+        """
+        Compare Domo dataset with a CSV file.
+        
+        Args:
+            domo_dataset_id: Domo dataset ID
+            csv_file_path: Path to the CSV file
+            key_columns: List of key columns for comparison
+            sample_size: Number of rows to sample (None for full dataset)
+            transform_names: Whether to apply column name transformation
+            sampling_method: Sampling method ('random' or 'ordered')
+            csv_encoding: CSV file encoding (default: utf-8)
+            csv_separator: CSV separator (default: ',')
+            
+        Returns:
+            Complete comparison report dictionary
+        """
+        self.logger.info(f"🚀 Starting CSV comparison: {domo_dataset_id} vs {csv_file_path}")
+        
+        # Log to file
+        self.file_logger.log_comparison_start(
+            domo_dataset_id, f"CSV:{csv_file_path}", key_columns, transform_names
+        )
+        
+        # Clear previous errors
+        self.errors = []
+        
+        # Setup Domo connection if needed
+        if not self._domo_connected:
+            if not self.domo_handler.setup_auth():
+                self.add_error("Connection", "Failed to connect to Domo")
+                return self._get_csv_connection_error_report(domo_dataset_id, csv_file_path, key_columns, transform_names)
+            self._domo_connected = True
+        
+        # Load CSV file
+        try:
+            self.logger.info(f"📁 Loading CSV file: {csv_file_path}")
+            csv_df = pd.read_csv(csv_file_path, encoding=csv_encoding, sep=csv_separator)
+            self.logger.info(f"✅ CSV loaded: {csv_df.shape[0]} rows, {csv_df.shape[1]} columns")
+        except Exception as e:
+            self.add_error("CSV Loading", f"Failed to load CSV file: {csv_file_path}", str(e))
+            return self._get_csv_connection_error_report(domo_dataset_id, csv_file_path, key_columns, transform_names)
+        
+        # Calculate sample size if not provided
+        try:
+            # Get total row count from Domo for sample size calculation
+            domo_count_query = "SELECT COUNT(*) as row_count FROM table"
+            domo_result = self.domo_handler.query_dataset(domo_dataset_id, domo_count_query)
+            total_domo_rows = domo_result['rows'][0][0] if domo_result['rows'] else 0
+            
+            if sample_size is None:
+                sample_size = self.calculate_sample_size(total_domo_rows)
+                
+            self.logger.info(f"Total Domo rows: {total_domo_rows:,}, Sample size: {sample_size:,}")
+            
+        except Exception as e:
+            self.add_error("Sample Size Calculation", "Could not get total row count", str(e))
+            # Use default sample size if calculation fails
+            if sample_size is None:
+                sample_size = 1000
+                self.logger.warning(f"⚠️ Using default sample size: {sample_size}")
+        
+        # Normalize key columns based on transform_names setting (same logic as compare_data_samples)
+        if transform_names:
+            # Apply full transformation to key columns
+            normalized_key_columns = [transform_column_name(col) for col in key_columns]
+            self.logger.info(f"🔄 Key columns normalized for comparison: {key_columns} → {normalized_key_columns}")
+        else:
+            # Keep original key column names, just clean them for compatibility
+            normalized_key_columns = [col.strip('"').strip() for col in key_columns]
+            self.logger.info(f"🔄 Key columns kept original (no transformation): {key_columns} → {normalized_key_columns}")
+        
+        # Note: Domo data will be loaded in synchronized sampling functions below
+        
+        # Get synchronized samples based on key columns (same logic as Domo-Snowflake)
+        try:
+            if sampling_method == "random":
+                # Use smart random sampling to get same records from both sources
+                domo_df, csv_df = self._get_smart_csv_samples(
+                    domo_dataset_id, csv_df, key_columns, sample_size, transform_names
+                )
+            else:
+                # Use ordered sampling to get same records from both sources
+                domo_df, csv_df = self._get_ordered_csv_samples(
+                    domo_dataset_id, csv_df, key_columns, sample_size, transform_names
+                )
+                
+            self.logger.info(f"✅ Synchronized sampling completed:")
+            self.logger.info(f"   📊 Domo: {domo_df.shape[0]} rows, {domo_df.shape[1]} columns")
+            self.logger.info(f"   📊 CSV: {csv_df.shape[0]} rows, {csv_df.shape[1]} columns")
+            
+        except Exception as e:
+            self.add_error("Synchronized Sampling", f"Failed to get synchronized samples", str(e))
+            return self._get_csv_connection_error_report(domo_dataset_id, csv_file_path, key_columns, transform_names)
+        
+        # Apply column transformation if enabled (same logic as compare_data_samples)
+        if transform_names:
+            self.logger.info("🔄 Applying full column name transformation...")
+            
+            # Transform Domo columns using the same function as normal comparisons
+            original_domo_columns = domo_df.columns.tolist()
+            domo_df = transform_dataframe_columns(domo_df)
+            
+            # Transform CSV columns using the same function as normal comparisons
+            original_csv_columns = csv_df.columns.tolist()
+            csv_df = transform_dataframe_columns(csv_df)
+            
+            # Use normalized key columns (already transformed above)
+            key_columns_for_comparison = normalized_key_columns
+            
+            self.logger.info(f"🔄 Full column transformation applied to both DataFrames")
+            self.logger.info(f"🔄 Domo columns transformed: {original_domo_columns} → {domo_df.columns.tolist()}")
+            self.logger.info(f"🔄 CSV columns transformed: {original_csv_columns} → {csv_df.columns.tolist()}")
+        else:
+            # When not transforming, use the original key columns directly
+            key_columns_for_comparison = normalized_key_columns
+            self.logger.info(f"🔄 No column transformation applied")
+        
+        # Perform comparisons using normalized key columns
+        schema_comparison = self._compare_csv_schemas(domo_df, csv_df, transform_names)
+        row_count_comparison = self._compare_csv_row_counts(domo_df, csv_df)
+        data_comparison = self._compare_csv_data_samples(domo_df, csv_df, key_columns_for_comparison, transform_names, domo_dataset_id, csv_file_path)
+        
+        # Determine overall match
+        overall_match = False
+        if not schema_comparison.get('error') and not data_comparison.get('error'):
+            row_count_ok = (row_count_comparison['match'] or 
+                          row_count_comparison.get('negligible_analysis', {}).get('is_negligible', False))
+            
+            overall_match = (schema_comparison['schema_match'] and 
+                           row_count_ok and 
+                           data_comparison.get('data_match', False))
+        
+        # Build result
+        result = {
+            'domo_dataset_id': domo_dataset_id,
+            'csv_file_path': csv_file_path,
+            'key_columns': key_columns,
+            'overall_match': overall_match,
+            'schema_comparison': schema_comparison,
+            'row_count_comparison': row_count_comparison,
+            'data_comparison': data_comparison,
+            'errors': self.errors,
+            'timestamp': pd.Timestamp.now().isoformat(),
+            'transform_applied': transform_names
+        }
+        
+        # Log result to file
+        self.file_logger.log_comparison_result(result)
+        
+        return result
+    
+    def _get_csv_connection_error_report(self, domo_dataset_id: str, csv_file_path: str, 
+                                       key_columns: List[str], transform_names: bool) -> Dict[str, Any]:
+        """Get error report for CSV comparison connection failures."""
+        return {
+            'domo_dataset_id': domo_dataset_id,
+            'csv_file_path': csv_file_path,
+            'key_columns': key_columns,
+            'overall_match': False,
+            'errors': [{'section': 'Connection', 'error': 'Failed to setup connections or load CSV', 'details': ''}],
+            'timestamp': pd.Timestamp.now().isoformat(),
+            'transform_applied': transform_names
+        }
+    
+    def _get_smart_csv_samples(self, domo_dataset_id: str, csv_df: pd.DataFrame, 
+                              key_columns: List[str], sample_size: int, 
+                              transform_names: bool = False) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Get synchronized random samples from Domo and CSV using same key combinations.
+        
+        Args:
+            domo_dataset_id: Domo dataset ID
+            csv_df: CSV DataFrame (already loaded)
+            key_columns: List of key columns for synchronization
+            sample_size: Number of key combinations to sample
+            transform_names: Whether to apply column name transformation
+            
+        Returns:
+            Tuple[domo_df, csv_df] with synchronized samples
+        """
+        self.logger.info("🎲 Using smart CSV random sampling (synchronized)")
+        
+        # Step 1: Get all unique key combinations from CSV (same logic as Snowflake)
+        # Use original CSV column names (before transformation)
+        csv_key_cols = key_columns
+        
+        # Get unique combinations of key columns (same as Snowflake)
+        unique_keys_df = csv_df[csv_key_cols].dropna().drop_duplicates()
+        self.logger.info(f"📊 Found {len(unique_keys_df)} unique key combinations in CSV")
+        
+        if len(unique_keys_df) <= sample_size:
+            # Use all available key combinations
+            self.logger.info(f"📊 Only {len(unique_keys_df)} unique key combinations available, using all")
+            sampled_keys_df = unique_keys_df
+        else:
+            # Random sampling in Python (deterministic, same as Snowflake)
+            self.logger.info(f"🎲 Randomly sampling {sample_size} from {len(unique_keys_df)} unique key combinations...")
+            random.seed(42)
+            sampled_indices = random.sample(range(len(unique_keys_df)), sample_size)
+            sampled_keys_df = unique_keys_df.iloc[sampled_indices].reset_index(drop=True)
+        
+        self.logger.info(f"✅ Selected {len(sampled_keys_df)} key combinations for sampling")
+        
+        # Step 2: Filter CSV data to only include sampled key combinations
+        csv_filtered = csv_df.merge(sampled_keys_df, on=csv_key_cols, how='inner')
+        self.logger.info(f"📊 CSV filtered to {len(csv_filtered)} rows")
+        
+        # Step 3: Get corresponding Domo data for the same keys
+        # Map CSV column names to original Domo column names (same logic as Snowflake)
+        if transform_names:
+            # When transforming, CSV columns become normalized, but Domo query needs original names
+            # For Campaign ID: CSV 'campaign_id' -> normalized 'CAMPAIGN_ID' -> Domo 'Campaign ID'
+            domo_key_cols = ["Campaign ID"]  # Original Domo column names
+        else:
+            # When not transforming, use the CSV column names as-is
+            domo_key_cols = key_columns
+            
+        # Use batching to avoid query length limits (same as Snowflake)
+        max_batch_size = 10  # Same batch size as Snowflake comparisons
+        domo_dfs = []
+        
+        if len(sampled_keys_df) > max_batch_size:
+            self.logger.info(f"🔄 Using batching: {len(sampled_keys_df)} key combinations split into batches of {max_batch_size}")
+            
+            # Split into batches (same logic as Snowflake)
+            for i in range(0, len(sampled_keys_df), max_batch_size):
+                batch_end = min(i + max_batch_size, len(sampled_keys_df))
+                batch_keys_df = sampled_keys_df.iloc[i:batch_end].reset_index(drop=True)
+                batch_num = i//max_batch_size + 1
+                
+                self.logger.info(f"📦 Processing batch {batch_num}: {len(batch_keys_df)} key combinations")
+                
+                # Create WHERE clause for this batch (same logic as Snowflake)
+                # Use simple IN clause for single column (more reliable)
+                if len(csv_key_cols) == 1:
+                    col = csv_key_cols[0]
+                    values = batch_keys_df[col].dropna().tolist()
+                    if all(isinstance(v, str) for v in values):
+                        escaped_values = []
+                        for v in values:
+                            escaped_val = str(v).replace("'", "''")
+                            escaped_values.append(f"'{escaped_val}'")
+                    else:
+                        escaped_values = [str(v) for v in values]
+                    values_str = ', '.join(escaped_values)
+                    domo_query = f"SELECT * FROM table WHERE `Campaign ID` IN ({values_str})"
+                else:
+                    # Fallback to simple logic for multiple columns (force simple approach)
+                    col = csv_key_cols[0]  # Use first column
+                    values = batch_keys_df[col].dropna().tolist()
+                    if all(isinstance(v, str) for v in values):
+                        escaped_values = []
+                        for v in values:
+                            escaped_val = str(v).replace("'", "''")
+                            escaped_values.append(f"'{escaped_val}'")
+                    else:
+                        escaped_values = [str(v) for v in values]
+                    values_str = ', '.join(escaped_values)
+                    domo_query = f"SELECT * FROM table WHERE `Campaign ID` IN ({values_str})"
+                
+                # Query Domo for this batch
+                batch_domo_df = self.domo_handler.extract_data(
+                    dataset_id=domo_dataset_id,
+                    query=domo_query,
+                    enable_auto_type_conversion=True
+                )
+                
+                if batch_domo_df is not None and not batch_domo_df.empty:
+                    domo_dfs.append(batch_domo_df)
+                    self.logger.info(f"📊 Batch {batch_num} returned {len(batch_domo_df)} rows")
+            
+            # Combine all batches
+            if domo_dfs:
+                domo_df = pd.concat(domo_dfs, ignore_index=True)
+                self.logger.info(f"✅ Combined {len(domo_dfs)} batches: Domo {len(domo_df)} rows")
+            else:
+                raise Exception("No data returned from any batch")
+        else:
+            # Single batch for small sample sizes (same logic as Snowflake)
+            # Use simple IN clause for single column (more reliable)
+            self.logger.info(f"🔍 Debug: csv_key_cols = {csv_key_cols}, len = {len(csv_key_cols)}")
+            if len(csv_key_cols) == 1:
+                col = csv_key_cols[0]
+                values = unique_keys_df[col].dropna().tolist()
+                if all(isinstance(v, str) for v in values):
+                    escaped_values = []
+                    for v in values:
+                        escaped_val = str(v).replace("'", "''")
+                        escaped_values.append(f"'{escaped_val}'")
+                else:
+                    escaped_values = [str(v) for v in values]
+                values_str = ', '.join(escaped_values)
+                domo_query = f"SELECT * FROM table WHERE `Campaign ID` IN ({values_str})"
+            else:
+                # Fallback to simple logic for multiple columns (force simple approach)
+                col = csv_key_cols[0]  # Use first column
+                values = unique_keys_df[col].dropna().tolist()
+                if all(isinstance(v, str) for v in values):
+                    escaped_values = []
+                    for v in values:
+                        escaped_val = str(v).replace("'", "''")
+                        escaped_values.append(f"'{escaped_val}'")
+                else:
+                    escaped_values = [str(v) for v in values]
+                values_str = ', '.join(escaped_values)
+                domo_query = f"SELECT * FROM table WHERE `Campaign ID` IN ({values_str})"
+            
+            self.logger.info(f"🔍 Querying Domo for {len(sampled_keys_df)} specific key combinations...")
+            domo_df = self.domo_handler.extract_data(
+                dataset_id=domo_dataset_id,
+                query=domo_query,
+                enable_auto_type_conversion=True
+            )
+            
+            if domo_df is None or domo_df.empty:
+                raise Exception("No data returned from Domo for sampled keys")
+                
+            self.logger.info(f"📊 Domo returned {len(domo_df)} rows")
+        
+        # Step 4: Apply column transformation if needed
+        if transform_names:
+            domo_df = transform_dataframe_columns(domo_df)
+            csv_filtered = transform_dataframe_columns(csv_filtered)
+        
+        return domo_df, csv_filtered
+    
+    def _get_ordered_csv_samples(self, domo_dataset_id: str, csv_df: pd.DataFrame, 
+                                key_columns: List[str], sample_size: int, 
+                                transform_names: bool = False) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Get synchronized ordered samples from Domo and CSV using same key combinations.
+        
+        Args:
+            domo_dataset_id: Domo dataset ID
+            csv_df: CSV DataFrame (already loaded)
+            key_columns: List of key columns for synchronization
+            sample_size: Number of key combinations to sample
+            transform_names: Whether to apply column name transformation
+            
+        Returns:
+            Tuple[domo_df, csv_df] with synchronized samples
+        """
+        self.logger.info("📊 Using ordered CSV sampling (synchronized)")
+        
+        # Step 1: Get first N unique key combinations from CSV (ordered, same logic as Snowflake)
+        # Use original CSV column names (before transformation)
+        csv_key_cols = key_columns
+        
+        # Get first N unique key combinations (ordered by first occurrence)
+        unique_keys_df = csv_df[csv_key_cols].dropna().drop_duplicates().head(sample_size)
+        self.logger.info(f"📊 Selected first {len(unique_keys_df)} unique key combinations from CSV")
+        
+        # Step 2: Filter CSV data to only include selected key combinations
+        csv_filtered = csv_df.merge(unique_keys_df, on=csv_key_cols, how='inner')
+        self.logger.info(f"📊 CSV filtered to {len(csv_filtered)} rows")
+        
+        # Step 3: Get corresponding Domo data for the same keys
+        # Map CSV column names to original Domo column names (same logic as Snowflake)
+        if transform_names:
+            # When transforming, CSV columns become normalized, but Domo query needs original names
+            # For Campaign ID: CSV 'campaign_id' -> normalized 'CAMPAIGN_ID' -> Domo 'Campaign ID'
+            domo_key_cols = ["Campaign ID"]  # Original Domo column names
+        else:
+            # When not transforming, use the CSV column names as-is
+            domo_key_cols = key_columns
+            
+        # Use batching to avoid query length limits (same as Snowflake)
+        max_batch_size = 10  # Same batch size as Snowflake comparisons
+        domo_dfs = []
+        
+        if len(unique_keys_df) > max_batch_size:
+            self.logger.info(f"🔄 Using batching: {len(unique_keys_df)} key combinations split into batches of {max_batch_size}")
+            
+            # Split into batches (same logic as Snowflake)
+            for i in range(0, len(unique_keys_df), max_batch_size):
+                batch_end = min(i + max_batch_size, len(unique_keys_df))
+                batch_keys_df = unique_keys_df.iloc[i:batch_end].reset_index(drop=True)
+                batch_num = i//max_batch_size + 1
+                
+                self.logger.info(f"📦 Processing batch {batch_num}: {len(batch_keys_df)} key combinations")
+                
+                # Create WHERE clause for this batch (same logic as Snowflake)
+                # Use simple IN clause for single column (more reliable)
+                if len(csv_key_cols) == 1:
+                    col = csv_key_cols[0]
+                    values = batch_keys_df[col].dropna().tolist()
+                    if all(isinstance(v, str) for v in values):
+                        escaped_values = []
+                        for v in values:
+                            escaped_val = str(v).replace("'", "''")
+                            escaped_values.append(f"'{escaped_val}'")
+                    else:
+                        escaped_values = [str(v) for v in values]
+                    values_str = ', '.join(escaped_values)
+                    domo_query = f"SELECT * FROM table WHERE `Campaign ID` IN ({values_str})"
+                else:
+                    # Fallback to simple logic for multiple columns (force simple approach)
+                    col = csv_key_cols[0]  # Use first column
+                    values = batch_keys_df[col].dropna().tolist()
+                    if all(isinstance(v, str) for v in values):
+                        escaped_values = []
+                        for v in values:
+                            escaped_val = str(v).replace("'", "''")
+                            escaped_values.append(f"'{escaped_val}'")
+                    else:
+                        escaped_values = [str(v) for v in values]
+                    values_str = ', '.join(escaped_values)
+                    domo_query = f"SELECT * FROM table WHERE `Campaign ID` IN ({values_str})"
+                
+                # Query Domo for this batch
+                batch_domo_df = self.domo_handler.extract_data(
+                    dataset_id=domo_dataset_id,
+                    query=domo_query,
+                    enable_auto_type_conversion=True
+                )
+                
+                if batch_domo_df is not None and not batch_domo_df.empty:
+                    domo_dfs.append(batch_domo_df)
+                    self.logger.info(f"📊 Batch {batch_num} returned {len(batch_domo_df)} rows")
+            
+            # Combine all batches
+            if domo_dfs:
+                domo_df = pd.concat(domo_dfs, ignore_index=True)
+                self.logger.info(f"✅ Combined {len(domo_dfs)} batches: Domo {len(domo_df)} rows")
+            else:
+                raise Exception("No data returned from any batch")
+        else:
+            # Single batch for small sample sizes (same logic as Snowflake)
+            # Use simple IN clause for single column (more reliable)
+            col = csv_key_cols[0]
+            values = unique_keys_df[col].dropna().tolist()
+            if all(isinstance(v, str) for v in values):
+                escaped_values = []
+                for v in values:
+                    escaped_val = str(v).replace("'", "''")
+                    escaped_values.append(f"'{escaped_val}'")
+            else:
+                escaped_values = [str(v) for v in values]
+            values_str = ', '.join(escaped_values)
+            domo_query = f"SELECT * FROM table WHERE `Campaign ID` IN ({values_str})"
+            
+            self.logger.info(f"🔍 Querying Domo for {len(unique_keys_df)} specific key combinations...")
+            domo_df = self.domo_handler.extract_data(
+                dataset_id=domo_dataset_id,
+                query=domo_query,
+                enable_auto_type_conversion=True
+            )
+            
+            if domo_df is None or domo_df.empty:
+                raise Exception("No data returned from Domo for sampled keys")
+                
+            self.logger.info(f"📊 Domo returned {len(domo_df)} rows")
+        
+        # Step 4: Apply column transformation if needed
+        if transform_names:
+            domo_df = transform_dataframe_columns(domo_df)
+            csv_filtered = transform_dataframe_columns(csv_filtered)
+        
+        return domo_df, csv_filtered
+    
+    def _get_domo_sample(self, domo_dataset_id: str, key_columns: List[str], 
+                        sample_size: int, sampling_method: str, transform_names: bool) -> pd.DataFrame:
+        """Get sample data from Domo dataset."""
+        try:
+            # Normalize key columns for Domo queries
+            domo_key_columns = []
+            for col in key_columns:
+                if transform_names:
+                    # Map back to original Domo column name
+                    original_name = self._get_original_domo_column_name(col)
+                    domo_key_columns.append(original_name)
+                else:
+                    domo_key_columns.append(col)
+            
+            if sampling_method == "random":
+                # Get random sample
+                sample_query = f"SELECT * FROM table ORDER BY RAND() LIMIT {sample_size}"
+            else:
+                # Get ordered sample
+                key_cols_str = _escape_domo_column_list_with_nulls_last(domo_key_columns)
+                sample_query = f"SELECT * FROM table ORDER BY {key_cols_str} LIMIT {sample_size}"
+            
+            domo_df = self.domo_handler.extract_data(
+                dataset_id=domo_dataset_id,
+                query=sample_query,
+                enable_auto_type_conversion=True
+            )
+            
+            if transform_names and domo_df is not None and not domo_df.empty:
+                domo_df = transform_dataframe_columns(domo_df)
+            
+            return domo_df
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error getting Domo sample: {e}")
+            return None
+    
+    def _get_domo_full_dataset(self, domo_dataset_id: str, transform_names: bool) -> pd.DataFrame:
+        """Get full dataset from Domo."""
+        try:
+            domo_df = self.domo_handler.extract_data(
+                dataset_id=domo_dataset_id,
+                query="SELECT * FROM table",
+                enable_auto_type_conversion=True
+            )
+            
+            if transform_names and domo_df is not None and not domo_df.empty:
+                domo_df = transform_dataframe_columns(domo_df)
+            
+            return domo_df
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error getting full Domo dataset: {e}")
+            return None
+    
+    def _get_original_domo_column_name(self, normalized_name: str) -> str:
+        """Map normalized column name back to original Domo name."""
+        # For CSV comparison, we'll use the normalized name as-is since we don't have
+        # access to the original Domo column names. In practice, this works well because
+        # the comparison is done after both datasets are loaded and transformed.
+        return normalized_name
+    
+    def _compare_csv_schemas(self, domo_df: pd.DataFrame, csv_df: pd.DataFrame, 
+                            transform_names: bool) -> Dict[str, Any]:
+        """Compare schemas between Domo DataFrame and CSV DataFrame."""
+        try:
+            domo_columns = set(domo_df.columns)
+            csv_columns = set(csv_df.columns)
+            
+            common_columns = domo_columns.intersection(csv_columns)
+            missing_in_csv = list(domo_columns - csv_columns)
+            extra_in_csv = list(csv_columns - domo_columns)
+            
+            # Check for type compatibility (simplified)
+            type_mismatches = []
+            for col in common_columns:
+                domo_type = str(domo_df[col].dtype)
+                csv_type = str(csv_df[col].dtype)
+                # Simple type compatibility check - only flag exact mismatches
+                if domo_type != csv_type:
+                    type_mismatches.append({
+                        'column': col,
+                        'domo_type': domo_type,
+                        'csv_type': csv_type
+                    })
+            
+            schema_match = (len(missing_in_csv) == 0 and 
+                          len(extra_in_csv) == 0 and 
+                          len(type_mismatches) == 0)
+            
+            return {
+                'schema_match': schema_match,
+                'domo_columns': list(domo_columns),
+                'csv_columns': list(csv_columns),
+                'common_columns': list(common_columns),
+                'missing_in_csv': missing_in_csv,
+                'extra_in_csv': extra_in_csv,
+                'type_mismatches': type_mismatches,
+                'error': False
+            }
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error comparing CSV schemas: {e}")
+            return {
+                'schema_match': False,
+                'error': True,
+                'error_message': str(e)
+            }
+    
+    def _compare_csv_row_counts(self, domo_df: pd.DataFrame, csv_df: pd.DataFrame) -> Dict[str, Any]:
+        """Compare row counts between Domo DataFrame and CSV DataFrame."""
+        try:
+            domo_count = len(domo_df)
+            csv_count = len(csv_df)
+            
+            difference = abs(domo_count - csv_count)
+            percentage = (difference / max(domo_count, csv_count)) * 100 if max(domo_count, csv_count) > 0 else 0
+            
+            match = difference == 0
+            
+            # Check if difference is negligible (less than 1%)
+            is_negligible = percentage < 1.0
+            
+            return {
+                'match': match,
+                'domo_count': domo_count,
+                'csv_count': csv_count,
+                'difference': difference,
+                'percentage': percentage,
+                'negligible_analysis': {
+                    'is_negligible': is_negligible,
+                    'reason': f'Difference: {difference} rows ({percentage:.3f}%)',
+                    'percentage': percentage
+                }
+            }
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error comparing CSV row counts: {e}")
+            return {
+                'match': False,
+                'error': True,
+                'error_message': str(e)
+            }
+    
+    def _compare_csv_data_samples(self, domo_df: pd.DataFrame, csv_df: pd.DataFrame, 
+                                 key_columns: List[str], transform_names: bool, 
+                                 domo_dataset_id: str = None, csv_file_path: str = None) -> Dict[str, Any]:
+        """Compare data samples between Domo DataFrame and CSV DataFrame."""
+        try:
+            # Normalize key columns
+            normalized_key_columns = []
+            for col in key_columns:
+                if transform_names:
+                    normalized_key_columns.append(transform_column_name(col))
+                else:
+                    normalized_key_columns.append(col)
+            
+            # Use normalized key columns for comparison
+            key_columns_for_comparison = normalized_key_columns
+            
+            self.logger.info(f"📊 Domo DataFrame shape: {domo_df.shape}, columns: {list(domo_df.columns)}")
+            self.logger.info(f"📊 CSV DataFrame shape: {csv_df.shape}, columns: {list(csv_df.columns)}")
+            self.logger.info(f"📊 Key columns for comparison: {key_columns_for_comparison}")
+            
+            # Normalize data types for key columns to ensure compatibility
+            for col in key_columns_for_comparison:
+                domo_col = None
+                csv_col = None
+                
+                # Find column in Domo DataFrame (case-insensitive)
+                for domo_column in domo_df.columns:
+                    if domo_column.lower() == col.lower():
+                        domo_col = domo_column
+                        break
+                
+                # Find column in CSV DataFrame (case-insensitive)
+                for csv_column in csv_df.columns:
+                    if csv_column.lower() == col.lower():
+                        csv_col = csv_column
+                        break
+                
+                if domo_col and csv_col:
+                    # Convert both to string for comparison to avoid type issues
+                    domo_df[domo_col] = domo_df[domo_col].astype(str)
+                    csv_df[csv_col] = csv_df[csv_col].astype(str)
+                else:
+                    self.logger.warning(f"Key column '{col}' not found in both DataFrames. Domo: {domo_col}, CSV: {csv_col}")
+            
+            # Use datacompy for comparison
+            comparison = datacompy.Compare(
+                domo_df,
+                csv_df,
+                join_columns=key_columns_for_comparison,
+                df1_name='Domo',
+                df2_name='CSV',
+                abs_tol=0.01,
+                rel_tol=0.01
+            )
+            
+            data_match = comparison.matches()
+            
+            # Generate detailed report file
+            report_filename = self._generate_csv_report_file(
+                domo_df, csv_df, comparison, domo_dataset_id, csv_file_path, 
+                key_columns_for_comparison, transform_names
+            )
+            
+            # Build detailed comparison result
+            result = {
+                'data_match': data_match,
+                'domo_rows': len(domo_df),
+                'csv_rows': len(csv_df),
+                'common_rows': len(comparison.intersect_rows),
+                'domo_only_rows': len(comparison.df1_unq_rows),
+                'csv_only_rows': len(comparison.df2_unq_rows),
+                'column_summary': comparison.column_stats,
+                'report_file': report_filename,
+                'error': False
+            }
+            
+            # Add detailed differences if any
+            if not data_match:
+                # Get the number of rows with differences more safely
+                try:
+                    overlap_rows = comparison.all_rows_overlap()
+                    if hasattr(overlap_rows, '__len__'):
+                        overlap_count = len(overlap_rows)
+                    else:
+                        overlap_count = 0
+                except:
+                    overlap_count = 0
+                
+                result['differences'] = {
+                    'common_rows_with_differences': overlap_count,
+                    'columns_with_differences': [col for col, stats in comparison.column_stats.items() 
+                                               if not stats.get('all_match', True)] if hasattr(comparison.column_stats, 'items') else []
+                }
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error comparing CSV data samples: {e}")
+            return {
+                'data_match': False,
+                'error': True,
+                'error_message': str(e)
+            }
+    
+    def print_csv_report(self, report: Dict[str, Any]):
+        """Print CSV comparison report in a readable format."""
+        print("\n" + "="*80)
+        print("DOMO vs CSV COMPARISON REPORT")
+        print("="*80)
+        
+        print(f"📊 Domo Dataset: {report['domo_dataset_id']}")
+        print(f"📁 CSV File: {report['csv_file_path']}")
+        print(f"🔑 Key Columns: {', '.join(report['key_columns'])}")
+        print(f"⏰ Timestamp: {report['timestamp']}")
+        print(f"🔄 Column Transformation: {'Applied' if report.get('transform_applied') else 'Not Applied'}")
+        
+        # Show errors
+        if report.get('errors'):
+            print(f"\n⚠️  ERRORS ({len(report['errors'])}):")
+            for i, error in enumerate(report['errors'], 1):
+                print(f"   {i}. {error['section']}: {error['error']}")
+                if error.get('details'):
+                    print(f"      Details: {error['details']}")
+        
+        # Overall status
+        if report.get('errors'):
+            print(f"\n🎯 OVERALL STATUS: ❌ ERRORS FOUND")
+        elif report['overall_match']:
+            print(f"\n🎯 OVERALL STATUS: ✅ PERFECT MATCH")
+        else:
+            print(f"\n🎯 OVERALL STATUS: ❌ DISCREPANCIES FOUND")
+        
+        # Schema comparison
+        schema = report['schema_comparison']
+        print(f"\n📋 SCHEMA COMPARISON:")
+        if schema.get('error'):
+            print("   ❌ Error comparing schemas")
+        else:
+            print(f"   Domo columns: {schema['domo_columns']}")
+            print(f"   CSV columns: {schema['csv_columns']}")
+            print(f"   Common columns: {schema['common_columns']}")
+            
+            if schema['missing_in_csv']:
+                print(f"   ❌ Missing in CSV: {schema['missing_in_csv']}")
+            if schema['extra_in_csv']:
+                print(f"   ⚠️  Extra in CSV: {schema['extra_in_csv']}")
+            if schema['type_mismatches']:
+                print(f"   🔄 Type mismatches: {len(schema['type_mismatches'])}")
+            
+            if schema['schema_match']:
+                print(f"   ✅ Schema matches")
+            else:
+                print(f"   ❌ Schema differences found")
+        
+        # Row count comparison
+        row_count = report['row_count_comparison']
+        print(f"\n📊 ROW COUNT COMPARISON:")
+        if row_count.get('error'):
+            print("   ❌ Error comparing row counts")
+        else:
+            print(f"   Domo rows: {row_count['domo_count']:,}")
+            print(f"   CSV rows: {row_count['csv_count']:,}")
+            print(f"   Difference: {row_count['difference']:,}")
+            print(f"   Percentage: {row_count['percentage']:.3f}%")
+            
+            if row_count['match']:
+                print(f"   ✅ Row counts match")
+            elif row_count['negligible_analysis']['is_negligible']:
+                print(f"   ⚠️  Negligible difference: {row_count['negligible_analysis']['reason']}")
+            else:
+                print(f"   ❌ Significant difference: {row_count['negligible_analysis']['reason']}")
+        
+        # Data comparison
+        data = report['data_comparison']
+        print(f"\n🔍 DATA COMPARISON:")
+        if data.get('error'):
+            print("   ❌ Error comparing data")
+        else:
+            print(f"   Domo rows: {data['domo_rows']:,}")
+            print(f"   CSV rows: {data['csv_rows']:,}")
+            print(f"   Common rows: {data['common_rows']:,}")
+            print(f"   Domo only: {data['domo_only_rows']:,}")
+            print(f"   CSV only: {data['csv_only_rows']:,}")
+            
+            if data['data_match']:
+                print(f"   ✅ Data matches perfectly")
+            else:
+                print(f"   ❌ Data differences found")
+                if 'differences' in data:
+                    diff = data['differences']
+                    print(f"   Common rows with differences: {diff['common_rows_with_differences']:,}")
+                    if diff['columns_with_differences']:
+                        print(f"   Columns with differences: {', '.join(diff['columns_with_differences'])}")
+            
+            # Show report file if available
+            if data.get('report_file'):
+                print(f"   📄 Detailed report: {data['report_file']}")
+        
+        print("="*80)
+
+    def _generate_csv_report_file(self, domo_df: pd.DataFrame, csv_df: pd.DataFrame, 
+                                 comparison, domo_dataset_id: str, csv_file_path: str,
+                                 key_columns: List[str], transform_names: bool) -> str:
+        """Generate detailed CSV comparison report file."""
+        try:
+            # Create safe filename
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe_domo_id = domo_dataset_id.replace('/', '_').replace('\\', '_')
+            safe_csv_name = os.path.basename(csv_file_path).replace('.csv', '').replace('/', '_').replace('\\', '_')
+            safe_base = f"CSV_COMPARISON_{safe_domo_id}_{safe_csv_name}"
+            
+            # Create QA reports directory structure
+            qa_reports_dir = "results/txt/qa"
+            os.makedirs(qa_reports_dir, exist_ok=True)
+            
+            report_filename = os.path.join(qa_reports_dir, f"{safe_base}_{timestamp}.txt")
+            
+            with open(report_filename, 'w', encoding='utf-8') as f:
+                f.write(f"CSV COMPARISON REPORT\n")
+                f.write(f"Domo Dataset: {domo_dataset_id}\n")
+                f.write(f"CSV File: {csv_file_path}\n")
+                f.write(f"Key Columns: {', '.join(key_columns)}\n")
+                f.write(f"Transform Applied: {transform_names}\n")
+                f.write(f"Timestamp: {datetime.now().isoformat()}\n")
+                f.write("="*80 + "\n\n")
+                
+                # Write summary statistics
+                f.write("SUMMARY STATISTICS\n")
+                f.write("-"*40 + "\n")
+                f.write(f"Domo rows: {len(domo_df):,}\n")
+                f.write(f"CSV rows: {len(csv_df):,}\n")
+                f.write(f"Common rows: {len(comparison.intersect_rows):,}\n")
+                f.write(f"Domo only: {len(comparison.df1_unq_rows):,}\n")
+                f.write(f"CSV only: {len(comparison.df2_unq_rows):,}\n")
+                f.write(f"Overall match: {comparison.matches()}\n\n")
+                
+                # Write column comparison
+                f.write("COLUMN COMPARISON\n")
+                f.write("-"*40 + "\n")
+                if hasattr(comparison.column_stats, 'items'):
+                    for col, stats in comparison.column_stats.items():
+                        f.write(f"{col}: {stats.get('match_count', 0)}/{stats.get('total_count', 0)} ({stats.get('match_rate', 0):.2%}) match\n")
+                else:
+                    f.write("Column statistics not available\n")
+                f.write("\n")
+                
+                # Write detailed datacompy report
+                f.write("DETAILED COMPARISON\n")
+                f.write("-"*40 + "\n")
+                try:
+                    datacompy_report = comparison.report()
+                    f.write(datacompy_report)
+                except Exception as e:
+                    f.write(f"Could not generate detailed report: {e}\n")
+                
+                # Write sample data if there are differences
+                if not comparison.matches():
+                    f.write("\n\nSAMPLE DIFFERENCES\n")
+                    f.write("-"*40 + "\n")
+                    
+                    # Write sample of Domo-only rows
+                    if len(comparison.df1_unq_rows) > 0:
+                        f.write(f"\nSample of {min(5, len(comparison.df1_unq_rows))} rows only in Domo:\n")
+                        sample_domo_only = comparison.df1_unq_rows.head(5)
+                        f.write(sample_domo_only.to_string())
+                        f.write("\n")
+                    
+                    # Write sample of CSV-only rows
+                    if len(comparison.df2_unq_rows) > 0:
+                        f.write(f"\nSample of {min(5, len(comparison.df2_unq_rows))} rows only in CSV:\n")
+                        sample_csv_only = comparison.df2_unq_rows.head(5)
+                        f.write(sample_csv_only.to_string())
+                        f.write("\n")
+            
+            self.logger.info(f"📄 Detailed CSV report saved to: {report_filename}")
+            return report_filename
+            
+        except Exception as e:
+            self.logger.error(f"❌ Error generating CSV report file: {e}")
+            return ""
+
+    def quick_csv_compare(self, domo_dataset_id: str, csv_file_path: str, 
+                         key_columns: List[str], sample_size: int = 1000) -> bool:
+        """
+        Quick CSV comparison with sensible defaults.
+        
+        Args:
+            domo_dataset_id: Domo dataset ID
+            csv_file_path: Path to the CSV file
+            key_columns: List of key columns for comparison
+            sample_size: Number of rows to sample (default: 1000)
+            
+        Returns:
+            True if datasets match, False otherwise
+        """
+        try:
+            report = self.compare_with_csv(
+                domo_dataset_id=domo_dataset_id,
+                csv_file_path=csv_file_path,
+                key_columns=key_columns,
+                sample_size=sample_size,
+                transform_names=True,
+                sampling_method="random"
+            )
+            
+            # Print a simplified report
+            print(f"\n📊 Quick Comparison: {domo_dataset_id} vs {csv_file_path}")
+            print(f"🔑 Key columns: {', '.join(key_columns)}")
+            print(f"📏 Sample size: {sample_size if sample_size else 'Full dataset'}")
+            
+            if report['overall_match']:
+                print("✅ Result: PERFECT MATCH")
+            else:
+                print("❌ Result: DIFFERENCES FOUND")
+                
+                # Show key differences
+                schema = report['schema_comparison']
+                if not schema.get('error'):
+                    if schema['missing_in_csv']:
+                        print(f"   Missing in CSV: {schema['missing_in_csv']}")
+                    if schema['extra_in_csv']:
+                        print(f"   Extra in CSV: {schema['extra_in_csv']}")
+                
+                row_count = report['row_count_comparison']
+                if not row_count.get('error'):
+                    print(f"   Row count difference: {row_count['difference']} ({row_count['percentage']:.1f}%)")
+            
+            return report['overall_match']
+            
+        except Exception as e:
+            print(f"❌ Error during comparison: {e}")
+            return False
+
     def cleanup(self):
         """Clean up resources."""
         if self.snowflake_handler:

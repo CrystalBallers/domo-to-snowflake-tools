@@ -504,15 +504,31 @@ def handle_compare_command(args) -> int:
         logger.error("Use --domo-dataset-id to specify the dataset to compare")
         return 1
     
-    if not args.snowflake_table:
-        logger.error("❌ Snowflake table name is required")
-        logger.error("Use --snowflake-table to specify the table to compare")
-        return 1
-    
-    if not args.key_columns:
-        logger.error("❌ Key columns are required for comparison")
-        logger.error("Use --key-columns to specify one or more key columns")
-        return 1
+    # Check if comparing with CSV or Snowflake table
+    if args.csv_file:
+        # CSV comparison mode
+        if not args.key_columns:
+            logger.error("❌ Key columns are required for CSV comparison")
+            logger.error("Use --key-columns to specify one or more key columns")
+            return 1
+        
+        # Verify CSV file exists
+        if not os.path.exists(args.csv_file):
+            logger.error(f"❌ CSV file not found: {args.csv_file}")
+            return 1
+            
+    else:
+        # Snowflake comparison mode
+        if not args.snowflake_table:
+            logger.error("❌ Snowflake table name is required")
+            logger.error("Use --snowflake-table to specify the table to compare")
+            logger.error("Or use --csv-file to compare with a CSV file")
+            return 1
+        
+        if not args.key_columns:
+            logger.error("❌ Key columns are required for comparison")
+            logger.error("Use --key-columns to specify one or more key columns")
+            return 1
     
     # Test connection mode
     if args.test_connection:
@@ -536,10 +552,18 @@ def handle_compare_command(args) -> int:
                 pass
     
     # Perform comparison
-    logger.info("🚀 Starting Domo vs Snowflake comparison...")
-    logger.info(f"📊 Domo Dataset ID: {args.domo_dataset_id}")
-    logger.info(f"❄️  Snowflake Table: {args.snowflake_table}")
-    logger.info(f"🔑 Key Columns: {', '.join(args.key_columns)}")
+    if args.csv_file:
+        logger.info("🚀 Starting Domo vs CSV comparison...")
+        logger.info(f"📊 Domo Dataset ID: {args.domo_dataset_id}")
+        logger.info(f"📁 CSV File: {args.csv_file}")
+        logger.info(f"🔑 Key Columns: {', '.join(args.key_columns)}")
+        logger.info(f"📝 CSV Encoding: {args.csv_encoding}")
+        logger.info(f"📝 CSV Separator: '{args.csv_separator}'")
+    else:
+        logger.info("🚀 Starting Domo vs Snowflake comparison...")
+        logger.info(f"📊 Domo Dataset ID: {args.domo_dataset_id}")
+        logger.info(f"❄️  Snowflake Table: {args.snowflake_table}")
+        logger.info(f"🔑 Key Columns: {', '.join(args.key_columns)}")
     
     if args.sample_size:
         logger.info(f"📏 Sample Size: {args.sample_size:,}")
@@ -557,23 +581,47 @@ def handle_compare_command(args) -> int:
         # Initialize the comparator
         comparator = DatasetComparator()
         
-        # Setup connections
-        if not comparator.setup_connections():
-            logger.error("❌ Failed to setup connections")
-            return 1
+        # Setup connections (only Domo needed for CSV comparison)
+        if args.csv_file:
+            # For CSV comparison, only need Domo connection
+            if not comparator.domo_handler.setup_auth():
+                logger.error("❌ Failed to setup Domo connection")
+                return 1
+        else:
+            # For Snowflake comparison, need both connections
+            if not comparator.setup_connections():
+                logger.error("❌ Failed to setup connections")
+                return 1
         
         # Generate comparison report
-        report = comparator.generate_report(
-            domo_dataset_id=args.domo_dataset_id,
-            snowflake_table=args.snowflake_table,
-            key_columns=args.key_columns,
-            sample_size=args.sample_size,
-            transform_names=args.transform_columns,
-            sampling_method=args.sampling_method
-        )
-        
-        # Print the report
-        comparator.print_report(report)
+        if args.csv_file:
+            # CSV comparison
+            report = comparator.compare_with_csv(
+                domo_dataset_id=args.domo_dataset_id,
+                csv_file_path=args.csv_file,
+                key_columns=args.key_columns,
+                sample_size=args.sample_size,
+                transform_names=args.transform_columns,
+                sampling_method=args.sampling_method,
+                csv_encoding=args.csv_encoding,
+                csv_separator=args.csv_separator
+            )
+            
+            # Print the CSV report
+            comparator.print_csv_report(report)
+        else:
+            # Snowflake comparison
+            report = comparator.generate_report(
+                domo_dataset_id=args.domo_dataset_id,
+                snowflake_table=args.snowflake_table,
+                key_columns=args.key_columns,
+                sample_size=args.sample_size,
+                transform_names=args.transform_columns,
+                sampling_method=args.sampling_method
+            )
+            
+            # Print the Snowflake report
+            comparator.print_report(report)
         
         # Determine exit code based on comparison results
         if report.get('errors'):
@@ -1280,7 +1328,7 @@ Environment Variables:
     # Compare subcommand
     compare_parser = subparsers.add_parser(
         'compare',
-        help='Compare a Domo dataset with a Snowflake table'
+        help='Compare a Domo dataset with a Snowflake table or CSV file'
     )
     
     compare_parser.add_argument(
@@ -1290,7 +1338,7 @@ Environment Variables:
     
     compare_parser.add_argument(
         "--snowflake-table",
-        help="Snowflake table name to compare"
+        help="Snowflake table name to compare (required if not using --csv-file)"
     )
     
     compare_parser.add_argument(
@@ -1358,6 +1406,24 @@ Environment Variables:
         "--use-schema",
         action="store_true",
         help="Use Schema column from spreadsheet to force data types (prevents pandas type inference)"
+    )
+    
+    # CSV comparison options
+    compare_parser.add_argument(
+        "--csv-file",
+        help="Path to CSV file for comparison (alternative to Snowflake table)"
+    )
+    
+    compare_parser.add_argument(
+        "--csv-encoding",
+        default="utf-8",
+        help="CSV file encoding (default: utf-8)"
+    )
+    
+    compare_parser.add_argument(
+        "--csv-separator",
+        default=",",
+        help="CSV separator (default: ',')"
     )
     
     # Generate STG subcommand
