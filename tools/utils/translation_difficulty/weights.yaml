@@ -1,0 +1,41 @@
+# Base minutes per Domo Magic ETL action type (1 point ≈ 1 minute).
+# SelectValues is always 1 minute in code (not overridable here).
+defaults:
+  unknown_type_minutes: 20
+  bucket_chars: 500
+  minutes_per_bucket: 0.75
+  length_addon_cap: 15
+  # Fallback when SQL render is empty (uses serialized action size)
+  fallback_bucket_chars: 800
+  fallback_minutes_per_bucket: 0.5
+  fallback_length_cap: 12
+
+type_base_minutes:
+  LoadFromVault: 1
+  PublishToVault: 1
+  Metadata: 1
+  Order: 2
+  Unique: 3
+  Constant: 1
+  Filter: 6
+  ReplaceString: 2
+  TextFormatting: 2
+  ValueMapper: 2
+  SetValueField: 2
+  ConcatFields: 2
+  SplitColumnAction: 3
+  GroupBy: 5
+  UnionAll: 5
+  MergeJoin: 5
+  Normalizer: 10
+  NormalizeAll: 10
+  Denormaliser: 10
+  WindowAction: 5
+  GenerateTableAction: 10
+  ExpressionEvaluator: 10
+  NumericCalculator: 7
+  StringCalculator: 7
+  DateCalculator: 5
+  SqlAction: 30
+  SQL: 30
+  PythonEngineAction: 30

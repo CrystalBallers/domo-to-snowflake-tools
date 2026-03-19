@@ -1,25 +1,7 @@
 """
 Tools package for Domo to Snowflake migration.
 
-This package contains utilities for handling various data migration tasks.
+Submodules (e.g. tools.inventory_handler, tools.utils.translation_difficulty) are
+imported explicitly where needed. This package root stays lightweight so utilities
+like translation_difficulty can run without optional deps required by other tools.
 """
-
-from .inventory_handler import InventoryHandler, export_dataflows_to_sql
-from .domo_to_snowflake import (
-    migrate_dataset, 
-    batch_migrate_datasets, 
-    migrate_from_spreadsheet,
-    MigrationManager
-)
-from .utils.domo import DomoHandler, export_datasets_to_spreadsheet
-
-__all__ = [
-    "InventoryHandler",
-    "export_dataflows_to_sql",
-    "migrate_dataset",
-    "batch_migrate_datasets",
-    "migrate_from_spreadsheet",
-    "MigrationManager",
-    "DomoHandler",
-    "export_datasets_to_spreadsheet",
-] 

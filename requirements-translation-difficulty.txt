@@ -1,0 +1,10 @@
+# Optional: translation difficulty scorer (Domo list/get + ETL translator + Sheets write).
+# Install from Domo-to-snowflake-migration root after requirements.txt:
+#
+#   pip install -r requirements.txt
+#   pip install -r requirements-translation-difficulty.txt
+#
+# Adjust the path if argo-utils-cli is not a sibling directory.
+
+-r requirements.txt
+-e ../argo-utils-cli
