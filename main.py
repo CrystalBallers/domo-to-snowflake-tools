@@ -6,6 +6,7 @@ This script provides a unified interface for various migration utilities includi
 - Inventory extraction from Google Sheets
 - SQL export functionality
 - Data migration tools
+- Dataflow translation difficulty scoring (``weighting`` → Google Sheets)
 """
 
 import os
@@ -40,7 +41,7 @@ try:
         migrate_from_spreadsheet_to_stage,
         MigrationManager
     )
-    from tools.utils import DomoHandler, SnowflakeHandler, DatasetComparator
+    from tools.utils import DomoHandler, SnowflakeHandler
     from tools.utils import show_mfa_debug_info, reload_environment
     from tools.utils.domo import export_datasets_to_spreadsheet, DomoHandler
     from tools.get_all_stg_files import get_stg_files_data, generate_stg_files_from_dataframe
@@ -48,6 +49,14 @@ try:
 except ImportError as e:
     logger.error(f"Failed to import required modules: {e}")
     sys.exit(1)
+
+
+def _make_dataset_comparator():
+    """Lazy import: compare command needs datacompy; weighting and other commands do not."""
+    from tools.dataset_comparator import DatasetComparator
+
+    return DatasetComparator()
+
 
 def test_inventory_connection(credentials_path: Optional[str] = None) -> bool:
     """
@@ -534,7 +543,7 @@ def handle_compare_command(args) -> int:
     if args.test_connection:
         logger.info("🧪 Testing connections for comparison...")
         try:
-            comparator = DatasetComparator()
+            comparator = _make_dataset_comparator()
             success = comparator.setup_connections()
             if success:
                 logger.info("✅ All connections for comparison tested successfully!")
@@ -579,7 +588,7 @@ def handle_compare_command(args) -> int:
     
     try:
         # Initialize the comparator
-        comparator = DatasetComparator()
+        comparator = _make_dataset_comparator()
         
         # Setup connections (only Domo needed for CSV comparison)
         if args.csv_file:
@@ -677,7 +686,7 @@ def handle_compare_from_spreadsheet(args) -> int:
     
     try:
         # Initialize the comparator
-        comparator = DatasetComparator()
+        comparator = _make_dataset_comparator()
         
         # Run comparisons from spreadsheet
         results = comparator.compare_from_spreadsheet(
@@ -736,7 +745,7 @@ def handle_compare_from_inventory(args) -> int:
     
     try:
         # Initialize the comparator
-        comparator = DatasetComparator()
+        comparator = _make_dataset_comparator()
         
         # Run comparisons from inventory
         results = comparator.compare_from_inventory(
@@ -1011,6 +1020,26 @@ def handle_generate_sources_command(args) -> int:
         return 1
 
 
+def handle_weighting_command(args) -> int:
+    """
+    Forward to the translation-difficulty CLI (tools.utils.translation_difficulty).
+
+    Expects remaining argv on ``args.weighting_argv`` (everything after ``weighting``).
+    """
+    argv = list(getattr(args, "weighting_argv", None) or [])
+    if argv and argv[0] == "":
+        argv = argv[1:]
+    try:
+        from tools.utils.translation_difficulty.cli import main as td_main
+    except ImportError as e:
+        logger.error(
+            "Translation difficulty / weighting requires domo_utils (install argo-utils-cli). %s",
+            e,
+        )
+        return 1
+    return td_main(argv)
+
+
 def create_parser() -> argparse.ArgumentParser:
     """
     Create the main argument parser with subcommands.
@@ -1074,6 +1103,12 @@ Examples:
     # Use custom credentials file
     python main.py inventory --credentials /path/to/creds.json --export-dir output
 
+    # Translation difficulty: export Domo dataflow list to Inventory tab
+    python main.py weighting export-inventory
+
+    # Score flows from Inventory sheet (same flags as tools.utils.translation_difficulty)
+    python main.py weighting score --from-sheet Inventory --max-dataflows 10
+
 Features:
     🔧 Automatic column normalization for Snowflake compatibility (UPPERCASE)
     🏔️  X-Small warehouse optimization
@@ -1112,6 +1147,7 @@ Environment Variables:
     MIGRATION_SHEET_NAME: Default sheet name for migrations (default: Migration)
     COMPARISON_SHEET_NAME: Default sheet name for comparisons (default: QA - Test)
     INTERMEDIATE_MODELS_SHEET_NAME: Default sheet name for inventory (default: Inventory)
+    TRANSLATION_DIFFICULTY_*: See docs/TRANSLATION_DIFFICULTY.md (weighting command)
     DOMO_DEVELOPER_TOKEN: Domo API developer token
     DOMO_INSTANCE: Domo instance name
     SNOWFLAKE_ACCOUNT: Snowflake account identifier
@@ -1518,7 +1554,21 @@ Environment Variables:
         default="sources_auto.yml",
         help="Output file name (default: sources_auto.yml)"
     )
-    
+
+    weighting_parser = subparsers.add_parser(
+        "weighting",
+        help="Score dataflow translation difficulty (Snowflake) and write Google Sheets",
+        description=(
+            "Forwards to the translation-difficulty tool. Put its options and subcommand "
+            "after 'weighting'. Full reference: docs/TRANSLATION_DIFFICULTY.md"
+        ),
+    )
+    weighting_parser.add_argument(
+        "weighting_argv",
+        nargs=argparse.REMAINDER,
+        help="e.g. export-inventory | score --from-sheet Inventory [--credentials ...]",
+    )
+
     return parser
 
 
@@ -1552,7 +1602,9 @@ def main() -> int:
         return handle_generate_stg_command(args)
     elif args.command == 'generate-sources':
         return handle_generate_sources_command(args)
-    
+    elif args.command == 'weighting':
+        return handle_weighting_command(args)
+
     # If we get here, unknown command
     logger.error(f"❌ Unknown command: {args.command}")
     parser.print_help()
