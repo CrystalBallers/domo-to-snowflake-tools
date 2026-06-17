@@ -26,6 +26,8 @@ if TYPE_CHECKING:
 
 # Default scopes for read-only access, can be expanded as needed
 DEFAULT_SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+# Alias kept for callers/tests that import the read-only scopes by this name.
+READ_ONLY_SCOPES = DEFAULT_SCOPES
 # For read and write access
 READ_WRITE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 

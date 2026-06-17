@@ -60,7 +60,7 @@ class TestCLIArgumentParsing:
 class TestInventoryCommands:
     """Test inventory command functionality."""
     
-    @patch('main.test_inventory_connection')
+    @patch('tools.cli.commands.test_inventory_connection')
     def test_inventory_test_connection(self, mock_test_conn, mock_args):
         """Test inventory test connection command."""
         mock_test_conn.return_value = True
@@ -75,8 +75,8 @@ class TestInventoryCommands:
         assert result == 0
         mock_test_conn.assert_called_once()
     
-    @patch('main.export_dataflows_to_sql')
-    @patch('main.test_inventory_connection')
+    @patch('tools.cli.commands.export_dataflows_to_sql')
+    @patch('tools.cli.commands.test_inventory_connection')
     def test_inventory_export_success(self, mock_test_conn, mock_export, mock_args):
         """Test successful inventory export."""
         mock_test_conn.return_value = True
@@ -93,8 +93,8 @@ class TestInventoryCommands:
         assert result == 0
         mock_export.assert_called_once_with('test_results/sql/translated', None)
     
-    @patch('main.export_dataflows_to_sql')
-    @patch('main.test_inventory_connection')
+    @patch('tools.cli.commands.export_dataflows_to_sql')
+    @patch('tools.cli.commands.test_inventory_connection')
     def test_inventory_export_failure(self, mock_test_conn, mock_export, mock_args):
         """Test inventory export failure."""
         mock_test_conn.return_value = True
@@ -110,7 +110,7 @@ class TestInventoryCommands:
         result = main.handle_inventory_command(args)
         assert result == 1
     
-    @patch('main.test_inventory_connection')
+    @patch('tools.cli.commands.test_inventory_connection')
     def test_inventory_connection_failure(self, mock_test_conn, mock_args):
         """Test inventory connection failure."""
         mock_test_conn.return_value = False
@@ -129,7 +129,7 @@ class TestInventoryCommands:
 class TestMigrationCommands:
     """Test migration command functionality."""
     
-    @patch('main.test_migration_connections')
+    @patch('tools.cli.commands.test_migration_connections')
     def test_migration_test_connection(self, mock_test_conn, mock_args):
         """Test migration test connection command."""
         mock_test_conn.return_value = True
@@ -147,8 +147,8 @@ class TestMigrationCommands:
         assert result == 0
         mock_test_conn.assert_called_once()
     
-    @patch('main.migrate_dataset')
-    @patch('main.test_migration_connections')
+    @patch('tools.cli.commands.migrate_dataset')
+    @patch('tools.cli.commands.test_migration_connections')
     def test_single_dataset_migration_success(self, mock_test_conn, mock_migrate, mock_args):
         """Test successful single dataset migration."""
         mock_test_conn.return_value = True
@@ -167,8 +167,8 @@ class TestMigrationCommands:
         assert result == 0
         mock_migrate.assert_called_once_with('test_dataset_123', 'test_table')
     
-    @patch('main.migrate_dataset')
-    @patch('main.test_migration_connections')
+    @patch('tools.cli.commands.migrate_dataset')
+    @patch('tools.cli.commands.test_migration_connections')
     def test_single_dataset_migration_failure(self, mock_test_conn, mock_migrate, mock_args):
         """Test failed single dataset migration."""
         mock_test_conn.return_value = True
@@ -186,8 +186,8 @@ class TestMigrationCommands:
         result = main.handle_migrate_command(args)
         assert result == 1
     
-    @patch('main.batch_migrate_datasets')
-    @patch('main.test_migration_connections')
+    @patch('tools.cli.commands.batch_migrate_datasets')
+    @patch('tools.cli.commands.test_migration_connections')
     def test_batch_migration_success(self, mock_test_conn, mock_batch_migrate, mock_args, temp_dir, sample_json_mapping):
         """Test successful batch migration."""
         mock_test_conn.return_value = True
@@ -212,8 +212,8 @@ class TestMigrationCommands:
         assert result == 0
         mock_batch_migrate.assert_called_once_with(json_file)
     
-    @patch('main.migrate_from_spreadsheet')
-    @patch('main.test_migration_connections')
+    @patch('tools.cli.commands.migrate_from_spreadsheet')
+    @patch('tools.cli.commands.test_migration_connections')
     def test_spreadsheet_migration_success(self, mock_test_conn, mock_spreadsheet_migrate, mock_args):
         """Test successful spreadsheet migration."""
         mock_test_conn.return_value = True
@@ -238,7 +238,7 @@ class TestMigrationCommands:
 class TestComparisonCommands:
     """Test comparison command functionality."""
     
-    @patch('main.DatasetComparator')
+    @patch('tools.cli.commands.DatasetComparator')
     def test_comparison_test_connection(self, mock_comparator_class, mock_args):
         """Test comparison test connection command."""
         mock_comparator = Mock()
@@ -257,7 +257,7 @@ class TestComparisonCommands:
         assert result == 0
         mock_comparator.setup_connections.assert_called_once()
     
-    @patch('main.DatasetComparator')
+    @patch('tools.cli.commands.DatasetComparator')
     def test_single_comparison_success(self, mock_comparator_class, mock_args):
         """Test successful single dataset comparison."""
         mock_comparator = Mock()
@@ -288,7 +288,7 @@ class TestComparisonCommands:
 class TestDatasetCommands:
     """Test dataset command functionality."""
     
-    @patch('main.DomoHandler')
+    @patch('tools.cli.commands.DomoHandler')
     def test_dataset_test_connection(self, mock_domo_class, mock_args):
         """Test dataset test connection command."""
         mock_domo = Mock()
@@ -307,7 +307,7 @@ class TestDatasetCommands:
         assert result == 0
         mock_domo.test_connection.assert_called_once()
     
-    @patch('main.DomoHandler')
+    @patch('tools.cli.commands.DomoHandler')
     def test_list_local_datasets(self, mock_domo_class, mock_args):
         """Test listing local datasets."""
         mock_domo = Mock()
@@ -368,7 +368,7 @@ class TestMainFunction:
 class TestErrorHandling:
     """Test error handling in CLI commands."""
     
-    @patch('main.export_dataflows_to_sql')
+    @patch('tools.cli.commands.export_dataflows_to_sql')
     def test_inventory_handles_exceptions(self, mock_export, mock_args):
         """Test that inventory command handles exceptions gracefully."""
         mock_export.side_effect = Exception("Test exception")
@@ -383,7 +383,7 @@ class TestErrorHandling:
         result = main.handle_inventory_command(args)
         assert result == 1
     
-    @patch('main.migrate_dataset')
+    @patch('tools.cli.commands.migrate_dataset')
     def test_migration_handles_exceptions(self, mock_migrate, mock_args):
         """Test that migration command handles exceptions gracefully."""
         mock_migrate.side_effect = Exception("Test exception")

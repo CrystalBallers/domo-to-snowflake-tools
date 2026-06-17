@@ -48,65 +48,65 @@ A comprehensive suite of tools for migrating data from Domo to Snowflake, with a
 - **Domo**: Developer token and instance name
 - **Snowflake**: Account credentials with write permissions
 
-## 🛠 Installation
+## 🛠 Run it locally
 
-### 1. Clone the Repository
-```bash
-git clone https://github.com/<user>/<repository>.git <destination_folder_name>
-cd Domo-to-snowflake-migration
-```
+The tool depends on [`argo-utils-cli`](https://github.com/CrystalBallers/argo-utils-cli)
+(which provides the `domo_utils` package). Clone it into the project root first — both
+the Docker and the virtualenv paths below install it from there:
 
-### 2. Create Virtual Environment (Recommended)
 ```bash
-# If you don't have Python 3.11 installed:
-# - macOS (Homebrew): brew install python@3.11 && brew link python@3.11 --force
-# - Windows: Download and install from https://www.python.org/downloads/release/python-3110/
-#   (make sure to check "Add Python to PATH" during installation)
-python3.11 -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-```
-
-### 3. Clone, install and clean argo-utils-cli 
-```bash
+git clone <this-repo-url> domo-to-snowflake-tools
+cd domo-to-snowflake-tools
 git clone https://github.com/CrystalBallers/argo-utils-cli.git argo-utils-cli
-pip install -e ./argo-utils-cli # (Not Yet) && rm -rf argo-utils-cli
+cp .env.example .env          # then edit .env with your credentials (see Configuration)
 ```
 
-### 4. Install Dependencies
+### Option A — Docker (recommended)
+
+No local Python needed. The image is Python 3.11 and installs `argo-utils-cli` +
+`requirements.txt` for you.
+
 ```bash
-pip install -r requirements.txt
+# 1. Put your Google service-account JSON here (mounted read-only into the container):
+mkdir -p secrets && cp /path/to/service-account.json secrets/credentials.json
+
+# 2. Build the image
+docker compose build
+
+# 3. Run any command — args after `cli` are passed straight to `python main.py`:
+docker compose run --rm cli --help
+docker compose run --rm cli inventory --test-connection
+docker compose run --rm cli migrate --from-spreadsheet --full-table
+docker compose run --rm cli compare --from-inventory
 ```
+
+Generated SQL / QA reports appear on the host under `./results/` (mounted volume).
+In Docker the credentials path is fixed to `/app/secrets/credentials.json`, so leave
+`GOOGLE_SHEETS_CREDENTIALS_FILE` in `.env` as-is — `docker-compose.yml` overrides it.
+
+### Option B — Local virtualenv (Python 3.11)
+
+```bash
+# If you don't have Python 3.11:
+# - macOS (Homebrew): brew install python@3.11
+# - Windows: https://www.python.org/downloads/release/python-3110/ ("Add Python to PATH")
+python3.11 -m venv .venv
+source .venv/bin/activate            # Windows: .venv\Scripts\activate
+pip install -e ./argo-utils-cli      # installs the domo_utils package
+pip install -r requirements.txt
+python main.py --help
+```
+
+> **datacompy note:** `requirements.txt` pins `datacompy>=0.11,<0.14`. datacompy 0.14+
+> (and 1.0) removed the top-level `Compare` class this project relies on, so newer
+> versions break the `compare` command.
 
 ## ⚙️ Configuration
 
-### Environment Variables
-
-Create a `.env` file in the project root with the following variables:
-
-```env
-# Google Sheets
-GOOGLE_SHEETS_CREDENTIALS_FILE=/path/to/your/service-account-key.json
-MIGRATION_SPREADSHEET_ID=1Y_CpIXW9RCxnlwwvP-tAL5B9UmvQlgu6DbpEnHgSgVA
-MIGRATION_SHEET_NAME=Migration
-DATASET_SHEET_NAME=Datasets  # Used by datasets export functionality
-
-# Domo API
-DOMO_DEVELOPER_TOKEN=your_domo_developer_token
-DOMO_INSTANCE=your_domo_instance_name
-
-# Snowflake
-SNOWFLAKE_ACCOUNT=your_account_identifier
-SNOWFLAKE_USER=your_username
-SNOWFLAKE_PASSWORD=your_password
-SNOWFLAKE_WAREHOUSE=your_warehouse
-SNOWFLAKE_DATABASE=your_database
-SNOWFLAKE_SCHEMA=your_schema
-SNOWFLAKE_ROLE=your_role_name  # Optional: Role to assume (e.g., ANALYST, DEVELOPER)
-
-# Optional
-EXPORT_DIR=results/sql/translated  # Default directory for SQL exports
-DOMO_TABLE_PREFIX=DOMO_  # Prefix for Snowflake table names (set to empty string to disable)
-```
+All configuration is read from environment variables (loaded from `.env`). Copy
+`.env.example` to `.env` and fill in the values — it documents every supported key
+(Google Sheets, Domo, Snowflake, and optional settings). The sections below explain
+how to obtain each set of credentials.
 
 ### Google Sheets Setup
 
@@ -155,6 +155,30 @@ DOMO_TABLE_PREFIX=DOMO_  # Prefix for Snowflake table names (set to empty string
    - Your role has the necessary permissions to create tables and schemas
    - The role has access to the specified warehouse, database, and schema
    - You're using a role with appropriate privileges for your use case
+
+## 🧪 Running the Tests
+
+```bash
+pip install -r requirements-test.txt
+python -m pytest            # or: python run_tests.py
+```
+
+The vendored `argo-utils-cli/` clone is excluded from collection automatically.
+
+## 📄 Offline Template / Fixture
+
+`templates/migration_inventory.template.xlsx` is a **synthetic, client-data-free**
+workbook that mirrors the tabs and headers the CLI reads (`Migration`, `QA - Test`,
+`Stg Files`, `Inventory`, `All Datasets`, `All Dataflows`). Use it as a reference for
+the required sheet/column structure, or upload it to your own Google Sheet to try the
+tool without touching live client data. Regenerate it with:
+
+```bash
+python tools/scripts/make_inventory_template.py
+```
+
+> Real client workbooks (e.g. `Recom Migration Inventory.xlsx`) are git-ignored and
+> must never be committed.
 
 ## 🎯 Usage
 
@@ -301,18 +325,24 @@ Examples:
 
 ```
 Domo-to-snowflake-migration/
-├── main.py                     # Main CLI
+├── main.py                     # Unified CLI: dispatch + per-command handlers
+├── Dockerfile                  # Python 3.11 image
+├── docker-compose.yml          # `docker compose run --rm cli <command>`
+├── .env.example                # All config keys (copy to .env)
 ├── requirements.txt            # Python dependencies
-├── .env                        # Environment variables (create)
 ├── README.md                   # This file
+├── templates/                  # Synthetic offline inventory template (no client data)
+│   └── migration_inventory.template.xlsx
 ├── tools/                      # Main modules
 │   ├── __init__.py
+│   ├── cli/                    # argparse wiring (parser.py), split out of main.py
 │   ├── get_all_stg_files.py   # STG files generation (with CLI)
 │   ├── inventory_handler.py    # Inventory management
 │   ├── domo_to_snowflake.py   # Data migration
 │   ├── dataset_comparator.py  # Data comparison/QA
 │   ├── scripts/                # Utility scripts
 │   │   ├── __init__.py
+│   │   ├── make_inventory_template.py  # Regenerate the offline template
 │   │   ├── cleanup_project.py
 │   │   ├── extract_lineage.py
 │   │   ├── maintain_structure.py

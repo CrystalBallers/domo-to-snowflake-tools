@@ -1,0 +1,30 @@
+# Run any CLI command in a container, e.g.:
+#   docker compose build
+#   docker compose run --rm cli --help
+#   docker compose run --rm cli inventory --test-connection
+#   docker compose run --rm cli migrate --from-spreadsheet --full-table
+#
+# Configuration comes from .env (copy from .env.example).
+# Put your Google service-account JSON at ./secrets/credentials.json.
+services:
+  cli:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: domo-to-snowflake-tools
+    env_file:
+      - .env
+    environment:
+      # Inside the container the credentials always live at this mounted path,
+      # regardless of the host path set in .env.
+      GOOGLE_SHEETS_CREDENTIALS_FILE: /app/secrets/credentials.json
+    volumes:
+      # Generated SQL / QA reports land on the host.
+      - ./results:/app/results
+      # Google service-account credentials (read-only). Directory mount so it
+      # works even before you drop a file in.
+      - ./secrets:/app/secrets:ro
+      # Offline inventory template / fixtures.
+      - ./templates:/app/templates:ro
+      # Uncomment for live-code development (reflects host edits without rebuild):
+      # - .:/app
