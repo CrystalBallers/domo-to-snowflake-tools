@@ -130,6 +130,21 @@ def create_parser() -> argparse.ArgumentParser:
     src.add_argument("--schema", default="SRC", help="Snowflake schema name (default: SRC)")
     src.add_argument("--output", default="sources_auto.yml", help="Output file name (default: sources_auto.yml)")
 
+    # refresh (orchestrates the Domo → spreadsheet steps in dependency order)
+    refresh = sub.add_parser(
+        'refresh',
+        help="Run the Domo → spreadsheet pipeline (datasets, cards, dataflows, inventory) in order",
+        description="Runs the export steps in dependency order. By default runs every step EXCEPT "
+                    "the slow 'score' (~20 min); add --with-score to include it.",
+    )
+    refresh.add_argument("--credentials", default=cred_default, help="Path to Google Sheets credentials JSON file")
+    refresh.add_argument("--spreadsheet-id", default=sheet_id_default, help="Google Sheets spreadsheet ID (uses default if not specified)")
+    refresh.add_argument("--with-score", action="store_true", help="Also run the slow 'score' step (~20 min)")
+    refresh.add_argument("--only", default=None, help="Comma-separated subset of steps to run (datasets,cards,dataflows,inventory,score)")
+    refresh.add_argument("--skip", default=None, help="Comma-separated steps to skip")
+    refresh.add_argument("--dry-run", action="store_true", help="Print the plan without executing")
+    refresh.add_argument("--fail-fast", action="store_true", help="Stop at the first failed step (default: continue and report)")
+
     # weighting (forwards remaining argv to the translation-difficulty CLI)
     weighting = sub.add_parser(
         "weighting",

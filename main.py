@@ -20,6 +20,7 @@ try:
         handle_inventory_command, handle_dataflow_raw_command, handle_migrate_command,
         handle_stage_command, handle_datasets_command, handle_compare_command,
         handle_generate_stg_command, handle_generate_sources_command, handle_weighting_command,
+        handle_refresh_command,
     )
 except ImportError as e:
     logger.error(f"Failed to import required modules: {e}")
@@ -37,6 +38,7 @@ _HANDLERS = {
     'generate-stg': 'handle_generate_stg_command',
     'generate-sources': 'handle_generate_sources_command',
     'weighting': 'handle_weighting_command',
+    'refresh': 'handle_refresh_command',
 }
 
 

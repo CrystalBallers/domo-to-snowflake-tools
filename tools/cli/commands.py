@@ -701,3 +701,117 @@ def handle_weighting_command(args) -> int:
         logger.error("Translation difficulty / weighting requires domo_utils (install argo-utils-cli). %s", e)
         return 1
     return td_main(argv)
+
+
+# ── refresh: run the Domo → spreadsheet steps in dependency order ────────────
+# Each step is (key, human description, callable(args) -> bool). Order matters:
+# 'datasets' seeds the 'All Datasets' tab that 'cards' and 'dataflows' read.
+def _refresh_step_datasets(args) -> bool:
+    return export_datasets_to_spreadsheet(
+        spreadsheet_id=args.spreadsheet_id,
+        sheet_name=os.getenv("DATASETS_SHEET_NAME", "All Datasets"),
+        credentials_path=args.credentials,
+    )
+
+
+def _refresh_step_cards(args) -> bool:
+    return count_cards_to_spreadsheet(
+        spreadsheet_id=args.spreadsheet_id,
+        sheet_name=os.getenv("DATASETS_SHEET_NAME", "All Datasets"),
+        credentials_path=args.credentials,
+    )
+
+
+def _refresh_step_dataflows(args) -> bool:
+    return export_dataflows_to_spreadsheet(
+        spreadsheet_id=args.spreadsheet_id,
+        credentials_path=args.credentials,
+    )
+
+
+def _refresh_weighting(argv) -> bool:
+    try:
+        from tools.utils.translation_difficulty.cli import main as td_main
+    except ImportError as e:
+        logger.error("weighting steps require domo_utils (install argo-utils-cli). %s", e)
+        return False
+    return td_main(argv) == 0
+
+
+def _refresh_step_inventory(args) -> bool:
+    return _refresh_weighting(["export-inventory"])
+
+
+def _refresh_step_score(args) -> bool:
+    return _refresh_weighting(["score", "--from-api-list"])
+
+
+# (key, description, fn, is_slow)
+_REFRESH_STEPS = [
+    ("datasets", "Export Domo datasets → 'All Datasets'", _refresh_step_datasets, False),
+    ("cards", "Count cards per dataset → '# Cards'", _refresh_step_cards, False),
+    ("dataflows", "Export dataflow lineage → 'All Dataflows'", _refresh_step_dataflows, False),
+    ("inventory", "Export dataflow inventory → 'Dataflow Inventory'", _refresh_step_inventory, False),
+    ("score", "Score translation difficulty → 'CTE Points Analysis' (SLOW, ~20 min)", _refresh_step_score, True),
+]
+
+
+def handle_refresh_command(args) -> int:
+    """Run the Domo → spreadsheet pipeline steps in dependency order.
+
+    By default runs every step EXCEPT the slow 'score' (opt in with --with-score).
+    Continues past failures and prints a summary unless --fail-fast is set.
+    """
+    valid = [k for k, _d, _f, _s in _REFRESH_STEPS]
+
+    # Resolve which steps to run.
+    if args.only:
+        requested = [s.strip() for s in args.only.split(",") if s.strip()]
+        unknown = [s for s in requested if s not in valid]
+        if unknown:
+            logger.error("❌ Unknown step(s) in --only: %s. Valid: %s", unknown, valid)
+            return 1
+        selected = [k for k in valid if k in requested]
+    else:
+        # Default = all fast steps; 'score' only with --with-score.
+        selected = [k for k, _d, _f, slow in _REFRESH_STEPS if not slow]
+        if args.with_score:
+            selected.append("score")
+
+    if args.skip:
+        skip = {s.strip() for s in args.skip.split(",") if s.strip()}
+        selected = [k for k in selected if k not in skip]
+
+    if not selected:
+        logger.error("❌ No steps selected to run.")
+        return 1
+
+    steps = [(k, d, f) for (k, d, f, _s) in _REFRESH_STEPS if k in selected]
+
+    logger.info("🔄 Refresh plan (%s step(s)):", len(steps))
+    for i, (k, d, _f) in enumerate(steps, 1):
+        logger.info("   %s. [%s] %s", i, k, d)
+
+    if args.dry_run:
+        logger.info("🧪 Dry run — nothing executed.")
+        return 0
+
+    results: list[tuple[str, bool]] = []
+    for k, d, fn in steps:
+        logger.info("━━━ ▶️  %s: %s", k, d)
+        try:
+            ok = bool(fn(args))
+        except Exception as e:  # noqa: BLE001
+            logger.error("❌ Step '%s' raised: %s", k, e)
+            ok = False
+        results.append((k, ok))
+        logger.info("━━━ %s %s", "✅" if ok else "❌", k)
+        if not ok and args.fail_fast:
+            logger.error("🛑 --fail-fast: stopping after failed step '%s'", k)
+            break
+
+    ok_count = sum(1 for _k, ok in results if ok)
+    logger.info("📋 Refresh summary: %s/%s succeeded", ok_count, len(results))
+    for k, ok in results:
+        logger.info("   %s %s", "✅" if ok else "❌", k)
+    return 0 if ok_count == len(results) and len(results) == len(steps) else 1
