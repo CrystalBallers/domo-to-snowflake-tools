@@ -206,8 +206,45 @@ def score_one_dataflow(
     step_scores, step_points = score_steps(
         str(df.id), ordered, result.action_results, weights_cfg, dialect
     )
-    summary = aggregate_row(str(df.id), step_points, len(ordered))
+    buffer = float((weights_cfg.get("defaults") or {}).get("total_points_buffer", 1.0))
+    summary = aggregate_row(str(df.id), step_points, len(ordered), buffer)
     return step_scores, summary, result.success
+
+
+def _assert_safe_to_overwrite(
+    gsheets,
+    spreadsheet_id: str,
+    sheet_name: str,
+    new_columns: List[str],
+    allow_overwrite: bool,
+) -> None:
+    """
+    Guard against clobbering a tab that holds data we did not produce.
+
+    write_dataframe overwrites from A1. This is fine for our own output tabs
+    (re-running yields the same header), but catastrophic if the tab holds
+    curated data. So: if the tab already has rows and its header does NOT match
+    the columns we are about to write, abort — unless allow_overwrite is True.
+
+    A missing/empty tab, or one whose header already matches, is always safe.
+    """
+    if allow_overwrite:
+        return
+    try:
+        existing = gsheets.read_range(spreadsheet_id, f"{sheet_name}!1:1")
+    except Exception:  # noqa: BLE001
+        existing = []
+    existing_header = [str(h).strip() for h in (existing[0] if existing else []) if str(h).strip()]
+    if not existing_header:
+        return  # empty/new tab → safe
+    if existing_header == [str(c).strip() for c in new_columns]:
+        return  # our own output, re-running → safe
+    raise ValueError(
+        f"Refusing to overwrite tab '{sheet_name}': it already contains data with a "
+        f"different structure (found columns {existing_header[:5]}{'...' if len(existing_header) > 5 else ''}). "
+        f"This command overwrites from A1 and would destroy it. Pass --allow-overwrite "
+        f"to proceed anyway, or target a different tab with --sheet / --output-sheet."
+    )
 
 
 def run_export_inventory(
@@ -215,15 +252,26 @@ def run_export_inventory(
     credentials_path: str,
     inventory_sheet: str,
     page_size: int,
+    allow_overwrite: bool = False,
 ) -> None:
     _gs = _load_gsheets_module()
     GoogleSheets = _gs.GoogleSheets
     READ_WRITE_SCOPES = _gs.READ_WRITE_SCOPES
 
+    client = GoogleSheets(credentials_path=credentials_path, scopes=READ_WRITE_SCOPES)
+    inv_columns = [DATAFLOW_COL, "Name", "Enabled", "Draft", "NumOutputs"]
+    _assert_safe_to_overwrite(
+        client, spreadsheet_id, inventory_sheet, inv_columns, allow_overwrite
+    )
+
     dataflow_api, _ = connect_domo()
     flows = list_all_dataflows(dataflow_api, page_size=page_size)
     inv_df = dataflows_to_inventory_df(flows)
-    client = GoogleSheets(credentials_path=credentials_path, scopes=READ_WRITE_SCOPES)
+    # Create the tab if it does not exist yet (write fails on a missing range).
+    try:
+        client.create_sheet(spreadsheet_id, inventory_sheet)
+    except Exception:  # noqa: BLE001
+        logger.debug("Sheet %s may already exist", inventory_sheet)
     client.write_dataframe(
         inv_df, spreadsheet_id, f"{inventory_sheet}!A1", include_header=True
     )
@@ -244,6 +292,7 @@ def run_score(
     from_api_list: bool,
     apply_mdaas_exclusions: bool = True,
     mdaas_tasks_sheet: Optional[str] = None,
+    allow_overwrite: bool = False,
 ) -> None:
     _gs = _load_gsheets_module()
     GoogleSheets = _gs.GoogleSheets
@@ -251,6 +300,23 @@ def run_score(
 
     sheets_client = GoogleSheets(
         credentials_path=credentials_path, scopes=READ_WRITE_SCOPES
+    )
+
+    # Fail fast BEFORE the expensive translation loop: never clobber a tab that
+    # holds data we did not produce.
+    _MAIN_COLUMNS = [
+        "filename", "Dataflow ID", "Step Points",
+        "Total Tiles", "Subtotal Points", "Total Points",
+    ]
+    _DETAIL_COLUMNS = [
+        "dataflow_id", "action_id", "action_type", "base_minutes",
+        "length_minutes", "total_minutes", "sql_chars", "success",
+    ]
+    _assert_safe_to_overwrite(
+        sheets_client, spreadsheet_id, output_sheet, _MAIN_COLUMNS, allow_overwrite
+    )
+    _assert_safe_to_overwrite(
+        sheets_client, spreadsheet_id, detail_sheet, _DETAIL_COLUMNS, allow_overwrite
     )
 
     weights_cfg = load_weights(weights_path)
@@ -357,14 +423,7 @@ def run_score(
                 }
             )
 
-    main_columns = [
-        "filename",
-        "Dataflow ID",
-        "Step Points",
-        "Total Tiles",
-        "Subtotal Points",
-        "Total Points",
-    ]
+    main_columns = _MAIN_COLUMNS
     summary_df = pd.DataFrame(summaries)
     for c in main_columns:
         if c not in summary_df.columns:

@@ -43,13 +43,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--weights",
         type=Path,
         default=None,
-        help="Override path to weights.yaml",
+        help="Override path to translation_difficulty_weights.yaml",
     )
     p.add_argument(
         "--page-size",
         type=int,
         default=50,
         help="Domo list API page size (default 50).",
+    )
+    p.add_argument(
+        "--allow-overwrite",
+        action="store_true",
+        help="Permit overwriting a target tab that already holds unrelated data. "
+             "By default the command ABORTS rather than clobber a curated tab.",
     )
 
     sub = p.add_subparsers(dest="command", required=True)
@@ -60,8 +66,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     inv.add_argument(
         "--sheet",
-        default=os.getenv("INTERMEDIATE_MODELS_SHEET_NAME", "Inventory"),
-        help="Target sheet tab name (default Inventory or INTERMEDIATE_MODELS_SHEET_NAME).",
+        # Dedicated dump tab. Intentionally NOT INTERMEDIATE_MODELS_SHEET_NAME:
+        # this command OVERWRITES the target from A1, so it must never default to
+        # a tab that holds curated data. Override with --sheet or
+        # TRANSLATION_DIFFICULTY_INVENTORY_SHEET if you really want elsewhere.
+        default=os.getenv("TRANSLATION_DIFFICULTY_INVENTORY_SHEET", "Dataflow Inventory"),
+        help="Target sheet tab name (default 'Dataflow Inventory'). This tab is "
+             "OVERWRITTEN from A1.",
     )
 
     score = sub.add_parser(
@@ -154,6 +165,7 @@ def main(argv: list[str] | None = None) -> int:
                 credentials_path=creds,
                 inventory_sheet=args.sheet,
                 page_size=args.page_size,
+                allow_overwrite=args.allow_overwrite,
             )
         elif args.command == "score":
             run_score(
@@ -170,6 +182,7 @@ def main(argv: list[str] | None = None) -> int:
                 from_api_list=args.from_api_list,
                 apply_mdaas_exclusions=not args.no_mdaas_exclude,
                 mdaas_tasks_sheet=args.mdaas_tasks_sheet,
+                allow_overwrite=args.allow_overwrite,
             )
         else:
             return 1
