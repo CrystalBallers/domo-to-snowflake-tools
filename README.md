@@ -169,7 +169,7 @@ The vendored `argo-utils-cli/` clone is excluded from collection automatically.
 
 `templates/migration_inventory.template.xlsx` is a **synthetic, client-data-free**
 workbook that mirrors the tabs and headers the CLI reads (`Migration`, `QA - Test`,
-`Stg Files`, `Inventory`, `All Datasets`, `All Dataflows`). Use it as a reference for
+`Stg Files`, `Intermediate models`, `All Datasets`, `Datasets`, `All Dataflows`). Use it as a reference for
 the required sheet/column structure, or upload it to your own Google Sheet to try the
 tool without touching live client data. Regenerate it with:
 
@@ -232,6 +232,7 @@ python main.py datasets [options]
 **Options:**
 - `--test-connection`: Test Domo connection
 - `--export-to-spreadsheet`: Export all Domo datasets to Google Sheets
+- `--export-dataflows`: Crawl Domo lineage for the datasets in the `All Datasets` tab and write the dataflow table (`Output Dataset ID`, `Dataflow ID`, `Source Dataset IDs`, `All Source Dataset IDs`) to the `All Dataflows` tab
 - `--list-local`: List all Domo datasets locally
 - `--credentials`: Path to Google Sheets credentials file
 - `--spreadsheet-id`: Google Sheets spreadsheet ID (uses default if not specified)
@@ -254,14 +255,14 @@ python main.py generate-stg [options]
 - `--output-dir`: Directory to save SQL files (default: sql/stg/)
 - `--credentials`: Path to Google Sheets credentials file
 - `--spreadsheet-id`: Google Sheets spreadsheet ID
-- `--read-only`: Run in read-only mode (don't update Check column)
+- `--read-only`: Run in read-only mode (don't update the Status column)
 - `--dry-run`: Show what would be generated without creating files
 - `--use-cast`: Use explicit CAST statements in generated SQL (disabled by default)
 
 **Features:**
-- ✅ **Smart Skip**: Automatically skips rows where Check = "True"
+- ✅ **Smart Skip**: Automatically skips rows where Status = "Deployed"
 - ✅ **Optional CAST**: Can generate explicit CAST statements when needed (use --use-cast)
-- ✅ **Progress Tracking**: Writes "True" to Check column when files are created successfully
+- ✅ **Progress Tracking**: Sets Status to "Translated" when files are created successfully
 - ✅ **Schema Validation**: Connects to Snowflake to get real column names and types
 
 ## 📚 Usage Examples
@@ -312,7 +313,7 @@ Examples:
     # Dry run - see what would be generated without creating files
     python main.py generate-stg --dry-run
     
-    # Read-only mode - don't update Check column in Google Sheets
+    # Read-only mode - don't update the Status column in Google Sheets
     python main.py generate-stg --read-only
     
     # Full custom configuration

@@ -17,9 +17,9 @@ logger = logging.getLogger(__name__)
 try:
     from tools.cli.parser import create_parser
     from tools.cli.commands import (
-        handle_inventory_command, handle_migrate_command, handle_stage_command,
-        handle_datasets_command, handle_compare_command, handle_generate_stg_command,
-        handle_generate_sources_command, handle_weighting_command,
+        handle_inventory_command, handle_dataflow_raw_command, handle_migrate_command,
+        handle_stage_command, handle_datasets_command, handle_compare_command,
+        handle_generate_stg_command, handle_generate_sources_command, handle_weighting_command,
     )
 except ImportError as e:
     logger.error(f"Failed to import required modules: {e}")
@@ -29,6 +29,7 @@ except ImportError as e:
 # main.handle_* in tests still takes effect.
 _HANDLERS = {
     'inventory': 'handle_inventory_command',
+    'dataflow-raw': 'handle_dataflow_raw_command',
     'migrate': 'handle_migrate_command',
     'stage': 'handle_stage_command',
     'datasets': 'handle_datasets_command',

@@ -18,6 +18,7 @@ Usage:
 
 import os
 import sys
+import json
 import argparse
 import logging
 import subprocess
@@ -30,7 +31,7 @@ from dotenv import load_dotenv
 from .utils.gsheets import GoogleSheets, READ_WRITE_SCOPES
 
 # Load environment variables
-load_dotenv()
+load_dotenv(override=True)
 
 # Configure logging
 logging.basicConfig(
@@ -43,6 +44,8 @@ logger = logging.getLogger(__name__)
 SPREADSHEET_ID = os.getenv("MIGRATION_SPREADSHEET_ID", "1Y_CpIXW9RCxnlwwvP-tAL5B9UmvQlgu6DbpEnHgSgVA")
 INVENTORY_SHEET_NAME = os.getenv("INTERMEDIATE_MODELS_SHEET_NAME", "Inventory")
 DATAFLOW_COLUMN_NAME = "Dataflow ID"
+# Header variants accepted for the dataflow column when reading the inventory sheet.
+DATAFLOW_COLUMN_CANDIDATES = [DATAFLOW_COLUMN_NAME, "dataflow", "Dataflow", "DataFlow", "dataflow_id", "Dataflow_ID"]
 SCOPES = ['https://www.googleapis.com/auth/spreadsheets.readonly']
 
 
@@ -106,18 +109,15 @@ class InventoryHandler:
         logger.info(f"📖 Extracting inventory data from sheet: {sheet_name}")
         
         try:
-            # Use the gsheets module to read data
-            polars_df = self.gsheets_client.read_to_dataframe(
+            # Use the gsheets module to read data (returns a pandas DataFrame)
+            df = self.gsheets_client.read_to_dataframe(
                 spreadsheet_id=self.spreadsheet_id,
                 range_name=f"{sheet_name}!A:Z",
                 header=True
             )
-            
-            if polars_df is None or len(polars_df) == 0:
+
+            if df is None or len(df) == 0:
                 raise ValueError(f"No data found in sheet: {sheet_name}")
-            
-            # Convert polars DataFrame to pandas DataFrame
-            df = polars_df.to_pandas()
             
             logger.info(f"✅ Successfully extracted {len(df)} rows from {sheet_name}")
             logger.info(f"📋 Columns: {list(df.columns)}")
@@ -274,6 +274,130 @@ WHERE
 """
 
 
+def _connect_dataflow_api():
+    """Return a Domo dataflow API client (in-process via domo_utils).
+
+    Mirrors the auth flow in tools.utils.translation_difficulty.runner.connect_domo,
+    but pulls in only what the raw export needs (no translator imports).
+    """
+    try:
+        from domo_utils import get_dataflow_api
+        from domo_utils.auth import DeveloperTokenAuth
+    except ImportError as e:
+        raise ImportError(
+            "domo_utils is required for raw dataflow export. Install argo-utils-cli "
+            "in the same environment, e.g. pip install -e ../argo-utils-cli. "
+            f"Original error: {e}"
+        ) from e
+
+    token = os.getenv("DOMO_DEVELOPER_TOKEN")
+    instance = os.getenv("DOMO_INSTANCE")
+    if not token or not instance:
+        raise ValueError("Set DOMO_DEVELOPER_TOKEN and DOMO_INSTANCE environment variables.")
+
+    auth = DeveloperTokenAuth(token=token, instance_id=instance)
+    auth.connect()
+    return get_dataflow_api(auth)
+
+
+def _fetch_raw_dataflow(api, dataflow_id: str) -> dict:
+    """Fetch the RAW Domo dataflow definition (tiles/steps) before any translation.
+
+    Hits the same v2 endpoint as ``api.get(...)`` but returns the unmodified JSON,
+    skipping ``DataflowModel.model_validate`` so we capture exactly what the
+    translator consumes.
+    """
+    endpoint = f"{api.path}/v2/dataflows/{dataflow_id}"
+    return api.request("GET", endpoint).json()
+
+
+def export_dataflows_raw(output_dir: str, credentials_path: str = None,
+                         dataflow_id: str = None) -> bool:
+    """Export RAW Domo dataflow definitions (tiles/steps) as JSON, before translation.
+
+    Parallel to :func:`export_dataflows_to_sql`: it resolves the same dataflow IDs
+    from the Google Sheets inventory (or a single ``dataflow_id`` override) but dumps
+    the unmodified Domo JSON instead of translating it to SQL.
+
+    Args:
+        output_dir (str): Directory to save the raw JSON files
+        credentials_path (str): Path to Google Sheets credentials file
+        dataflow_id (str): If given, fetch only this dataflow instead of reading the sheet
+
+    Returns:
+        bool: True if at least one dataflow was fetched, False otherwise
+    """
+    logger.info("🚀 Starting raw dataflow export process...")
+
+    try:
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        logger.info(f"📁 Output directory: {output_path.absolute()}")
+
+        # Connect to Domo first so credential/import problems fail fast.
+        api = _connect_dataflow_api()
+
+        # Resolve dataflow IDs: explicit single ID, otherwise from the inventory sheet.
+        if dataflow_id:
+            unique_dataflows = [str(dataflow_id)]
+            logger.info(f"📋 Single dataflow mode: {dataflow_id}")
+        else:
+            extractor = InventoryHandler(credentials_path=credentials_path)
+            df = extractor.get_inventory()
+
+            dataflow_column = next((c for c in DATAFLOW_COLUMN_CANDIDATES if c in df.columns), None)
+            if not dataflow_column:
+                logger.error(f"❌ No dataflow column found. Available columns: {list(df.columns)}")
+                logger.error(f"   Searched for: {DATAFLOW_COLUMN_CANDIDATES}")
+                return False
+            logger.info(f"✅ Found dataflow column: '{dataflow_column}'")
+
+            unique_dataflows = extractor.get_unique_dataflows(df, dataflow_column=dataflow_column)
+
+        if not unique_dataflows:
+            logger.warning("⚠️  No dataflows found to export")
+            return False
+
+        successful_exports = 0
+        failed_exports = 0
+
+        for dataflow in unique_dataflows:
+            try:
+                raw = _fetch_raw_dataflow(api, dataflow)
+
+                json_filename = f"dataflow_{str(dataflow).replace(' ', '_').replace('/', '_')}_raw.json"
+                json_filepath = output_path / json_filename
+
+                with open(json_filepath, 'w', encoding='utf-8') as f:
+                    json.dump(raw, f, indent=2, ensure_ascii=False)
+
+                actions = raw.get("actions", [])
+                logger.info(
+                    f"💾 Saved (SUCCESS): {json_filepath} — "
+                    f"{raw.get('name')!r}, {len(actions)} tiles/steps"
+                )
+                successful_exports += 1
+
+            except Exception as e:
+                logger.error(f"❌ Failed to fetch raw dataflow {dataflow}: {e}")
+                failed_exports += 1
+
+        total_dataflows = len(unique_dataflows)
+        logger.info("=" * 80)
+        logger.info("📊 Raw Export Summary:")
+        logger.info(f"   Total dataflows: {total_dataflows}")
+        logger.info(f"   ✅ Fetched: {successful_exports}")
+        logger.info(f"   ❌ Failed: {failed_exports}")
+        logger.info(f"   📁 Output directory: {output_path.absolute()}")
+        logger.info("=" * 80)
+
+        return successful_exports > 0
+
+    except Exception as e:
+        logger.error(f"❌ Raw export process failed: {e}")
+        return False
+
+
 def export_dataflows_to_sql(output_dir: str, credentials_path: str = None) -> bool:
     """
     Export dataflows from Google Sheets inventory to SQL files.
@@ -306,18 +430,13 @@ def export_dataflows_to_sql(output_dir: str, credentials_path: str = None) -> bo
         df = extractor.get_inventory()
         
         # Check if the dataflow column exists and try alternatives
-        dataflow_column = None
-        possible_column_names = [DATAFLOW_COLUMN_NAME, "dataflow", "Dataflow", "DataFlow", "dataflow_id", "Dataflow_ID"]
-        
-        for col_name in possible_column_names:
-            if col_name in df.columns:
-                dataflow_column = col_name
-                logger.info(f"✅ Found dataflow column: '{col_name}'")
-                break
-        
+        dataflow_column = next((c for c in DATAFLOW_COLUMN_CANDIDATES if c in df.columns), None)
+        if dataflow_column:
+            logger.info(f"✅ Found dataflow column: '{dataflow_column}'")
+
         if not dataflow_column:
             logger.error(f"❌ No dataflow column found. Available columns: {list(df.columns)}")
-            logger.error(f"   Searched for: {possible_column_names}")
+            logger.error(f"   Searched for: {DATAFLOW_COLUMN_CANDIDATES}")
             return False
         
         # Get unique dataflows using the found column
@@ -459,15 +578,10 @@ Environment Variables:
             print(df.head())
             
             # Check for dataflow column
-            dataflow_column = None
-            possible_column_names = [DATAFLOW_COLUMN_NAME, "dataflow", "Dataflow", "DataFlow", "dataflow_id", "Dataflow_ID"]
-            
-            for col_name in possible_column_names:
-                if col_name in df.columns:
-                    dataflow_column = col_name
-                    logger.info(f"✅ Found dataflow column: '{col_name}'")
-                    break
-            
+            dataflow_column = next((c for c in DATAFLOW_COLUMN_CANDIDATES if c in df.columns), None)
+            if dataflow_column:
+                logger.info(f"✅ Found dataflow column: '{dataflow_column}'")
+
             if dataflow_column:
                 unique_dataflows = extractor.get_unique_dataflows(df, dataflow_column=dataflow_column)
                 logger.info(f"📋 Found {len(unique_dataflows)} dataflows: {unique_dataflows[:10]}...")  # Show first 10

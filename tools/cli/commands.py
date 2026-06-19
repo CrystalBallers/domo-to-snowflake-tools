@@ -8,15 +8,18 @@ import json
 import logging
 from typing import Optional
 
-from tools.inventory_handler import export_dataflows_to_sql, InventoryHandler
+from tools.inventory_handler import export_dataflows_to_sql, export_dataflows_raw, InventoryHandler
 from tools.domo_to_snowflake import (
     migrate_dataset, migrate_dataset_to_stage, load_from_stage_to_table,
     migrate_dataset_via_stage, batch_migrate_datasets, migrate_from_spreadsheet,
     migrate_from_spreadsheet_to_stage, MigrationManager,
 )
 from tools.utils import DomoHandler, SnowflakeHandler, show_mfa_debug_info, reload_environment
-from tools.utils.domo import export_datasets_to_spreadsheet
-from tools.get_all_stg_files import get_stg_files_data, generate_stg_files_from_dataframe
+from tools.utils.domo import export_datasets_to_spreadsheet, export_dataflows_to_spreadsheet
+from tools.get_all_stg_files import (
+    get_stg_files_data, generate_stg_files_from_dataframe,
+    MODEL_NAME_COLUMN, OUTPUT_NAME_COLUMN, STATUS_COLUMN, DEPLOYED_STATUS,
+)
 from tools.utils.create_source import generate_sources_from_spreadsheet
 
 logger = logging.getLogger(__name__)
@@ -105,6 +108,40 @@ def handle_inventory_command(args) -> int:
         logger.info("🎉 Export completed successfully!")
         return 0
     logger.error("❌ Export failed!")
+    return 1
+
+
+def handle_dataflow_raw_command(args) -> int:
+    """Export RAW Domo dataflow definitions (tiles/steps) as JSON, before translation."""
+    dataflow_id = getattr(args, "dataflow_id", None)
+
+    # Credentials are only needed when resolving dataflow IDs from the inventory sheet.
+    credentials_path = args.credentials or os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE")
+    if not dataflow_id:
+        if not credentials_path:
+            logger.error("❌ Credentials file not specified")
+            logger.error("Set GOOGLE_SHEETS_CREDENTIALS_FILE environment variable or use --credentials (or pass --dataflow-id)")
+            return 1
+        if not os.path.exists(credentials_path):
+            logger.error(f"❌ Credentials file not found: {credentials_path}")
+            return 1
+
+    logger.info("🚀 Starting raw dataflow export...")
+    logger.info(f"📁 Output directory: {args.output_dir}")
+    try:
+        ok = export_dataflows_raw(
+            output_dir=args.output_dir,
+            credentials_path=credentials_path,
+            dataflow_id=dataflow_id,
+        )
+    except (ImportError, ValueError) as e:
+        logger.error(f"❌ {e}")
+        return 1
+
+    if ok:
+        logger.info("🎉 Raw export completed successfully!")
+        return 0
+    logger.error("❌ Raw export failed!")
     return 1
 
 
@@ -262,6 +299,17 @@ def handle_datasets_command(args) -> int:
         logger.error("❌ Dataset export failed!")
         return 1
 
+    if args.export_dataflows:
+        logger.info("🚀 Starting dataflow lineage export to spreadsheet...")
+        logger.info(f"📋 Spreadsheet ID: {args.spreadsheet_id}")
+        if export_dataflows_to_spreadsheet(spreadsheet_id=args.spreadsheet_id,
+                                           credentials_path=args.credentials,
+                                           datasets_sheet_name=args.sheet_name):
+            logger.info("🎉 Dataflow export completed successfully!")
+            return 0
+        logger.error("❌ Dataflow export failed!")
+        return 1
+
     if args.list_local:
         logger.info("📋 Fetching all datasets from Domo...")
         domo_handler = DomoHandler()
@@ -278,7 +326,7 @@ def handle_datasets_command(args) -> int:
         return 0
 
     logger.error("❌ No valid dataset options provided")
-    logger.error("Use --export-to-spreadsheet to export to Google Sheets, --list-local to list locally, or --test-connection to test Domo connection")
+    logger.error("Use --export-to-spreadsheet to export datasets to Google Sheets, --export-dataflows to export dataflow lineage, --list-local to list locally, or --test-connection to test Domo connection")
     return 1
 
 
@@ -526,7 +574,7 @@ def handle_stage_command(args) -> int:
 
 
 def handle_generate_stg_command(args) -> int:
-    """Generate staging SQL files from the 'Stg Files' tab with Snowflake schema validation."""
+    """Generate staging SQL files from the 'Staging models' tab with Snowflake schema validation."""
     if not args.database:
         logger.error("❌ Database not specified. Use --database or set SNOWFLAKE_DATABASE environment variable.")
         return 1
@@ -547,7 +595,7 @@ def handle_generate_stg_command(args) -> int:
     logger.info("🔧 CAST mode: Will use explicit CAST statements in SQL" if args.use_cast
                 else "🔧 No CAST mode: Will generate SQL without explicit CAST statements (default)")
     if args.read_only:
-        logger.info("⚠️  Read-only mode: Will not update Check column")
+        logger.info("⚠️  Read-only mode: Will not update the Status column")
     if args.dry_run:
         logger.info("🧪 Dry-run mode: Will not create files or update sheets")
 
@@ -566,14 +614,15 @@ def handle_generate_stg_command(args) -> int:
 
         if args.dry_run:
             logger.info("🧪 Dry-run mode - showing what would be processed:")
-            pending_rows = df[df['Check'].astype(str).str.lower() != 'true']
-            completed_rows = df[df['Check'].astype(str).str.lower() == 'true']
-            logger.info(f"   ✅ Already completed: {len(completed_rows)} files")
+            status_norm = df[STATUS_COLUMN].astype(str).str.strip().str.lower()
+            pending_rows = df[status_norm != DEPLOYED_STATUS.lower()]
+            completed_rows = df[status_norm == DEPLOYED_STATUS.lower()]
+            logger.info(f"   ✅ Already deployed: {len(completed_rows)} files")
             logger.info(f"   🔄 Would process: {len(pending_rows)} files")
             if not pending_rows.empty:
                 logger.info("📋 Files that would be generated:")
                 for _, row in pending_rows.head(10).iterrows():
-                    logger.info(f"   • {row['Model']} (from {row['Name']})")
+                    logger.info(f"   • {row[MODEL_NAME_COLUMN]} (from {row[OUTPUT_NAME_COLUMN]})")
                 if len(pending_rows) > 10:
                     logger.info(f"   ... and {len(pending_rows) - 10} more files")
             logger.info("🧪 Dry-run completed. Use without --dry-run to actually generate files.")
@@ -593,7 +642,7 @@ def handle_generate_stg_command(args) -> int:
         logger.error(f"❌ STG generation failed: {e}")
         logger.error("💡 Suggestions:")
         logger.error("   - Verify that the spreadsheet ID and credentials are correct")
-        logger.error("   - Check that the 'Stg Files' tab exists in the spreadsheet")
+        logger.error("   - Check that the 'Staging models' tab exists in the spreadsheet")
         logger.error("   - Verify Snowflake connection credentials and permissions")
         logger.error("   - Ensure the database and schema exist in Snowflake")
         return 1
@@ -625,8 +674,8 @@ def handle_generate_sources_command(args) -> int:
         logger.error(f"❌ Sources generation failed: {e}")
         logger.error("💡 Suggestions:")
         logger.error("   - Verify Google Sheets credentials and spreadsheet access")
-        logger.error("   - Check that the 'Stg Files' tab exists in the spreadsheet")
-        logger.error("   - Ensure the 'Name' column contains valid table names")
+        logger.error("   - Check that the 'Staging models' tab exists in the spreadsheet")
+        logger.error("   - Ensure the 'Output Name' column contains valid table names")
         return 1
 
 

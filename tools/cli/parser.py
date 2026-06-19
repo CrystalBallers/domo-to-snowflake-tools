@@ -10,6 +10,8 @@ import argparse
 _EPILOG = """\
 Examples:
     python main.py inventory --test-connection
+    python main.py dataflow-raw
+    python main.py dataflow-raw --dataflow-id 15
     python main.py migrate --from-spreadsheet --full-table
     python main.py migrate --dataset-id 12345 --target-table sales_data
     python main.py compare --domo-dataset-id 12345 --snowflake-table sales_data --key-columns id date
@@ -42,6 +44,12 @@ def create_parser() -> argparse.ArgumentParser:
     inv.add_argument("--export-dir", default=os.getenv("EXPORT_DIR", "results/sql/translated"), help="Directory to save SQL files (default: results/sql/translated)")
     inv.add_argument("--credentials", default=cred_default, help="Path to Google Sheets credentials JSON file")
     inv.add_argument("--test-connection", action="store_true", help="Test Google Sheets connection and show inventory preview")
+
+    # dataflow-raw
+    raw = sub.add_parser('dataflow-raw', help='Export RAW Domo dataflow definitions (tiles/steps) as JSON, before translation')
+    raw.add_argument("--output-dir", default=os.getenv("RAW_EXPORT_DIR", "results/dataflows/raw"), help="Directory to save raw JSON files (default: results/dataflows/raw)")
+    raw.add_argument("--credentials", default=cred_default, help="Path to Google Sheets credentials JSON file")
+    raw.add_argument("--dataflow-id", help="Fetch a single dataflow by ID instead of reading the inventory sheet")
 
     # migrate
     mig = sub.add_parser('migrate', help='Migrate datasets from Domo to Snowflake')
@@ -76,6 +84,7 @@ def create_parser() -> argparse.ArgumentParser:
     ds = sub.add_parser('datasets', help='Manage Domo datasets')
     ds.add_argument("--test-connection", action="store_true", help="Test Domo connection")
     ds.add_argument("--export-to-spreadsheet", action="store_true", help="Export all Domo datasets to a Google Sheets spreadsheet")
+    ds.add_argument("--export-dataflows", action="store_true", help="Crawl Domo lineage for the datasets in the 'All Datasets' tab and write the dataflow table to the 'All Dataflows' tab")
     ds.add_argument("--list-local", action="store_true", help="List all Domo datasets locally")
     ds.add_argument("--credentials", default=cred_default, help="Path to Google Sheets credentials JSON file")
     ds.add_argument("--spreadsheet-id", default=sheet_id_default, help="Google Sheets spreadsheet ID to export to (uses default if not specified)")
@@ -110,7 +119,7 @@ def create_parser() -> argparse.ArgumentParser:
     stg.add_argument("--output-dir", default="sql/stg/", help="Directory to save SQL files (default: sql/stg/)")
     stg.add_argument("--credentials", default=cred_default, help="Path to Google Sheets credentials JSON file")
     stg.add_argument("--spreadsheet-id", default=sheet_id_default, help="Google Sheets spreadsheet ID")
-    stg.add_argument("--read-only", action="store_true", help="Run in read-only mode (don't update Check column in Google Sheets)")
+    stg.add_argument("--read-only", action="store_true", help="Run in read-only mode (don't update the Status column in Google Sheets)")
     stg.add_argument("--dry-run", action="store_true", help="Show what would be generated without creating files or updating sheets")
     stg.add_argument("--use-cast", action="store_true", help="Use explicit CAST statements in generated SQL (disabled by default)")
 

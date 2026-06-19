@@ -5,7 +5,7 @@ Generate staging SQL files from Google Sheets with Snowflake schema validation.
 ⚠️  DEPRECATION NOTICE: This standalone script is now integrated as a subcommand in main.py
 📍 RECOMMENDED: Use `python main.py generate-stg [options]` instead
 
-This script reads from the 'Stg Files' tab in Google Sheets and generates SQL files
+This script reads from the 'Staging models' tab in Google Sheets and generates SQL files
 with automatic CAST statements based on real Domo dataset schemas (source of truth).
 
 Legacy Usage (still supported):
@@ -18,8 +18,8 @@ Features:
     - Source-first approach: Uses Domo dataset schemas as source of truth
     - Intelligent type mapping: Maps Domo types to Snowflake-compatible types  
     - Explicit CAST: All columns have explicit CAST statements for clarity
-    - Smart skip: Only processes rows where Check != "True"  
-    - Progress tracking: Updates Check column when files are created successfully
+    - Smart skip: Only processes rows where Status != "Deployed"
+    - Progress tracking: Sets Status to "Translated" when files are created successfully
     - Optional validation: Compares Domo schema against existing Snowflake tables
 """
 
@@ -41,12 +41,37 @@ from tools.utils.snowflake import SnowflakeHandler
 from tools.utils.domo import DomoHandler
 
 # Load environment variables
-load_dotenv()
+load_dotenv(override=True)
+
+# Column headers in the 'Staging models' tab (source of truth for STG generation).
+MODEL_NAME_COLUMN = "Model Name"     # output .sql filename
+OUTPUT_NAME_COLUMN = "Output Name"   # used as the Snowflake source table name
+STATUS_COLUMN = "Status"             # workflow status (skip "Deployed", set "Translated" on success)
+OUTPUT_ID_COLUMN = "Output ID"       # Domo dataset ID
+DEPLOYED_STATUS = "Deployed"
+TRANSLATED_STATUS = "Translated"
+
+
+def _column_letter(idx: int) -> str:
+    """Convert a 0-based column index to its spreadsheet letter (0→A, 25→Z, 26→AA)."""
+    letters = ""
+    idx += 1
+    while idx > 0:
+        idx, rem = divmod(idx - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters
+
+
+def _sanitize_table_name(name: str) -> str:
+    """Turn a display name (e.g. 'BFCM Tracker - All Teams') into a Snowflake identifier."""
+    cleaned = re.sub(r"[^0-9A-Za-z_ ]+", "", str(name))
+    return cleaned.strip().replace(" ", "_").upper()
+
 
 def get_stg_files_data():
     """
-    Extracts data from the 'Stg Files' tab of the Google Spreadsheet.
-    
+    Extracts data from the 'Staging models' tab of the Google Spreadsheet.
+
     Returns:
         tuple: (pd.DataFrame, GoogleSheets client, spreadsheet_id) - Data and objects needed for writing back
     """
@@ -67,12 +92,13 @@ def get_stg_files_data():
         print("🔐 Initializing Google Sheets with write permissions...")
         gsheets = GoogleSheets(credentials_path=credentials_path, scopes=READ_WRITE_SCOPES)
         
-        # Read data from 'Stg Files' tab
-        print("📊 Reading data from 'Stg Files' tab...")
-        df = gsheets.read_to_dataframe(spreadsheet_id, "Stg Files!A:Z", header=True)
-        
+        # Read data from the staging models tab
+        stg_sheet = os.getenv("STAGING_MODELS_SHEET_NAME", "Staging models")
+        print(f"📊 Reading data from '{stg_sheet}' tab...")
+        df = gsheets.read_to_dataframe(spreadsheet_id, f"{stg_sheet}!A:Z", header=True)
+
         if df.empty:
-            print("❌ No data found in 'Stg Files' tab.")
+            print(f"❌ No data found in '{stg_sheet}' tab.")
             return pd.DataFrame(), None, None
         
         # DataFrame is already pandas
@@ -108,7 +134,18 @@ def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, sc
     if df.empty:
         print("❌ DataFrame is empty. Cannot generate files.")
         return
-    
+
+    # Validate required columns from the 'Staging models' tab before doing any work.
+    required_cols = [MODEL_NAME_COLUMN, OUTPUT_NAME_COLUMN, STATUS_COLUMN, OUTPUT_ID_COLUMN]
+    missing = [c for c in required_cols if c not in df.columns]
+    if missing:
+        print(f"❌ Missing required columns in sheet: {missing}")
+        print(f"   Available columns: {list(df.columns)}")
+        return
+    # Resolve the Status column letter once, from its header position, so the
+    # write-back targets exactly that column even if the tab is reordered.
+    status_col_letter = _column_letter(df.columns.tolist().index(STATUS_COLUMN))
+
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
     
@@ -147,19 +184,20 @@ def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, sc
     already_completed_count = 0
     
     for index, row in df.iterrows():
-        dataset_id = row['Dataset ID']
-        check_status = row['Check']
-        name = row['Name']
-        model_filename = row['Model']
-        
-        # Skip rows that already have Check = True
-        if str(check_status).lower() == 'true':
-            print(f"✅ Row {index + 1}: Already completed ({name}) - skipping...")
+        dataset_id = row[OUTPUT_ID_COLUMN]
+        status_value = row[STATUS_COLUMN]
+        output_name = row[OUTPUT_NAME_COLUMN]
+        name = _sanitize_table_name(output_name) if pd.notna(output_name) else None
+        model_filename = row[MODEL_NAME_COLUMN]
+
+        # Skip rows already marked Deployed.
+        if str(status_value).strip().lower() == DEPLOYED_STATUS.lower():
+            print(f"✅ Row {index + 1}: Already deployed ({output_name}) - skipping...")
             already_completed_count += 1
             continue
-        
+
         # Verify that necessary data is present
-        if pd.isna(name) or pd.isna(model_filename):
+        if not name or pd.isna(model_filename):
             print(f"⚠️  Row {index + 1}: Incomplete data - skipping...")
             skipped_count += 1
             continue
@@ -416,14 +454,15 @@ def generate_stg_files_from_dataframe(df: pd.DataFrame, database: str = None, sc
                 print(f"   🎯 Created: {output_path}")
                 generated_count += 1
                 
-                # Update Google Sheets
+                # Update Google Sheets: set Status → "Translated" (only that single cell).
                 if gsheets and spreadsheet_id:
                     try:
-                        check_cell = f"Stg Files!B{index + 2}"
-                        gsheets.write_range(spreadsheet_id, check_cell, [["True"]])
-                        print(f"   📝 Updated Check column to 'True'")
+                        sheet = os.getenv("STAGING_MODELS_SHEET_NAME", "Staging models")
+                        status_cell = f"{sheet}!{status_col_letter}{index + 2}"
+                        gsheets.write_range(spreadsheet_id, status_cell, [[TRANSLATED_STATUS]])
+                        print(f"   📝 Updated Status to '{TRANSLATED_STATUS}'")
                     except Exception as write_error:
-                        print(f"   ⚠️  Warning: Could not update Check column: {write_error}")
+                        print(f"   ⚠️  Warning: Could not update Status column: {write_error}")
                 
             except Exception as e:
                 print(f"   ❌ Error creating file: {e}")
@@ -525,7 +564,7 @@ Environment Variables:
     parser.add_argument(
         "--read-only",
         action="store_true",
-        help="Run in read-only mode (don't update Check column in Google Sheets)"
+        help="Run in read-only mode (don't update the Status column in Google Sheets)"
     )
     
     parser.add_argument(
@@ -573,7 +612,7 @@ def main():
     print(f"🔐 Credentials: {args.credentials}")
     
     if args.read_only:
-        print("⚠️  Read-only mode: Will not update Check column")
+        print("⚠️  Read-only mode: Will not update the Status column")
     
     if args.dry_run:
         print("🧪 Dry-run mode: Will not create files or update sheets")
@@ -594,16 +633,17 @@ def main():
         
         if args.dry_run:
             print("\n🧪 Dry-run mode - showing what would be processed:")
-            pending_rows = df[df['Check'].astype(str).str.lower() != 'true']
-            completed_rows = df[df['Check'].astype(str).str.lower() == 'true']
-            
-            print(f"   ✅ Already completed: {len(completed_rows)} files")
+            status_norm = df[STATUS_COLUMN].astype(str).str.strip().str.lower()
+            pending_rows = df[status_norm != DEPLOYED_STATUS.lower()]
+            completed_rows = df[status_norm == DEPLOYED_STATUS.lower()]
+
+            print(f"   ✅ Already deployed: {len(completed_rows)} files")
             print(f"   🔄 Would process: {len(pending_rows)} files")
-            
+
             if not pending_rows.empty:
                 print("\n📋 Files that would be generated:")
                 for _, row in pending_rows.head(10).iterrows():
-                    print(f"   • {row['Model']} (from {row['Name']})")
+                    print(f"   • {row[MODEL_NAME_COLUMN]} (from {row[OUTPUT_NAME_COLUMN]})")
                 if len(pending_rows) > 10:
                     print(f"   ... and {len(pending_rows) - 10} more files")
             

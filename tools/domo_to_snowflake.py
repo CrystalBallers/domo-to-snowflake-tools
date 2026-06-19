@@ -33,7 +33,7 @@ from utils.domo import DomoHandler
 from utils.gsheets import GoogleSheets, READ_WRITE_SCOPES
 
 # Load environment variables
-load_dotenv()
+load_dotenv(override=True)
 
 # Configure logging
 logging.basicConfig(
