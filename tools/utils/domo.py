@@ -837,6 +837,91 @@ def _align_columns_to_existing_header(gsheets_client, spreadsheet_id, sheet_name
     return ordered_headers, ordered_rows
 
 
+def _write_owned_columns_by_key(gsheets_client, spreadsheet_id, sheet_name,
+                                df, owned, key_col) -> int:
+    """
+    Write ONLY the ``owned`` columns of ``df`` to ``sheet_name``, leaving every
+    other column in the tab untouched (never cleared, never written).
+
+    Existing row order is preserved (keyed by ``key_col``) so unowned columns
+    stay aligned with their row; rows whose key is new are appended last. Owned
+    columns are written grouped into contiguous A1 runs (one API call per run).
+
+    This is the safe alternative to clearing the whole sheet: a curated column a
+    user added (or another tool's column) can never be destroyed by this export.
+
+    Returns the number of data rows written.
+    """
+    try:
+        existing_values = gsheets_client.read_range(spreadsheet_id, f"{sheet_name}!A1:Z100000")
+    except Exception:  # noqa: BLE001
+        existing_values = []
+    existing_header = [str(h).strip() for h in existing_values[0]] if existing_values else []
+
+    # Preserve the sheet's existing row order (by key); append brand-new keys last.
+    existing_order: list[str] = []
+    if existing_header and key_col in existing_header:
+        k_idx = existing_header.index(key_col)
+        for r in existing_values[1:]:
+            if len(r) > k_idx and str(r[k_idx]).strip():
+                existing_order.append(str(r[k_idx]).strip())
+
+    new_ids = df[key_col].astype(str).str.strip().tolist()
+    new_set, existing_set = set(new_ids), set(existing_order)
+    ordered_ids = [i for i in existing_order if i in new_set] + [i for i in new_ids if i not in existing_set]
+    removed = [i for i in existing_order if i not in new_set]
+    added = [i for i in new_ids if i not in existing_set]
+    if existing_order and (removed or added):
+        preserved_now = [h for h in existing_header if h not in owned]
+        logger.warning(
+            f"⚠️  Row set changed since last write (+{len(added)} / -{len(removed)}). "
+            f"Unowned columns ({preserved_now or '(none)'}) are kept by row position, so rows "
+            f"at/after the first change may no longer line up — review them after this run."
+        )
+    df = (
+        df.assign(_key=df[key_col].astype(str).str.strip())
+        .set_index("_key").reindex(ordered_ids).reset_index(drop=True)
+    )
+
+    # Owned columns keep their current positions; new owned columns append at end.
+    final_header = list(existing_header)
+    for c in owned:
+        if c not in final_header:
+            final_header.append(c)
+    owned_positions = [i for i, h in enumerate(final_header) if h in owned]
+
+    runs: list[list[int]] = []
+    for idx in owned_positions:
+        if runs and idx == runs[-1][-1] + 1:
+            runs[-1].append(idx)
+        else:
+            runs.append([idx])
+
+    n_rows = len(df)
+    preserved = [h for h in final_header if h not in owned]
+    logger.info(f"📝 Writing {n_rows} rows across {len(owned_positions)} owned column(s); "
+                f"preserving untouched: {preserved or '(none)'}")
+
+    if not existing_values:
+        logger.info(f"📄 Sheet '{sheet_name}' doesn't exist, creating it...")
+        try:
+            gsheets_client.create_sheet(spreadsheet_id, sheet_name)
+        except Exception:  # noqa: BLE001
+            pass
+
+    for run in runs:
+        start, end = run[0], run[-1]
+        cols = [final_header[i] for i in run]
+        block = [cols]
+        for _, row in df.iterrows():
+            block.append(["" if pd.isna(row.get(c)) else str(row.get(c, "")) for c in cols])
+        gsheets_client.clear_range(
+            spreadsheet_id, f"{sheet_name}!{_col_a1(start)}1:{_col_a1(end)}100000")
+        gsheets_client.write_range(
+            spreadsheet_id, f"{sheet_name}!{_col_a1(start)}1", block)
+    return n_rows
+
+
 def export_datasets_to_spreadsheet(spreadsheet_id: str, sheet_name: str = "Datasets",
                                  credentials_path: str = None) -> bool:
     """
@@ -883,10 +968,11 @@ def export_datasets_to_spreadsheet(spreadsheet_id: str, sheet_name: str = "Datas
         # Initialize Google Sheets client
         gsheets_client = GoogleSheets(credentials_path=credentials_path, scopes=READ_WRITE_SCOPES)
         
-        # Prepare data for export
-        headers = ['Dataset ID', 'Name', 'Type', 'Description', 'Created', 'Last Updated', 'Row Count', 'Column Count', 'Owner']
-        data_rows = []
-        
+        # Columns this export OWNS. Anything else in the tab (e.g. '# Cards',
+        # QA columns) is left completely untouched — never cleared, never written.
+        OWNED = ['Dataset ID', 'Name', 'Type', 'Description', 'Created',
+                 'Last Updated', 'Row Count', 'Column Count', 'Owner']
+        records = []
         for dataset in datasets:
             # Convert datetime objects to strings to avoid JSON serialization issues
             created_date = dataset['created']
@@ -894,57 +980,34 @@ def export_datasets_to_spreadsheet(spreadsheet_id: str, sheet_name: str = "Datas
                 created_date = created_date.strftime('%Y-%m-%d %H:%M:%S')
             elif created_date is None:
                 created_date = ''
-            
+
             last_updated = dataset['last_updated']
             if hasattr(last_updated, 'strftime'):
                 last_updated = last_updated.strftime('%Y-%m-%d %H:%M:%S')
             elif last_updated is None:
                 last_updated = ''
-            
-            row = [
-                str(dataset['id']),
-                str(dataset['name']),
-                str(dataset.get('type', '')),
-                str(dataset['description']),
-                str(created_date),
-                str(last_updated),
-                int(dataset['row_count']),
-                int(dataset['column_count']),
-                str(dataset['owner'])
-            ]
-            data_rows.append(row)
-        
-        # Align to any existing header BEFORE clearing, so columns are never
-        # scrambled and a mismatch aborts without destroying data.
-        try:
-            headers, data_rows = _align_columns_to_existing_header(
-                gsheets_client, spreadsheet_id, sheet_name, headers, data_rows)
-        except ValueError as align_err:
-            logger.error(f"❌ {align_err}")
-            return False
 
-        # Combine headers and data
-        all_data = [headers] + data_rows
+            records.append({
+                'Dataset ID': str(dataset['id']),
+                'Name': str(dataset['name']),
+                'Type': str(dataset.get('type', '')),
+                'Description': str(dataset['description']),
+                'Created': str(created_date),
+                'Last Updated': str(last_updated),
+                'Row Count': int(dataset['row_count']),
+                'Column Count': int(dataset['column_count']),
+                'Owner': str(dataset['owner']),
+            })
+        datasets_df = pd.DataFrame(records, columns=OWNED)
 
-        # Write to Google Sheets
-        logger.info(f"📝 Writing {len(data_rows)} datasets to spreadsheet...")
+        # Write ONLY the owned columns, preserving any other column (e.g. '# Cards')
+        # and the existing row order keyed by Dataset ID.
+        n = _write_owned_columns_by_key(
+            gsheets_client, spreadsheet_id, sheet_name, datasets_df, OWNED, 'Dataset ID')
 
-        # First, try to clear the existing sheet if it exists
-        try:
-            # Read a small range to check if sheet exists
-            existing_data = gsheets_client.read_range(spreadsheet_id, f"{sheet_name}!A1:A1")
-            if existing_data:
-                logger.info(f"📄 Sheet '{sheet_name}' exists, clearing content...")
-                gsheets_client.clear_range(spreadsheet_id, f"{sheet_name}!A1:Z100000")
-        except Exception:
-            logger.info(f"📄 Sheet '{sheet_name}' doesn't exist, will be created automatically")
+        logger.info(f"✅ Successfully exported {n} datasets to {sheet_name}")
+        logger.info(f"📊 Owned columns: {', '.join(OWNED)}")
 
-        # Write the new data
-        gsheets_client.write_range(spreadsheet_id, f"{sheet_name}!A1", all_data)
-        
-        logger.info(f"✅ Successfully exported {len(data_rows)} datasets to {sheet_name}")
-        logger.info(f"📊 Columns: {', '.join(headers)}")
-        
         return True
 
     except Exception as e:
