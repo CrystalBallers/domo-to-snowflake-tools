@@ -15,7 +15,9 @@ import yaml
 logger = logging.getLogger(__name__)
 
 SELECT_VALUES_TYPE = "SelectValues"
-_WEIGHTS_PATH = Path(__file__).resolve().parent / "weights.yaml"
+# Project root (tools/utils/translation_difficulty/scoring.py -> repo root)
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_WEIGHTS_PATH = _PROJECT_ROOT / "translation_difficulty_weights.yaml"
 
 
 @dataclass
@@ -141,6 +143,7 @@ def aggregate_row(
     dataflow_id: str,
     step_points: float,
     total_tiles: int,
+    total_points_buffer: float = 1.0,
 ) -> Dict[str, Any]:
     subtotal = step_points + total_tiles
     return {
@@ -149,5 +152,5 @@ def aggregate_row(
         "Step Points": round(step_points),
         "Total Tiles": total_tiles,
         "Subtotal Points": round(subtotal),
-        "Total Points": "",
+        "Total Points": round(subtotal * total_points_buffer),
     }
