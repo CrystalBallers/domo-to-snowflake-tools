@@ -85,6 +85,7 @@ def create_parser() -> argparse.ArgumentParser:
     ds.add_argument("--test-connection", action="store_true", help="Test Domo connection")
     ds.add_argument("--export-to-spreadsheet", action="store_true", help="Export all Domo datasets to a Google Sheets spreadsheet")
     ds.add_argument("--export-dataflows", action="store_true", help="Crawl Domo lineage for the datasets in the 'All Datasets' tab and write the dataflow table to the 'All Dataflows' tab")
+    ds.add_argument("--count-cards", action="store_true", help="Count Domo cards per dataset (via search) and write a '# Cards' column to the datasets tab, leaving all other columns untouched")
     ds.add_argument("--list-local", action="store_true", help="List all Domo datasets locally")
     ds.add_argument("--credentials", default=cred_default, help="Path to Google Sheets credentials JSON file")
     ds.add_argument("--spreadsheet-id", default=sheet_id_default, help="Google Sheets spreadsheet ID to export to (uses default if not specified)")

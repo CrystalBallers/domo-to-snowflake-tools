@@ -1199,3 +1199,122 @@ def export_dataflows_to_spreadsheet(spreadsheet_id: str, sheet_name: str = None,
     except Exception as e:
         logger.error(f"❌ Failed to export dataflows to spreadsheet: {e}")
         return False
+
+
+def _count_cards_per_dataset(auth_client, page_size: int = 2000) -> dict:
+    """
+    Count how many Domo cards reference each dataset.
+
+    Uses the unified search API, which returns every card with its
+    ``dataSourceIds`` attached — so the whole instance is covered in a handful
+    of paginated calls instead of one request per dataset.
+
+    Returns:
+        dict mapping dataset_id -> card count (datasets with no cards are absent).
+    """
+    from collections import Counter
+    from domo_utils.api import get_search_api
+    from domo_utils.models.search import EntityType
+
+    search_api = get_search_api(auth_client)
+    counts: "Counter[str]" = Counter()
+    offset, total = 0, 0
+    while True:
+        resp = search_api.search(entities=[EntityType.CARD], limit=page_size, offset=offset)
+        objs = resp.model_dump().get("search_objects") or []
+        if not objs:
+            break
+        for o in objs:
+            total += 1
+            for dsid in (o.get("dataSourceIds") or []):
+                if dsid:
+                    counts[str(dsid)] += 1
+        offset += len(objs)
+        if len(objs) < page_size:
+            break
+    logger.info("🃏 Scanned %s cards across %s dataset(s) with at least one card",
+                total, len(counts))
+    return dict(counts)
+
+
+def count_cards_to_spreadsheet(spreadsheet_id: str, sheet_name: str = None,
+                               credentials_path: str = None) -> bool:
+    """
+    Count Domo cards per dataset and write a "# Cards" column to the datasets tab.
+
+    Reads the dataset IDs from the datasets tab, counts cards per dataset via the
+    Domo search API, then writes ONLY the "# Cards" column (creating it at the end
+    of the header if absent). Every other column is left untouched and row order
+    is preserved, so the count stays aligned with each dataset.
+
+    Args:
+        spreadsheet_id (str): Google Sheets spreadsheet ID
+        sheet_name (str): Datasets tab (default: DATASETS_SHEET_NAME env or "All Datasets")
+        credentials_path (str): Path to Google Sheets credentials file
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if sheet_name is None:
+        sheet_name = os.getenv("DATASETS_SHEET_NAME", "All Datasets")
+    if not credentials_path:
+        credentials_path = os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE")
+    if not credentials_path or not os.path.exists(credentials_path):
+        logger.error("❌ Google Sheets credentials file not found: %s", credentials_path)
+        return False
+
+    try:
+        from .gsheets import GoogleSheets, READ_WRITE_SCOPES
+
+        # 1) Authenticate to Domo and count cards per dataset.
+        handler = DomoHandler()
+        if not handler.setup_auth():
+            logger.error("❌ Failed to authenticate with Domo")
+            return False
+        counts = _count_cards_per_dataset(handler.auth_client)
+
+        # 2) Read the datasets tab and locate the Dataset ID column.
+        gsheets_client = GoogleSheets(credentials_path=credentials_path, scopes=READ_WRITE_SCOPES)
+        rows = gsheets_client.read_range(spreadsheet_id, f"{sheet_name}!A1:Z100000")
+        if not rows:
+            logger.error("❌ No data found in '%s' tab", sheet_name)
+            return False
+        header = [str(h).strip() for h in rows[0]]
+        oid_idx = next((header.index(c) for c in ["Dataset ID", "dataset_id", "DatasetID", "ID", "id"]
+                        if c in header), None)
+        if oid_idx is None:
+            logger.error("❌ 'Dataset ID' column not found in '%s' tab. Columns: %s",
+                         sheet_name, header)
+            return False
+
+        # 3) Locate (or append) the "# Cards" column.
+        if "# Cards" in header:
+            cards_idx = header.index("# Cards")
+        else:
+            cards_idx = len(header)
+            logger.info("➕ '# Cards' column not present; creating it at column %s",
+                        _col_a1(cards_idx))
+        cards_col = _col_a1(cards_idx)
+
+        # 4) Build the single column in existing row order (count, or 0 if none).
+        column = [["# Cards"]]
+        matched = 0
+        for r in rows[1:]:
+            oid = str(r[oid_idx]).strip() if len(r) > oid_idx else ""
+            if oid:
+                column.append([counts.get(oid, 0)])
+                matched += 1
+            else:
+                column.append([""])
+
+        # 5) Write ONLY that column; everything else stays byte-for-byte.
+        logger.info("📝 Writing '# Cards' to column %s for %s dataset(s); "
+                    "all other columns left untouched", cards_col, matched)
+        gsheets_client.clear_range(spreadsheet_id, f"{sheet_name}!{cards_col}1:{cards_col}100000")
+        gsheets_client.write_range(spreadsheet_id, f"{sheet_name}!{cards_col}1", column)
+        logger.info("✅ Card counts written to '%s' (column %s)", sheet_name, cards_col)
+        return True
+
+    except Exception as e:  # noqa: BLE001
+        logger.error("❌ Failed to count cards to spreadsheet: %s", e)
+        return False

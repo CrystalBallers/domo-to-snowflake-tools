@@ -15,7 +15,7 @@ from tools.domo_to_snowflake import (
     migrate_from_spreadsheet_to_stage, MigrationManager,
 )
 from tools.utils import DomoHandler, SnowflakeHandler, show_mfa_debug_info, reload_environment
-from tools.utils.domo import export_datasets_to_spreadsheet, export_dataflows_to_spreadsheet
+from tools.utils.domo import export_datasets_to_spreadsheet, export_dataflows_to_spreadsheet, count_cards_to_spreadsheet
 from tools.get_all_stg_files import (
     get_stg_files_data, generate_stg_files_from_dataframe,
     MODEL_NAME_COLUMN, OUTPUT_NAME_COLUMN, STATUS_COLUMN, DEPLOYED_STATUS,
@@ -310,6 +310,17 @@ def handle_datasets_command(args) -> int:
         logger.error("❌ Dataflow export failed!")
         return 1
 
+    if args.count_cards:
+        logger.info("🃏 Counting Domo cards per dataset...")
+        logger.info(f"📋 Spreadsheet ID: {args.spreadsheet_id}")
+        if count_cards_to_spreadsheet(spreadsheet_id=args.spreadsheet_id,
+                                      sheet_name=args.sheet_name,
+                                      credentials_path=args.credentials):
+            logger.info("🎉 Card count completed successfully!")
+            return 0
+        logger.error("❌ Card count failed!")
+        return 1
+
     if args.list_local:
         logger.info("📋 Fetching all datasets from Domo...")
         domo_handler = DomoHandler()
@@ -326,7 +337,7 @@ def handle_datasets_command(args) -> int:
         return 0
 
     logger.error("❌ No valid dataset options provided")
-    logger.error("Use --export-to-spreadsheet to export datasets to Google Sheets, --export-dataflows to export dataflow lineage, --list-local to list locally, or --test-connection to test Domo connection")
+    logger.error("Use --export-to-spreadsheet to export datasets to Google Sheets, --export-dataflows to export dataflow lineage, --count-cards to write a '# Cards' column, --list-local to list locally, or --test-connection to test Domo connection")
     return 1
 
 
