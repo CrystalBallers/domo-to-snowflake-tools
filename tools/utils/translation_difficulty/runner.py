@@ -266,7 +266,9 @@ def run_export_inventory(
 
     dataflow_api, _ = connect_domo()
     flows = list_all_dataflows(dataflow_api, page_size=page_size)
-    inv_df = dataflows_to_inventory_df(flows)
+    # Reindex to the canonical column order so the written layout never depends on the
+    # dict-insertion order of dataflows_to_inventory_df (careful column ordering).
+    inv_df = dataflows_to_inventory_df(flows).reindex(columns=inv_columns)
     # Create the tab if it does not exist yet (write fails on a missing range).
     try:
         client.create_sheet(spreadsheet_id, inventory_sheet)

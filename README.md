@@ -30,6 +30,11 @@ A comprehensive suite of tools for migrating data from Domo to Snowflake, with a
 - ✅ Automatic data load validation
 - ✅ Connectivity tests for all sources
 
+### Reporting
+- ✅ Reusable, **name-based** "Credit Usage" report that reproduces Domo dataflow 620 for any client (`credit-usage`)
+- ✅ Reusable, **name-based** "Runtime Usage" report (dataflow runtimes by dataflow + day) for any client (`runtime-usage`)
+- ✅ Configurable time window (last N months, explicit range, or full history)
+
 ### Utilities
 - ✅ Unified CLI for all operations
 - ✅ Detailed logging with emojis for better readability
@@ -265,6 +270,109 @@ python main.py generate-stg [options]
 - ✅ **Progress Tracking**: Sets Status to "Translated" when files are created successfully
 - ✅ **Schema Validation**: Connects to Snowflake to get real column names and types
 
+#### 5. `credit-usage` - Reusable Credit Usage report (any client)
+
+Reproduces the Domo **"Credit Usage"** dataflow (originally built as dataflow 620 on
+`grtfinancial`) for **any** Domo instance. The required sources are Domo *DomoStats*
+datasets that share the **same names across instances**, so the command resolves them
+**by name** (`Credit Usage | Domostats`, `Governance - Datasets`, `Users`,
+`Dataflow Details`) — no client-specific dataset IDs are hardcoded. It joins/aggregates
+them in pandas, filters to a time window on the `date` column (default: last 3 months),
+and writes the result to a tab (default `Credit Usage`). The full Credit Usage logic is computed
+faithfully, but only a focused subset of columns is published to the sheet
+(`date, month, entityType, entityId, usageUnit, category, creditsUsed, Dataset ID, Type,
+Row Count, Column Count, # Execution by Day`); the tab is cleared before each write.
+
+If a required source dataset cannot be found by name, the command fails with a clear
+`❌` error naming what was missing and writes nothing.
+
+```bash
+python main.py credit-usage [options]
+```
+
+**Options:**
+- `--spreadsheet-id`: Google Sheets spreadsheet ID (default: `MIGRATION_SPREADSHEET_ID` env)
+- `--sheet-name`: Destination tab name (default: `CREDIT_USAGE_SHEET_NAME` env, or `Credit Usage`)
+- `--credentials`: Path to Google Sheets credentials file (default: `GOOGLE_SHEETS_CREDENTIALS_FILE` env)
+- `--months`: Size of the trailing time window in months (default: `CREDIT_USAGE_MONTHS` env, or 3)
+- `--start-date` / `--end-date`: Explicit window range (`YYYY-MM-DD`); overrides `--months`
+- `--all`: Extract the **full** history (no date filter); overrides `--months` and the range
+- `--dry-run`: Compute + log row/column counts, the resolved name→id map and the date window, but do **not** write to Sheets
+- `--test-connection`: Just verify Domo auth + dataset listing
+
+Window precedence: `--all` > explicit `--start-date`/`--end-date` > `--months` > default (3 months).
+When a bounded window is in effect, the date filter is pushed down to the source that owns
+the `date` column for an efficient extract.
+
+```bash
+# Default: last 3 months → 'CU' tab
+python main.py credit-usage
+
+# Prove resolution + computation + window without writing anything
+python main.py credit-usage --dry-run
+
+# Full history into a custom tab
+python main.py credit-usage --all --sheet-name "CU - All"
+
+# Explicit date range
+python main.py credit-usage --start-date 2026-01-01 --end-date 2026-03-31
+
+# Last 6 months
+python main.py credit-usage --months 6
+```
+
+#### 6. `runtime-usage` - Reusable Runtime Usage report (any client)
+
+Reproduces the Domo **"Runtime Usage"** dataflow (originally built as dataflow 621 on
+`grtfinancial`) for **any** Domo instance. Its single source is the **`DataFlow History`**
+DomoStats dataset, which shares the **same name across instances**, so the command
+resolves it **by name** — no client-specific dataset IDs are hardcoded. It parses the
+string `Start Time` / `End Time` columns to compute each run's runtime, then groups into a
+single merged table by **(Dataflow ID, calendar day of `Start Time`)** — one row per
+dataflow per day (~365/year per dataflow). Each row carries the day's average input/output
+rows, average and total runtime, the number of runs considered, and the oldest/newest run
+timestamps. Runs with a null/unparseable `End Time` have no usable runtime and are dropped
+(the count is logged). The result is filtered to a time window on `Start Time` (default:
+last 3 months) and written to a tab (default `Runtime`); the tab is cleared before each write.
+
+If the `DataFlow History` dataset cannot be found by name, the command fails with a clear
+`❌` error naming what was missing and writes nothing.
+
+```bash
+python main.py runtime-usage [options]
+```
+
+**Options:**
+- `--spreadsheet-id`: Google Sheets spreadsheet ID (default: `MIGRATION_SPREADSHEET_ID` env)
+- `--sheet-name`: Destination tab name (default: `RUNTIME_USAGE_SHEET_NAME` env, or `Runtime`)
+- `--credentials`: Path to Google Sheets credentials file (default: `GOOGLE_SHEETS_CREDENTIALS_FILE` env)
+- `--months`: Size of the trailing time window in months (default: `RUNTIME_USAGE_MONTHS` env, or 3)
+- `--start-date` / `--end-date`: Explicit window range (`YYYY-MM-DD`); overrides `--months`
+- `--all`: Extract the **full** history (no date filter); overrides `--months` and the range
+- `--dry-run`: Compute + log row/column counts, the resolved name→id and the date window, but do **not** write to Sheets
+- `--test-connection`: Just verify Domo auth + dataset listing
+
+Window precedence: `--all` > explicit `--start-date`/`--end-date` > `--months` > default (3 months).
+When a bounded window is in effect, the date filter is pushed down to the `Start Time` column
+for an efficient extract.
+
+```bash
+# Default: last 3 months → 'Runtime' tab
+python main.py runtime-usage
+
+# Prove resolution + computation + window without writing anything
+python main.py runtime-usage --dry-run
+
+# Full history into a custom tab
+python main.py runtime-usage --all --sheet-name "Runtime - All"
+
+# Explicit date range
+python main.py runtime-usage --start-date 2026-01-01 --end-date 2026-03-31
+
+# Last 6 months
+python main.py runtime-usage --months 6
+```
+
 ## 📚 Usage Examples
 
 Examples:
@@ -341,6 +449,8 @@ Domo-to-snowflake-migration/
 │   ├── inventory_handler.py    # Inventory management
 │   ├── domo_to_snowflake.py   # Data migration
 │   ├── dataset_comparator.py  # Data comparison/QA
+│   ├── credit_usage.py        # Reusable name-based "Credit Usage" report (dataflow 620)
+│   ├── runtime_usage.py       # Reusable name-based "Runtime Usage" report (dataflow 621)
 │   ├── scripts/                # Utility scripts
 │   │   ├── __init__.py
 │   │   ├── make_inventory_template.py  # Regenerate the offline template
@@ -353,6 +463,7 @@ Domo-to-snowflake-migration/
 │       ├── domo.py            # Domo API client
 │       ├── snowflake.py       # Snowflake client
 │       ├── gsheets.py         # Google Sheets client
+│       ├── domo_export.py     # Shared helpers for name-based reports (resolution, window, sheet writer)
 │       ├── create_stg_sql_file.py  # STG SQL generation
 │       └── create_source.py   # Source file generation
 ├── results/                    # Output directories (created automatically)

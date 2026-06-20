@@ -19,6 +19,12 @@ Examples:
     python main.py generate-stg --dry-run
     python main.py generate-sources --database DW_RAW --schema SRC
     python main.py weighting score --from-sheet Inventory --max-dataflows 10
+    python main.py credit-usage --dry-run
+    python main.py credit-usage --all --sheet-name "Credit Usage"
+    python main.py credit-usage --start-date 2026-01-01 --end-date 2026-03-31
+    python main.py runtime-usage --dry-run
+    python main.py runtime-usage --all --sheet-name "Runtime"
+    python main.py runtime-usage --months 6
 
 Configuration is read from environment variables (see .env.example): Google Sheets
 (GOOGLE_SHEETS_CREDENTIALS_FILE, MIGRATION_SPREADSHEET_ID, *_SHEET_NAME), Domo
@@ -144,6 +150,47 @@ def create_parser() -> argparse.ArgumentParser:
     refresh.add_argument("--skip", default=None, help="Comma-separated steps to skip")
     refresh.add_argument("--dry-run", action="store_true", help="Print the plan without executing")
     refresh.add_argument("--fail-fast", action="store_true", help="Stop at the first failed step (default: continue and report)")
+
+    # credit-usage (name-based reproduction of dataflow 620 for any client)
+    cu = sub.add_parser(
+        'credit-usage',
+        help="Compute Domo 'Credit Usage' (sources resolved BY NAME) and write a sheet tab",
+        description="Resolves the required DomoStats sources by name (not ID), reproduces "
+                    "dataflow 620's Credit Usage logic in pandas, filters to a time window "
+                    "(default: last 3 months), and writes the result to a tab (default 'CU').",
+    )
+    cu_sheet_default = os.getenv("CREDIT_USAGE_SHEET_NAME", "Credit Usage")
+    cu_months_default = int(os.getenv("CREDIT_USAGE_MONTHS") or 3)
+    cu.add_argument("--spreadsheet-id", default=sheet_id_default, help="Google Sheets spreadsheet ID (default: MIGRATION_SPREADSHEET_ID env)")
+    cu.add_argument("--sheet-name", default=cu_sheet_default, help="Destination tab name (default: CREDIT_USAGE_SHEET_NAME env or 'Credit Usage')")
+    cu.add_argument("--credentials", default=cred_default, help="Path to Google Sheets credentials JSON file (default: GOOGLE_SHEETS_CREDENTIALS_FILE env)")
+    cu.add_argument("--months", type=int, default=cu_months_default, help="Size of the trailing time window in months (default: CREDIT_USAGE_MONTHS env or 3)")
+    cu.add_argument("--start-date", help="Explicit window start (YYYY-MM-DD); overrides --months")
+    cu.add_argument("--end-date", help="Explicit window end (YYYY-MM-DD); overrides --months")
+    cu.add_argument("--all", action="store_true", help="Extract the FULL history (no date filter); overrides --months and the range")
+    cu.add_argument("--dry-run", action="store_true", help="Compute + log counts, name→id map and the date window, but do NOT write to Sheets")
+    cu.add_argument("--test-connection", action="store_true", help="Just verify Domo auth + dataset listing")
+
+    # runtime-usage (name-based reproduction of dataflow 621 for any client)
+    ru = sub.add_parser(
+        'runtime-usage',
+        help="Compute Domo 'Runtime Usage' (source resolved BY NAME) and write a sheet tab",
+        description="Resolves the 'DataFlow History' DomoStats by name (not ID), computes a "
+                    "merged Runtime Usage table grouped by (Dataflow ID, day) in pandas, filters "
+                    "to a time window (default: last 3 months), and writes the result to a tab "
+                    "(default 'Runtime').",
+    )
+    ru_sheet_default = os.getenv("RUNTIME_USAGE_SHEET_NAME", "Runtime")
+    ru_months_default = int(os.getenv("RUNTIME_USAGE_MONTHS") or 3)
+    ru.add_argument("--spreadsheet-id", default=sheet_id_default, help="Google Sheets spreadsheet ID (default: MIGRATION_SPREADSHEET_ID env)")
+    ru.add_argument("--sheet-name", default=ru_sheet_default, help="Destination tab name (default: RUNTIME_USAGE_SHEET_NAME env or 'Runtime')")
+    ru.add_argument("--credentials", default=cred_default, help="Path to Google Sheets credentials JSON file (default: GOOGLE_SHEETS_CREDENTIALS_FILE env)")
+    ru.add_argument("--months", type=int, default=ru_months_default, help="Size of the trailing time window in months (default: RUNTIME_USAGE_MONTHS env or 3)")
+    ru.add_argument("--start-date", help="Explicit window start (YYYY-MM-DD); overrides --months")
+    ru.add_argument("--end-date", help="Explicit window end (YYYY-MM-DD); overrides --months")
+    ru.add_argument("--all", action="store_true", help="Extract the FULL history (no date filter); overrides --months and the range")
+    ru.add_argument("--dry-run", action="store_true", help="Compute + log counts, resolved id and the date window, but do NOT write to Sheets")
+    ru.add_argument("--test-connection", action="store_true", help="Just verify Domo auth + dataset listing")
 
     # weighting (forwards remaining argv to the translation-difficulty CLI)
     weighting = sub.add_parser(

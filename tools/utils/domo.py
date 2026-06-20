@@ -922,19 +922,21 @@ def _write_owned_columns_by_key(gsheets_client, spreadsheet_id, sheet_name,
     return n_rows
 
 
-def export_datasets_to_spreadsheet(spreadsheet_id: str, sheet_name: str = "Datasets",
+def export_datasets_to_spreadsheet(spreadsheet_id: str, sheet_name: str = None,
                                  credentials_path: str = None) -> bool:
     """
     Export all datasets from Domo to Google Sheets.
-    
+
     Args:
         spreadsheet_id (str): Google Sheets spreadsheet ID
-        sheet_name (str): Name of the sheet tab (default: "Datasets")
+        sheet_name (str): Destination tab (default: DATASETS_SHEET_NAME env or "Datasets")
         credentials_path (str): Path to Google Sheets credentials file
-        
+
     Returns:
         bool: True if export successful, False otherwise
     """
+    if sheet_name is None:
+        sheet_name = os.getenv("DATASETS_SHEET_NAME", "Datasets")
     if not credentials_path:
         credentials_path = os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE")
     

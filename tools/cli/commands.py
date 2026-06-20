@@ -690,6 +690,34 @@ def handle_generate_sources_command(args) -> int:
         return 1
 
 
+def handle_credit_usage_command(args) -> int:
+    """Compute Domo 'Credit Usage' (sources resolved by name) and write it to a sheet."""
+    from tools.credit_usage import run_credit_usage
+    logger.info("🚀 Starting Credit Usage extraction (name-based)...")
+    try:
+        return run_credit_usage(args)
+    except KeyboardInterrupt:
+        logger.info("⚠️  Credit Usage cancelled by user")
+        return 1
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"❌ Credit Usage failed: {e}")
+        return 1
+
+
+def handle_runtime_usage_command(args) -> int:
+    """Compute Domo 'Runtime Usage' (source resolved by name) and write it to a sheet."""
+    from tools.runtime_usage import run_runtime_usage
+    logger.info("🚀 Starting Runtime Usage extraction (name-based)...")
+    try:
+        return run_runtime_usage(args)
+    except KeyboardInterrupt:
+        logger.info("⚠️  Runtime Usage cancelled by user")
+        return 1
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"❌ Runtime Usage failed: {e}")
+        return 1
+
+
 def handle_weighting_command(args) -> int:
     """Forward to the translation-difficulty CLI (tools.utils.translation_difficulty)."""
     argv = list(getattr(args, "weighting_argv", None) or [])
