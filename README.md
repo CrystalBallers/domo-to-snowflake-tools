@@ -35,6 +35,13 @@ A comprehensive suite of tools for migrating data from Domo to Snowflake, with a
 - ✅ Reusable, **name-based** "Runtime Usage" report (dataflow runtimes by dataflow + day) for any client (`runtime-usage`)
 - ✅ Configurable time window (last N months, explicit range, or full history)
 
+### Dataset & Card Inventory
+- ✅ Export all Domo datasets and their lineage/dataflows to Google Sheets
+- ✅ Count Domo cards per dataset (`datasets --count-cards`)
+- ✅ List every card and the dataset(s) it uses (`datasets --list-cards`)
+- ✅ One-shot `refresh` command that runs the whole Domo → spreadsheet pipeline in order
+- ✅ Score dataflow translation difficulty (`weighting`)
+
 ### Utilities
 - ✅ Unified CLI for all operations
 - ✅ Detailed logging with emojis for better readability
@@ -204,11 +211,25 @@ python main.py inventory [options]
 ```
 
 **Options:**
-- `--export-dir`: Directory to save SQL files (default: `results/sql/translated`)
+- `--export-dir`: Directory to save SQL files (default: `results/translations/sql`)
 - `--credentials`: Path to Google Sheets credentials file
 - `--test-connection`: Test connection and show preview
 
-#### 2. `migrate` - Data Migration
+#### 2. `dataflow-raw` - Export raw dataflow definitions
+
+Export the **raw** Domo dataflow definitions (tiles/steps) as JSON, before any
+translation to SQL. Useful for inspecting the original dataflow structure.
+
+```bash
+python main.py dataflow-raw [options]
+```
+
+**Options:**
+- `--output-dir`: Directory to save raw JSON files (default: `results/translations/raw`)
+- `--credentials`: Path to Google Sheets credentials file
+- `--dataflow-id`: Fetch a single dataflow by ID instead of reading the inventory sheet
+
+#### 3. `migrate` - Data Migration
 
 Migrate datasets from Domo to Snowflake.
 
@@ -225,8 +246,28 @@ python main.py migrate [options]
 - `--spreadsheet-id`: Google Sheets spreadsheet ID (uses default if not specified)
 - `--sheet-name`: Migration sheet tab name (default: Migration)
 - `--test-connection`: Test Domo and Snowflake connections
+- `--full-table`: Upload the entire table instead of limiting to the first 1000 rows
+- `--auto-chunk-size`: Auto-tune the chunk size for X-Small warehouses based on dataset size
+- `--to-stage` / `--from-stage`: Migrate through a Snowflake stage instead of directly to the table
+- `--stage-name`: Snowflake stage name for stage-based migration
+- `--file-pattern`: File pattern to match in the stage when loading from stage (default: `*.csv`)
+- `--if-exists`: What to do if the target table exists — `replace` (default), `append`, or `fail`
 
-#### 3. `datasets` - Dataset Management
+#### 4. `stage` - Manage Snowflake stages
+
+Create, inspect and clean Snowflake stages used for staged migrations.
+
+```bash
+python main.py stage <action> --stage-name NAME
+```
+
+**Actions:**
+- `create --stage-name NAME`: Create a new stage
+- `list --stage-name NAME`: List files in a stage
+- `drop --stage-name NAME`: Drop a stage
+- `clean --stage-name NAME [--file-pattern '*']`: Remove files matching a pattern from a stage
+
+#### 5. `datasets` - Dataset Management
 
 Manage and export Domo datasets.
 
@@ -238,13 +279,38 @@ python main.py datasets [options]
 - `--test-connection`: Test Domo connection
 - `--export-to-spreadsheet`: Export all Domo datasets to Google Sheets
 - `--export-dataflows`: Crawl Domo lineage for the datasets in the `All Datasets` tab and write the dataflow table (`Output Dataset ID`, `Dataflow ID`, `Source Dataset IDs`, `All Source Dataset IDs`) to the `All Dataflows` tab
+- `--count-cards`: Count Domo cards per dataset (via search) and write a `# Cards` column to the datasets tab, leaving all other columns untouched
+- `--list-cards`: List every Domo card and the dataset(s) it uses (one row per card/dataset pair) to a dedicated `Cards per Dataset` tab (cleared and rewritten on every run)
 - `--list-local`: List all Domo datasets locally
 - `--credentials`: Path to Google Sheets credentials file
 - `--spreadsheet-id`: Google Sheets spreadsheet ID (uses default if not specified)
 - `--sheet-name`: Sheet name for datasets (default: DomoDatasets)
 - `--batch-size`: Number of datasets to fetch per batch (default: 100)
 
-#### 4. `generate-stg` - Generate STG Files
+#### 6. `compare` - Data Comparison / QA
+
+Compare a Domo dataset against a Snowflake table or a CSV file to validate a migration.
+
+```bash
+python main.py compare [options]
+```
+
+**Options:**
+- `--domo-dataset-id`: Domo output ID to compare
+- `--snowflake-table`: Snowflake table to compare against (required unless using `--csv-file`)
+- `--csv-file`: Path to a CSV file to compare against (alternative to a Snowflake table)
+- `--key-columns`: One or more key columns to align rows for comparison
+- `--sample-size`: Number of rows to sample (default: automatic)
+- `--sampling-method`: `random` (default) or `ordered`
+- `--transform-columns`: Normalize column names (e.g. `My Column` → `my_column`)
+- `--use-schema`: Use the `Schema` column from the spreadsheet to force data types
+- `--from-spreadsheet`: Compare datasets listed in the Google Sheets comparison tab
+- `--from-inventory`: Compare datasets from the Inventory sheet (uses Output ID, Model Name, Key Columns)
+- `--csv-encoding` / `--csv-separator`: CSV parsing options (defaults: `utf-8`, `,`)
+- `--credentials` / `--spreadsheet-id` / `--sheet-name`: Google Sheets options (sheet default: `QA - Test`)
+- `--test-connection`: Test Domo and Snowflake connections
+
+#### 7. `generate-stg` - Generate STG Files
 
 Generate staging SQL files with automatic CAST based on Snowflake schema and Google Sheets tracking.
 
@@ -270,7 +336,39 @@ python main.py generate-stg [options]
 - ✅ **Progress Tracking**: Sets Status to "Translated" when files are created successfully
 - ✅ **Schema Validation**: Connects to Snowflake to get real column names and types
 
-#### 5. `credit-usage` - Reusable Credit Usage report (any client)
+#### 8. `generate-sources` - Generate dbt sources.yml
+
+Generate a dbt `sources.yml` file from the Google Sheets data.
+
+```bash
+python main.py generate-sources [options]
+```
+
+**Options:**
+- `--database`: Snowflake database name (default: from `SNOWFLAKE_DATABASE` env var)
+- `--schema`: Snowflake schema name (default: `SRC`)
+- `--output`: Output file name (default: `sources_auto.yml`)
+
+#### 9. `refresh` - Run the Domo → spreadsheet pipeline
+
+Orchestrate the export steps (`datasets`, `cards`, `dataflows`, `inventory`) in
+dependency order with a single command. By default it runs every step **except**
+the slow `score` step (~20 min); add `--with-score` to include it.
+
+```bash
+python main.py refresh [options]
+```
+
+**Options:**
+- `--credentials`: Path to Google Sheets credentials file
+- `--spreadsheet-id`: Google Sheets spreadsheet ID (uses default if not specified)
+- `--with-score`: Also run the slow `score` step (~20 min)
+- `--only`: Comma-separated subset of steps to run (`datasets,cards,dataflows,inventory,score`)
+- `--skip`: Comma-separated steps to skip
+- `--dry-run`: Print the plan without executing
+- `--fail-fast`: Stop at the first failed step (default: continue and report at the end)
+
+#### 10. `credit-usage` - Reusable Credit Usage report (any client)
 
 Reproduces the Domo **"Credit Usage"** dataflow (originally built as dataflow 620 on
 `grtfinancial`) for **any** Domo instance. The required sources are Domo *DomoStats*
@@ -321,7 +419,7 @@ python main.py credit-usage --start-date 2026-01-01 --end-date 2026-03-31
 python main.py credit-usage --months 6
 ```
 
-#### 6. `runtime-usage` - Reusable Runtime Usage report (any client)
+#### 11. `runtime-usage` - Reusable Runtime Usage report (any client)
 
 Reproduces the Domo **"Runtime Usage"** dataflow (originally built as dataflow 621 on
 `grtfinancial`) for **any** Domo instance. Its single source is the **`DataFlow History`**
@@ -373,11 +471,30 @@ python main.py runtime-usage --start-date 2026-01-01 --end-date 2026-03-31
 python main.py runtime-usage --months 6
 ```
 
+#### 12. `weighting` - Score dataflow translation difficulty
+
+Forwards to the translation-difficulty tool: scores how hard each Domo dataflow is
+to translate to Snowflake and writes the results to Google Sheets. Put the tool's
+own subcommand and options **after** `weighting`.
+
+```bash
+python main.py weighting <subcommand> [options]
+
+# Export the inventory the scorer reads
+python main.py weighting export-inventory
+
+# Score dataflows from an Inventory sheet, limiting to 10
+python main.py weighting score --from-sheet Inventory --max-dataflows 10
+```
+
+Full reference: [docs/TRANSLATION_DIFFICULTY.md](docs/TRANSLATION_DIFFICULTY.md).
+The scoring weights live in `translation_difficulty_weights.yaml` at the repo root.
+
 ## 📚 Usage Examples
 
 Examples:
     # Export inventory dataflows to SQL
-    python main.py inventory --export-dir results/sql/translated
+    python main.py inventory --export-dir results/translations/sql
     
     # Test Google Sheets connection
     python main.py inventory --test-connection
@@ -467,9 +584,10 @@ Domo-to-snowflake-migration/
 │       ├── create_stg_sql_file.py  # STG SQL generation
 │       └── create_source.py   # Source file generation
 ├── results/                    # Output directories (created automatically)
-│   ├── sql/
-│   │   ├── stg/               # Staging files
-│   │   └── translated/        # Inventory exports
+│   ├── translations/
+│   │   ├── sql/               # Inventory SQL exports
+│   │   └── raw/               # Raw dataflow JSON exports
+│   ├── sql/stg/               # Staging files
 │   └── txt/qa/                # QA comparison reports
 └── tests/                      # Test files
     ├── __init__.py
@@ -571,7 +689,7 @@ The inventory command generates:
    Total dataflows: 25
    ✅ Real translations: 5
    ⚠️  Placeholder files: 20
-   📁 Output directory: /path/to/results/sql/translated
+   📁 Output directory: /path/to/results/translations/sql
 ```
 
 ### Migration Results
