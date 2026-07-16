@@ -15,7 +15,7 @@ from tools.domo_to_snowflake import (
     migrate_from_spreadsheet_to_stage, MigrationManager,
 )
 from tools.utils import DomoHandler, SnowflakeHandler, show_mfa_debug_info, reload_environment
-from tools.utils.domo import export_datasets_to_spreadsheet, export_dataflows_to_spreadsheet, count_cards_to_spreadsheet
+from tools.utils.domo import export_datasets_to_spreadsheet, export_dataflows_to_spreadsheet, count_cards_to_spreadsheet, list_cards_to_spreadsheet
 from tools.get_all_stg_files import (
     get_stg_files_data, generate_stg_files_from_dataframe,
     MODEL_NAME_COLUMN, OUTPUT_NAME_COLUMN, STATUS_COLUMN, DEPLOYED_STATUS,
@@ -319,6 +319,16 @@ def handle_datasets_command(args) -> int:
             logger.info("🎉 Card count completed successfully!")
             return 0
         logger.error("❌ Card count failed!")
+        return 1
+
+    if args.list_cards:
+        logger.info("🃏 Listing Domo cards per dataset...")
+        logger.info(f"📋 Spreadsheet ID: {args.spreadsheet_id}")
+        if list_cards_to_spreadsheet(spreadsheet_id=args.spreadsheet_id,
+                                     credentials_path=args.credentials):
+            logger.info("🎉 Card listing completed successfully!")
+            return 0
+        logger.error("❌ Card listing failed!")
         return 1
 
     if args.list_local:

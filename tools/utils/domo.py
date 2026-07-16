@@ -1302,6 +1302,125 @@ def _count_cards_per_dataset(auth_client, page_size: int = 2000) -> dict:
     return dict(counts)
 
 
+def _list_cards_per_dataset(auth_client, page_size: int = 2000) -> list:
+    """
+    List every Domo card together with each dataset it references.
+
+    Uses the same unified search API as :func:`_count_cards_per_dataset`, but
+    instead of discarding each card it emits one record per (card, dataset)
+    pair — a card that reads N datasets produces N rows. Dataset names are taken
+    from the card's ``dataSubscriptions`` when present (no extra API calls).
+
+    Returns:
+        list of dicts, each with keys: dataset_id, dataset_name, card_id,
+        card_title, card_type, chart_type, owner. Cards with no dataset are
+        skipped (they can't be tied to a dataset row).
+    """
+    from domo_utils.api import get_search_api
+    from domo_utils.models.search import EntityType
+
+    search_api = get_search_api(auth_client)
+    rows: list = []
+    offset, total = 0, 0
+    while True:
+        resp = search_api.search(entities=[EntityType.CARD], limit=page_size, offset=offset)
+        objs = resp.model_dump().get("search_objects") or []
+        if not objs:
+            break
+        for o in objs:
+            total += 1
+            # Map dataSourceId -> dataSourceName from the card's subscriptions.
+            names = {str(s.get("dataSourceId")): s.get("dataSourceName")
+                     for s in (o.get("dataSubscriptions") or []) if s.get("dataSourceId")}
+            for dsid in (o.get("dataSourceIds") or []):
+                if not dsid:
+                    continue
+                rows.append({
+                    "dataset_id": str(dsid),
+                    "dataset_name": names.get(str(dsid), ""),
+                    "card_id": str(o.get("databaseId") or ""),
+                    "card_title": o.get("title") or "",
+                    "card_type": o.get("cardType") or "",
+                    "chart_type": o.get("chartType") or "",
+                    "owner": o.get("ownedByName") or "",
+                })
+        offset += len(objs)
+        if len(objs) < page_size:
+            break
+    logger.info("🃏 Scanned %s cards → %s (card, dataset) pair(s)", total, len(rows))
+    return rows
+
+
+def list_cards_to_spreadsheet(spreadsheet_id: str, sheet_name: str = None,
+                              credentials_path: str = None) -> bool:
+    """
+    Export every Domo card and the dataset(s) it uses to a dedicated tab.
+
+    Scans all cards in the instance via the Domo search API and writes one row
+    per (card, dataset) pair to ``sheet_name`` (default: "Cards per Dataset").
+    This tab is fully owned by this command — it is cleared and rewritten in
+    full on every run, so do not add hand-curated columns to it.
+
+    Args:
+        spreadsheet_id (str): Google Sheets spreadsheet ID
+        sheet_name (str): Target tab (default: CARDS_SHEET_NAME env or "Cards per Dataset")
+        credentials_path (str): Path to Google Sheets credentials file
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if sheet_name is None:
+        sheet_name = os.getenv("CARDS_SHEET_NAME", "Cards per Dataset")
+    if not credentials_path:
+        credentials_path = os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE")
+    if not credentials_path or not os.path.exists(credentials_path):
+        logger.error("❌ Google Sheets credentials file not found: %s", credentials_path)
+        return False
+
+    try:
+        from .common import get_env_config
+        from .gsheets import GoogleSheets, READ_WRITE_SCOPES
+
+        # 1) Authenticate to Domo and list every (card, dataset) pair.
+        handler = DomoHandler()
+        if not handler.setup_auth():
+            logger.error("❌ Failed to authenticate with Domo")
+            return False
+        pairs = _list_cards_per_dataset(handler.auth_client)
+
+        # Build a card URL from the instance, e.g. https://<instance>.domo.com/kpis/details/<id>
+        instance = (get_env_config().get("DOMO_INSTANCE") or "").strip()
+        base_url = f"https://{instance}.domo.com/kpis/details/" if instance else ""
+
+        # 2) Sort by dataset then card so the tab reads naturally.
+        pairs.sort(key=lambda r: (r["dataset_id"], r["card_title"].lower()))
+
+        header = ["Dataset ID", "Dataset Name", "Card ID", "Card Title",
+                  "Card Type", "Chart Type", "Owner", "Card URL"]
+        block = [header]
+        for r in pairs:
+            block.append([
+                r["dataset_id"], r["dataset_name"], r["card_id"], r["card_title"],
+                r["card_type"], r["chart_type"], r["owner"],
+                f"{base_url}{r['card_id']}" if base_url and r["card_id"] else "",
+            ])
+
+        # 3) Fully own the tab: create if missing, then clear + write everything.
+        gsheets_client = GoogleSheets(credentials_path=credentials_path, scopes=READ_WRITE_SCOPES)
+        try:
+            gsheets_client.create_sheet(spreadsheet_id, sheet_name)
+        except Exception:  # noqa: BLE001 — already exists
+            pass
+        gsheets_client.clear_range(spreadsheet_id, f"{sheet_name}!A1:Z100000")
+        gsheets_client.write_range(spreadsheet_id, f"{sheet_name}!A1", block)
+        logger.info("✅ Wrote %s (card, dataset) row(s) to '%s'", len(pairs), sheet_name)
+        return True
+
+    except Exception as e:  # noqa: BLE001
+        logger.error("❌ Failed to list cards to spreadsheet: %s", e)
+        return False
+
+
 def count_cards_to_spreadsheet(spreadsheet_id: str, sheet_name: str = None,
                                credentials_path: str = None) -> bool:
     """
