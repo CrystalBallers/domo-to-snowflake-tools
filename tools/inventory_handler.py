@@ -538,8 +538,8 @@ Environment Variables:
     
     parser.add_argument(
         "--export-dir",
-        default=os.getenv("EXPORT_DIR", "results/sql/translated"),
-        help="Directory to save SQL files (default: results/sql/translated)"
+        default=os.getenv("EXPORT_DIR", "results/translations/sql"),
+        help="Directory to save SQL files (default: results/translations/sql)"
     )
     
     parser.add_argument(

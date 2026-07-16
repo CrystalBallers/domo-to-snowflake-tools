@@ -435,4 +435,4 @@ class TestEnvironmentVariables:
         parser = main.create_parser()
         args = parser.parse_args(['inventory'])
         
-        assert args.export_dir == 'results/sql/translated'
+        assert args.export_dir == 'results/translations/sql'

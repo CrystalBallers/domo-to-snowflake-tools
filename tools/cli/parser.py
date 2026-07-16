@@ -47,13 +47,13 @@ def create_parser() -> argparse.ArgumentParser:
 
     # inventory
     inv = sub.add_parser('inventory', help='Extract and export inventory data from Google Sheets')
-    inv.add_argument("--export-dir", default=os.getenv("EXPORT_DIR", "results/sql/translated"), help="Directory to save SQL files (default: results/sql/translated)")
+    inv.add_argument("--export-dir", default=os.getenv("EXPORT_DIR", "results/translations/sql"), help="Directory to save SQL files (default: results/translations/sql)")
     inv.add_argument("--credentials", default=cred_default, help="Path to Google Sheets credentials JSON file")
     inv.add_argument("--test-connection", action="store_true", help="Test Google Sheets connection and show inventory preview")
 
     # dataflow-raw
     raw = sub.add_parser('dataflow-raw', help='Export RAW Domo dataflow definitions (tiles/steps) as JSON, before translation')
-    raw.add_argument("--output-dir", default=os.getenv("RAW_EXPORT_DIR", "results/dataflows/raw"), help="Directory to save raw JSON files (default: results/dataflows/raw)")
+    raw.add_argument("--output-dir", default=os.getenv("RAW_EXPORT_DIR", "results/translations/raw"), help="Directory to save raw JSON files (default: results/translations/raw)")
     raw.add_argument("--credentials", default=cred_default, help="Path to Google Sheets credentials JSON file")
     raw.add_argument("--dataflow-id", help="Fetch a single dataflow by ID instead of reading the inventory sheet")
 
