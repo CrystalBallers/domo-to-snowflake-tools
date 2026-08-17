@@ -87,7 +87,7 @@ Failed dataflows still produce a main row with empty numeric fields; check logs 
 
 ## Tuning scores
 
-Edit [tools/utils/translation_difficulty/weights.yaml](../tools/utils/translation_difficulty/weights.yaml):
+Edit [translation_difficulty_weights.yaml](../translation_difficulty_weights.yaml):
 
 - `type_base_minutes`: per Domo action type (e.g. `ExpressionEvaluator`, `MergeJoin`).
 - `defaults`: `bucket_chars`, `minutes_per_bucket`, `length_addon_cap`, unknown-type default, and fallback sizing when SQL render is empty.

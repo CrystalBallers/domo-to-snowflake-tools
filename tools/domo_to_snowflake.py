@@ -12,7 +12,10 @@ Author: Migration Team
 """
 
 import os
+import re
 import sys
+import json
+import time
 import argparse
 import logging
 import pandas as pd
@@ -30,7 +33,7 @@ from utils.domo import DomoHandler
 from utils.gsheets import GoogleSheets, READ_WRITE_SCOPES
 
 # Load environment variables
-load_dotenv()
+load_dotenv(override=True)
 
 # Configure logging
 logging.basicConfig(
@@ -68,7 +71,6 @@ def sanitize_table_name(dataset_id: str, dataset_name: str = None, use_prefix: b
         clean_name = dataset_name.lower().strip()
         clean_name = clean_name.replace(' ', '_').replace('-', '_').replace('.', '_')
         # Remove any non-alphanumeric characters except underscores
-        import re
         clean_name = re.sub(r'[^a-z0-9_]', '', clean_name)
         # Ensure it starts with a letter
         if clean_name and clean_name[0].isdigit():
@@ -79,7 +81,6 @@ def sanitize_table_name(dataset_id: str, dataset_name: str = None, use_prefix: b
         # Remove hyphens and other special characters
         clean_id = dataset_id.replace('-', '_').replace('.', '_')
         # Remove any non-alphanumeric characters except underscores
-        import re
         clean_id = re.sub(r'[^a-zA-Z0-9_]', '', clean_id)
         # Ensure it starts with a letter
         if clean_id and clean_id[0].isdigit():
@@ -95,6 +96,65 @@ def sanitize_table_name(dataset_id: str, dataset_name: str = None, use_prefix: b
     
     logger.debug(f"📝 Generated table name: {dataset_id} -> {table_name}")
     return table_name
+
+
+# Candidate header names accepted when reading a migration sheet.
+_ID_COLUMN_CANDIDATES = ['Dataset ID', 'dataset_id', 'DatasetID', 'dataset', 'Dataset', 'ID', 'Dataset Id']
+_NAME_COLUMN_CANDIDATES = ['Model Name', 'model_name']
+_STATUS_COLUMN_CANDIDATES = ['Status', 'status', 'migration_status', 'Migration Status', 'state']
+
+
+def _find_column(df: pd.DataFrame, candidates: List[str]) -> Optional[str]:
+    """Return the first column from ``candidates`` present in ``df``, or None."""
+    for col in candidates:
+        if col in df.columns:
+            return col
+    return None
+
+
+def _resolve_migration_columns(df: pd.DataFrame) -> tuple:
+    """Locate the Dataset ID / Name / Status columns of a migration sheet.
+
+    Adds a default column in place for any that is missing (mirroring the original
+    behavior) and returns the resolved ``(id_column, name_column, status_column)``.
+    """
+    id_column = _find_column(df, _ID_COLUMN_CANDIDATES)
+    name_column = _find_column(df, _NAME_COLUMN_CANDIDATES)
+    status_column = _find_column(df, _STATUS_COLUMN_CANDIDATES)
+
+    if id_column is None:
+        logger.warning("⚠️  Dataset ID column not found, adding default")
+        df['Dataset ID'] = None
+        id_column = 'Dataset ID'
+
+    if name_column is None:
+        logger.warning("⚠️  Name column not found, adding default")
+        df['Name'] = 'Unknown'
+        name_column = 'Name'
+
+    if status_column is None:
+        logger.warning("⚠️  Status column not found, adding default")
+        df['Status'] = 'Pending'
+        status_column = 'Status'
+
+    return id_column, name_column, status_column
+
+
+def _filter_pending_rows(df: pd.DataFrame, status_column: str) -> pd.DataFrame:
+    """Return rows whose status is not 'Migrated' (case-insensitive)."""
+    df[status_column] = df[status_column].fillna('Pending').astype(str)
+    pending_df = df[~df[status_column].str.contains('Migrated', case=False, na=False)]
+    logger.info(f"📋 Found {len(pending_df)} datasets pending migration (excluding already migrated)")
+    return pending_df
+
+
+def _resolve_spreadsheet_chunk_size(full_table: bool, auto_chunk_size: bool):
+    """Map the --full-table / --auto-chunk-size flags to a chunk_size value."""
+    if full_table:
+        return None  # No limit, upload entire table
+    if auto_chunk_size:
+        return "auto"  # Auto-determine based on dataset size
+    return 1000  # Default fixed chunk size
 
 
 class MigrationManager:
@@ -126,9 +186,45 @@ class MigrationManager:
             self.snowflake_handler = snowflake_handler
             self.stage_handler = StageHandler(snowflake_handler)
             self._connections_established = True
-        
+
         return success
-    
+
+    def _extract_with_chunking(self, dataset_id: str, chunk_size):
+        """Extract a dataset from Domo, honoring the "auto" X-Small chunk mode."""
+        if chunk_size == "auto":
+            logger.info("🔄 X-Small optimized auto-chunk mode: Will determine optimal chunk size based on dataset size for X-Small warehouse")
+            return self.domo_handler.extract_data(dataset_id, chunk_size=None)
+        return self.domo_handler.extract_data(dataset_id, chunk_size=chunk_size)
+
+    def _stage_upload_and_verify(self, df, dataset_id: str, stage_name: str, filename: str = None) -> bool:
+        """Create the stage, upload ``df`` (optionally as ``filename``) and verify files exist."""
+        logger.info("🏗️  Creating/verifying stage...")
+        if not self.stage_handler.create_stage(stage_name):
+            logger.error(f"❌ Failed to create stage {stage_name}")
+            return False
+
+        if filename:
+            logger.info(f"📤 Uploading data to stage as {filename}...")
+            uploaded = self.stage_handler.upload_data_to_stage(df, stage_name, filename)
+        else:
+            logger.info("📤 Uploading data to stage...")
+            uploaded = self.stage_handler.upload_data_to_stage(df, stage_name)
+
+        if not uploaded:
+            logger.error(f"❌ Failed to upload data to stage {stage_name}")
+            return False
+
+        files = self.stage_handler.list_stage_files(stage_name)
+        if not files:
+            logger.error(f"❌ No files found in stage {stage_name} after upload")
+            return False
+
+        logger.info(f"✅ Successfully migrated dataset {dataset_id} to stage {stage_name}")
+        logger.info(f"📁 Stage contains {len(files)} file(s)")
+        for file_info in files:
+            logger.info(f"   - {file_info['name']} ({file_info['size']} bytes)")
+        return True
+
     def migrate_dataset(self, dataset_id: str, target_table: str, chunk_size: int = None) -> bool:
         """
         Migrate a single dataset from Domo to Snowflake using existing connections.
@@ -150,21 +246,14 @@ class MigrationManager:
         try:
             # Extract data from Domo
             logger.info("📥 Extracting data from Domo...")
-            
-            # Handle auto chunk size
-            if chunk_size == "auto":
-                logger.info("🔄 X-Small optimized auto-chunk mode: Will determine optimal chunk size based on dataset size for X-Small warehouse")
-                # For auto mode, we'll extract all data and let the upload handle X-Small optimized chunking
-                df = self.domo_handler.extract_data(dataset_id, chunk_size=None)
-            else:
-                df = self.domo_handler.extract_data(dataset_id, chunk_size=chunk_size)
-            
+            df = self._extract_with_chunking(dataset_id, chunk_size)
+
             if df is None or len(df) == 0:
                 logger.warning(f"⚠️  No data found for dataset {dataset_id}")
                 return False
-            
+
             logger.info(f"✅ Extracted {len(df)} rows from Domo")
-            
+
             # Load data to Snowflake
             logger.info("📤 Loading data to Snowflake...")
             
@@ -207,52 +296,24 @@ class MigrationManager:
             return False
         
         logger.info(f"🚀 Starting migration of dataset {dataset_id} to stage {stage_name}")
-        
+
         try:
             # Extract data from Domo
             logger.info("📥 Extracting data from Domo...")
-            
-            # Handle auto chunk size
-            if chunk_size == "auto":
-                logger.info("🔄 X-Small optimized auto-chunk mode: Will determine optimal chunk size based on dataset size for X-Small warehouse")
-                df = self.domo_handler.extract_data(dataset_id, chunk_size=None)
-            else:
-                df = self.domo_handler.extract_data(dataset_id, chunk_size=chunk_size)
-            
+            df = self._extract_with_chunking(dataset_id, chunk_size)
+
             if df is None or len(df) == 0:
                 logger.warning(f"⚠️  No data found for dataset {dataset_id}")
                 return False
-            
+
             logger.info(f"✅ Extracted {len(df)} rows from Domo")
-            
-            # Create stage if it doesn't exist
-            logger.info("🏗️  Creating/verifying stage...")
-            if not self.stage_handler.create_stage(stage_name):
-                logger.error(f"❌ Failed to create stage {stage_name}")
-                return False
-            
-            # Upload data to stage
-            logger.info("📤 Uploading data to stage...")
-            if not self.stage_handler.upload_data_to_stage(df, stage_name):
-                logger.error(f"❌ Failed to upload data to stage {stage_name}")
-                return False
-            
-            # List stage files for verification
-            files = self.stage_handler.list_stage_files(stage_name)
-            if files:
-                logger.info(f"✅ Successfully migrated dataset {dataset_id} to stage {stage_name}")
-                logger.info(f"📁 Stage contains {len(files)} file(s)")
-                for file_info in files:
-                    logger.info(f"   - {file_info['name']} ({file_info['size']} bytes)")
-                return True
-            else:
-                logger.error(f"❌ No files found in stage {stage_name} after upload")
-                return False
-                
+
+            return self._stage_upload_and_verify(df, dataset_id, stage_name)
+
         except Exception as e:
             logger.error(f"❌ Migration to stage failed for dataset {dataset_id}: {e}")
             return False
-    
+
     def migrate_dataset_to_stage_with_filename(self, dataset_id: str, stage_name: str, filename: str, chunk_size: int = None) -> bool:
         """
         Migrate a single dataset from Domo to Snowflake stage with specific filename.
@@ -271,52 +332,24 @@ class MigrationManager:
             return False
         
         logger.info(f"🚀 Starting migration of dataset {dataset_id} to stage {stage_name} as {filename}")
-        
+
         try:
             # Extract data from Domo
             logger.info("📥 Extracting data from Domo...")
-            
-            # Handle auto chunk size
-            if chunk_size == "auto":
-                logger.info("🔄 X-Small optimized auto-chunk mode: Will determine optimal chunk size based on dataset size for X-Small warehouse")
-                df = self.domo_handler.extract_data(dataset_id, chunk_size=None)
-            else:
-                df = self.domo_handler.extract_data(dataset_id, chunk_size=chunk_size)
-            
+            df = self._extract_with_chunking(dataset_id, chunk_size)
+
             if df is None or len(df) == 0:
                 logger.warning(f"⚠️  No data found for dataset {dataset_id}")
                 return False
-            
+
             logger.info(f"✅ Extracted {len(df)} rows from Domo")
-            
-            # Create stage if it doesn't exist
-            logger.info("🏗️  Creating/verifying stage...")
-            if not self.stage_handler.create_stage(stage_name):
-                logger.error(f"❌ Failed to create stage {stage_name}")
-                return False
-            
-            # Upload data to stage with specific filename
-            logger.info(f"📤 Uploading data to stage as {filename}...")
-            if not self.stage_handler.upload_data_to_stage(df, stage_name, filename):
-                logger.error(f"❌ Failed to upload data to stage {stage_name}")
-                return False
-            
-            # List stage files for verification
-            files = self.stage_handler.list_stage_files(stage_name)
-            if files:
-                logger.info(f"✅ Successfully migrated dataset {dataset_id} to stage {stage_name}")
-                logger.info(f"📁 Stage contains {len(files)} file(s)")
-                for file_info in files:
-                    logger.info(f"   - {file_info['name']} ({file_info['size']} bytes)")
-                return True
-            else:
-                logger.error(f"❌ No files found in stage {stage_name} after upload")
-                return False
-                
+
+            return self._stage_upload_and_verify(df, dataset_id, stage_name, filename)
+
         except Exception as e:
             logger.error(f"❌ Migration to stage failed for dataset {dataset_id}: {e}")
             return False
-    
+
     def load_from_stage_to_table(self, stage_name: str, target_table: str, file_pattern: str = "*.csv", if_exists: str = 'replace') -> bool:
         """
         Load data from stage to table.
@@ -487,27 +520,15 @@ class MigrationManager:
                 return False
             
             # Find the Status column
-            status_column = None
-            possible_status_columns = ['Status', 'status', 'migration_status', 'Migration Status', 'state']
-            
-            for col in possible_status_columns:
-                if col in df.columns:
-                    status_column = col
-                    break
-            
+            status_column = _find_column(df, _STATUS_COLUMN_CANDIDATES)
             if not status_column:
                 logger.warning("⚠️  Status column not found in spreadsheet")
                 return False
-            
+
             # Find the Dataset ID column
-            dataset_id_column = None
-            possible_id_columns = ['Dataset ID', 'dataset_id', 'DatasetID', 'dataset', 'Dataset', 'ID']
-            
-            for col in possible_id_columns:
-                if col in df.columns:
-                    dataset_id_column = col
-                    break
-            
+            dataset_id_column = _find_column(
+                df, ['Dataset ID', 'dataset_id', 'DatasetID', 'dataset', 'Dataset', 'ID']
+            )
             if not dataset_id_column:
                 logger.warning("⚠️  Dataset ID column not found in spreadsheet")
                 return False
@@ -739,60 +760,10 @@ def migrate_from_spreadsheet(spreadsheet_id: str, sheet_name: str = "Migration",
         logger.debug(f"📝 First 3 rows: {df.head(3).to_dict('records')}")
         logger.debug(f"📝 Columns found: {list(df.columns)}")
         
-        # Find required columns with flexible naming
-        dataset_id_column = None
-        name_column = None
-        status_column = None
-        
-        # Look for Dataset ID column
-        possible_id_columns = ['Dataset ID', 'dataset_id', 'DatasetID', 'dataset', 'Dataset', 'ID', 'Dataset Id']
-        for col in possible_id_columns:
-            if col in df.columns:
-                dataset_id_column = col
-                break
-        
-        # Look for Name column (prefer 'Model Name' if available to use as Snowflake table base)
-        possible_name_columns = ['Model Name', 'model_name']
-        for col in possible_name_columns:
-            if col in df.columns:
-                name_column = col
-                break
-        
-        # Look for Status column
-        possible_status_columns = ['Status', 'status', 'migration_status', 'Migration Status', 'state']
-        for col in possible_status_columns:
-            if col in df.columns:
-                status_column = col
-                break
-        
-        # Add default columns if missing
-        if dataset_id_column is None:
-            logger.warning("⚠️  Dataset ID column not found, adding default")
-            df['Dataset ID'] = None
-            dataset_id_column = 'Dataset ID'
-        
-        if name_column is None:
-            logger.warning("⚠️  Name column not found, adding default")
-            df['Name'] = 'Unknown'
-            name_column = 'Name'
-        
-        if status_column is None:
-            logger.warning("⚠️  Status column not found, adding default")
-            df['Status'] = 'Pending'
-            status_column = 'Status'
-        
-        # Filter rows where Status is not "Migrated"
-        if status_column in df.columns:
-            # Handle different status values
-            df[status_column] = df[status_column].fillna('Pending')
-            df[status_column] = df[status_column].astype(str)
-            
-            # Filter out already migrated datasets
-            pending_df = df[~df[status_column].str.contains('Migrated', case=False, na=False)]
-            logger.info(f"📋 Found {len(pending_df)} datasets pending migration (excluding already migrated)")
-        else:
-            pending_df = df
-            logger.info(f"📋 No status column found, processing all {len(pending_df)} datasets")
+        # Resolve required columns (missing ones get a default added in place) and
+        # drop datasets already marked Migrated.
+        dataset_id_column, name_column, status_column = _resolve_migration_columns(df)
+        pending_df = _filter_pending_rows(df, status_column)
         
         if len(pending_df) == 0:
             logger.info("✅ No datasets pending migration")
@@ -828,14 +799,7 @@ def migrate_from_spreadsheet(spreadsheet_id: str, sheet_name: str = "Migration",
                     # With the change above, if the sheet contains 'Model Name', it will be used here.
                     target_table = sanitize_table_name(dataset_id, dataset_name)
                     
-                    # Set chunk size based on flags
-                    if full_table:
-                        chunk_size = None  # No limit, upload entire table
-                    elif auto_chunk_size:
-                        # Auto-determine chunk size based on dataset size
-                        chunk_size = "auto"
-                    else:
-                        chunk_size = 1000  # Default fixed chunk size
+                    chunk_size = _resolve_spreadsheet_chunk_size(full_table, auto_chunk_size)
                     
                     # Migrate the dataset
                     success = migration_manager.migrate_dataset(dataset_id, target_table, chunk_size=chunk_size)
@@ -934,60 +898,10 @@ def migrate_from_spreadsheet_to_stage(spreadsheet_id: str, sheet_name: str = "Mi
         logger.debug(f"📝 First 3 rows: {df.head(3).to_dict('records')}")
         logger.debug(f"📝 Columns found: {list(df.columns)}")
         
-        # Find required columns with flexible naming
-        dataset_id_column = None
-        name_column = None
-        status_column = None
-        
-        # Look for Dataset ID column
-        possible_id_columns = ['Dataset ID', 'dataset_id', 'DatasetID', 'dataset', 'Dataset', 'ID', 'Dataset Id']
-        for col in possible_id_columns:
-            if col in df.columns:
-                dataset_id_column = col
-                break
-        
-        # Look for Name column (prefer 'Model Name' if available to use as Snowflake table base)
-        possible_name_columns = ['Model Name', 'model_name']
-        for col in possible_name_columns:
-            if col in df.columns:
-                name_column = col
-                break
-        
-        # Look for Status column
-        possible_status_columns = ['Status', 'status', 'migration_status', 'Migration Status', 'state']
-        for col in possible_status_columns:
-            if col in df.columns:
-                status_column = col
-                break
-        
-        # Add default columns if missing
-        if dataset_id_column is None:
-            logger.warning("⚠️  Dataset ID column not found, adding default")
-            df['Dataset ID'] = None
-            dataset_id_column = 'Dataset ID'
-        
-        if name_column is None:
-            logger.warning("⚠️  Name column not found, adding default")
-            df['Name'] = 'Unknown'
-            name_column = 'Name'
-        
-        if status_column is None:
-            logger.warning("⚠️  Status column not found, adding default")
-            df['Status'] = 'Pending'
-            status_column = 'Status'
-        
-        # Filter rows where Status is not "Migrated"
-        if status_column in df.columns:
-            # Handle different status values
-            df[status_column] = df[status_column].fillna('Pending')
-            df[status_column] = df[status_column].astype(str)
-            
-            # Filter out already migrated datasets
-            pending_df = df[~df[status_column].str.contains('Migrated', case=False, na=False)]
-            logger.info(f"📋 Found {len(pending_df)} datasets pending migration (excluding already migrated)")
-        else:
-            pending_df = df
-            logger.info(f"📋 No status column found, processing all {len(pending_df)} datasets")
+        # Resolve required columns (missing ones get a default added in place) and
+        # drop datasets already marked Migrated.
+        dataset_id_column, name_column, status_column = _resolve_migration_columns(df)
+        pending_df = _filter_pending_rows(df, status_column)
         
         if len(pending_df) == 0:
             logger.info("✅ No datasets pending migration")
@@ -1023,19 +937,10 @@ def migrate_from_spreadsheet_to_stage(spreadsheet_id: str, sheet_name: str = "Mi
                     # This creates a single internal stage where all files will be uploaded
                     dataset_stage_name = stage_name
                     
-                    # Set chunk size based on flags
-                    if full_table:
-                        chunk_size = None  # No limit, upload entire table
-                    elif auto_chunk_size:
-                        # Auto-determine chunk size based on dataset size
-                        chunk_size = "auto"
-                    else:
-                        chunk_size = 1000  # Default fixed chunk size
+                    chunk_size = _resolve_spreadsheet_chunk_size(full_table, auto_chunk_size)
                     
                     # Generate unique filename for this dataset in the stage
                     # Use Model Name (dataset_name) instead of dataset_id for better readability
-                    import time
-                    import re
                     timestamp = int(time.time())
                     # Sanitize the model name for filename
                     sanitized_model_name = str(dataset_name).upper()
@@ -1246,7 +1151,6 @@ Examples:
         logger.info("🚀 Starting batch migration...")
         
         try:
-            import json
             with open(args.batch_file, 'r') as f:
                 dataset_mapping = json.load(f)
             

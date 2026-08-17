@@ -28,7 +28,7 @@ sys.path.insert(0, str(project_root))
 from tools.utils.gsheets import GoogleSheets, READ_WRITE_SCOPES
 
 # Load environment variables
-load_dotenv()
+load_dotenv(override=True)
 
 # Configure logging
 logging.basicConfig(
@@ -81,14 +81,15 @@ def get_required_datasets_from_spreadsheet(spreadsheet_id: str, credentials_path
         gsheets_client = GoogleSheets(credentials_path=credentials_path, scopes=READ_WRITE_SCOPES)
         
         # Read the Datasets tab
+        lineage_sheet = os.getenv("LINEAGE_DATASETS_SHEET_NAME", "Datasets")
         polars_df = gsheets_client.read_to_dataframe(
             spreadsheet_id=spreadsheet_id,
-            range_name="Datasets!A:Z",
+            range_name=f"{lineage_sheet}!A:Z",
             header=True
         )
-        
+
         if polars_df is None or len(polars_df) == 0:
-            logger.error("❌ No data found in Datasets tab")
+            logger.error(f"❌ No data found in {lineage_sheet} tab")
             return []
         
         df = polars_df.to_pandas()

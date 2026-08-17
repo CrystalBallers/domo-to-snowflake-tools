@@ -26,6 +26,8 @@ if TYPE_CHECKING:
 
 # Default scopes for read-only access, can be expanded as needed
 DEFAULT_SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+# Alias kept for callers/tests that import the read-only scopes by this name.
+READ_ONLY_SCOPES = DEFAULT_SCOPES
 # For read and write access
 READ_WRITE_SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
@@ -286,6 +288,31 @@ class GoogleSheets:
             return result
         except HttpError as err:
             self.logger.error(f"Error creating sheet: {err}")
+            raise
+
+    def clear_range(self, spreadsheet_id: str, range_name: str) -> None:
+        """
+        Clear all values from a range (actually empties the cells, unlike
+        writing an empty value list which is a no-op).
+
+        Args:
+            spreadsheet_id (str): The ID of the spreadsheet
+            range_name (str): The range to clear (e.g., 'Sheet1!A1:Z10000')
+        """
+        if "https://www.googleapis.com/auth/spreadsheets" not in self.scopes:
+            self.logger.error(
+                "Clear operation requires read-write scope. Please initialize with READ_WRITE_SCOPES"
+            )
+            raise PermissionError(
+                "Clear operation requires read-write scope. Please initialize with READ_WRITE_SCOPES"
+            )
+        try:
+            self.sheet.values().clear(
+                spreadsheetId=spreadsheet_id, range=range_name, body={}
+            ).execute()
+            self.logger.info(f"Cleared range {range_name}")
+        except HttpError as err:
+            self.logger.error(f"Error clearing range {range_name}: {err}")
             raise
 
     def get_sheet_properties(self, spreadsheet_id: str) -> "Spreadsheet":

@@ -1412,7 +1412,6 @@ class DatasetComparator:
             return False
         
         # Check for scientific notation pattern: number + 'e' + number
-        import re
         scientific_pattern = r'^-?\d+\.\d+e[+-]\d+$'
         return bool(re.match(scientific_pattern, value))
     
@@ -1728,9 +1727,6 @@ class DatasetComparator:
             self.logger.info(f"📋 Spreadsheet ID: {spreadsheet_id}")
             self.logger.info(f"📄 Sheet name: {sheet_name}")
             
-            # Import GoogleSheets here to avoid circular imports
-            from .utils.gsheets import GoogleSheets, READ_WRITE_SCOPES
-            
             if not credentials_path:
                 credentials_path = os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE")
             
@@ -1754,7 +1750,6 @@ class DatasetComparator:
                 raise Exception(f"No data found in sheet '{sheet_name}' or missing headers")
             
             # Convert to DataFrame
-            import pandas as pd
             headers = data[0]
             rows = data[1:]
             
@@ -2069,9 +2064,6 @@ class DatasetComparator:
             self.logger.info(f"📋 Using inventory spreadsheet: {spreadsheet_id}")
             self.logger.info(f"📄 Using inventory sheet: {sheet_name}")
             
-            # Import GoogleSheets here to avoid circular imports
-            from .utils.gsheets import GoogleSheets, READ_WRITE_SCOPES
-            
             if not credentials_path:
                 credentials_path = os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE")
             
@@ -2095,7 +2087,6 @@ class DatasetComparator:
                 raise Exception(f"No data found in sheet '{sheet_name}' or missing headers")
             
             # Convert to DataFrame
-            import pandas as pd
             headers = data[0]
             rows = data[1:]
             
@@ -3138,70 +3129,8 @@ class DatasetComparator:
             csv_filtered = transform_dataframe_columns(csv_filtered)
         
         return domo_df, csv_filtered
-    
-    def _get_domo_sample(self, domo_dataset_id: str, key_columns: List[str], 
-                        sample_size: int, sampling_method: str, transform_names: bool) -> pd.DataFrame:
-        """Get sample data from Domo dataset."""
-        try:
-            # Normalize key columns for Domo queries
-            domo_key_columns = []
-            for col in key_columns:
-                if transform_names:
-                    # Map back to original Domo column name
-                    original_name = self._get_original_domo_column_name(col)
-                    domo_key_columns.append(original_name)
-                else:
-                    domo_key_columns.append(col)
-            
-            if sampling_method == "random":
-                # Get random sample
-                sample_query = f"SELECT * FROM table ORDER BY RAND() LIMIT {sample_size}"
-            else:
-                # Get ordered sample
-                key_cols_str = _escape_domo_column_list_with_nulls_last(domo_key_columns)
-                sample_query = f"SELECT * FROM table ORDER BY {key_cols_str} LIMIT {sample_size}"
-            
-            domo_df = self.domo_handler.extract_data(
-                dataset_id=domo_dataset_id,
-                query=sample_query,
-                enable_auto_type_conversion=True
-            )
-            
-            if transform_names and domo_df is not None and not domo_df.empty:
-                domo_df = transform_dataframe_columns(domo_df)
-            
-            return domo_df
-            
-        except Exception as e:
-            self.logger.error(f"❌ Error getting Domo sample: {e}")
-            return None
-    
-    def _get_domo_full_dataset(self, domo_dataset_id: str, transform_names: bool) -> pd.DataFrame:
-        """Get full dataset from Domo."""
-        try:
-            domo_df = self.domo_handler.extract_data(
-                dataset_id=domo_dataset_id,
-                query="SELECT * FROM table",
-                enable_auto_type_conversion=True
-            )
-            
-            if transform_names and domo_df is not None and not domo_df.empty:
-                domo_df = transform_dataframe_columns(domo_df)
-            
-            return domo_df
-            
-        except Exception as e:
-            self.logger.error(f"❌ Error getting full Domo dataset: {e}")
-            return None
-    
-    def _get_original_domo_column_name(self, normalized_name: str) -> str:
-        """Map normalized column name back to original Domo name."""
-        # For CSV comparison, we'll use the normalized name as-is since we don't have
-        # access to the original Domo column names. In practice, this works well because
-        # the comparison is done after both datasets are loaded and transformed.
-        return normalized_name
-    
-    def _compare_csv_schemas(self, domo_df: pd.DataFrame, csv_df: pd.DataFrame, 
+
+    def _compare_csv_schemas(self, domo_df: pd.DataFrame, csv_df: pd.DataFrame,
                             transform_names: bool) -> Dict[str, Any]:
         """Compare schemas between Domo DataFrame and CSV DataFrame."""
         try:

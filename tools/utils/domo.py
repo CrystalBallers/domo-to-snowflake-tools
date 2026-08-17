@@ -397,6 +397,7 @@ class DomoHandler:
                         dataset_info = {
                             'id': dataset.id,
                             'name': dataset.name,
+                            'type': getattr(dataset, 'data_provider_type', '') or '',
                             'description': getattr(dataset, 'description', ''),
                             'created': getattr(dataset, 'created', ''),
                             'last_updated': getattr(dataset, 'last_updated', ''),
@@ -429,95 +430,66 @@ class DomoHandler:
             logger.error(f"❌ Failed to get datasets from Domo: {e}")
             return [] 
 
-    def get_all_dataflows(self, dataset_id_list: list[str]) -> pd.DataFrame:
+    def get_all_dataflows(self, dataset_id_list: list[str] = None) -> pd.DataFrame:
         """
-        Lineage crawl starting from the datasets in ``dataset_id_list``.
-        Returns a DataFrame with columns:
+        Fetch dataflows directly from Domo's dataflow API and return a DataFrame
+        with columns:
             • Dataflow ID
-            • Source Dataset IDs  (comma + newline-separated)
-            • Output Dataset IDs  (comma + newline-separated)
+            • Source Dataset IDs  (comma + newline-separated input datasource IDs)
+            • Output Dataset IDs  (comma + newline-separated output datasource IDs)
+
+        Much faster than crawling per-dataset lineage: one paginated ``list``
+        call returns every dataflow with its inputs/outputs already attached, so
+        the whole instance is covered in a handful of requests instead of one
+        per dataset.
+
+        Args:
+            dataset_id_list: If provided (non-empty), keep only dataflows that
+                output to at least one dataset in this list (preserves the
+                previous scope). If None/empty, return every dataflow.
         """
+        from domo_utils.api import get_dataflow_api
 
-        logger.info("🔍 Fetching all dataflows from Domo")
+        logger.info("🔍 Fetching all dataflows from Domo (dataflow API)")
+        dataflow_api = get_dataflow_api(self.auth_client)
 
-        visited_datasets: set[str] = set()
-        # tmp dict to deduplicate and merge inputs/outputs per dataflow
-        dataflows_tmp = {
-                "Dataflow ID": [],
-                "Source Dataset IDs": [],
-                "Output Dataset IDs": []
-        }
-    
+        # Paginate through every dataflow.
+        all_flows = []
+        offset, page_size = 0, 50
+        while True:
+            batch = dataflow_api.list(limit=page_size, offset=offset)
+            if not batch:
+                break
+            all_flows.extend(batch)
+            if len(batch) < page_size:
+                break
+            offset += page_size
 
-        queue: deque[str] = deque(dataset_id_list)
+        logger.info(f"📊 Retrieved {len(all_flows)} dataflows; extracting inputs/outputs...")
 
-        while queue:
-            dataset_id = queue.popleft()
-            if dataset_id in visited_datasets:
-                continue
-            visited_datasets.add(dataset_id)
+        scope = {str(d).strip() for d in (dataset_id_list or []) if str(d).strip()}
 
-            logger.info(f"🔍 Fetching lineage for dataset {dataset_id}")
-
-            cmd = [
-                "argo-domo",
-                "lineage",
-                "export",
-                "DATA_SOURCE",
-                dataset_id,
-                "--format",
-                "json",
+        dataflows_tmp = {"Dataflow ID": [], "Source Dataset IDs": [], "Output Dataset IDs": []}
+        for flow in all_flows:
+            source_ids = [
+                inp.datasource_id for inp in (flow.inputs or [])
+                if getattr(inp, "datasource_id", None)
+            ]
+            output_ids = [
+                out.datasource_id for out in (flow.outputs or [])
+                if getattr(out, "datasource_id", None)
             ]
 
-            try:
-                proc = subprocess.run(cmd, capture_output=True, text=True, check=True)
-                lineage = json.loads(proc.stdout)
-            except subprocess.CalledProcessError as exc:
-                logger.error(f"❌ argo-domo export failed for {dataset_id}: {exc.stderr}")
-                continue
-            except json.JSONDecodeError:
-                logger.error(f"❌ Unable to parse JSON for {dataset_id}")
+            # Preserve previous scope: keep a dataflow only if it outputs to one
+            # of the requested datasets (when a scope was given).
+            if scope and not (set(output_ids) & scope):
                 continue
 
-            # entities is a dict, iterate over its values
-            entities = lineage.get("entities", {}).values()
-
-            for entity in entities:
-                if entity.get("type") != "DATAFLOW":
-                    continue
-
-                # collect parent / child dataset IDs
-                parent_ids = [
-                    p.get("id")
-                    for p in entity.get("parents", [])
-                    if p.get("type") == "DATA_SOURCE"
-                ]
-                child_ids = [
-                    c.get("id")
-                    for c in entity.get("children", [])
-                    if c.get("type") == "DATA_SOURCE"
-                ]
-
-                # keep only dataflows that actually touch the current dataset
-                if dataset_id not in child_ids:
-                    continue
-
-                df_id = entity["id"]
-                # rec = dataflows_tmp[df_id]
-
-        
-                dataflows_tmp["Dataflow ID"].append(entity["id"])
-                dataflows_tmp["Source Dataset IDs"].append(f",\n".join(map(str, parent_ids)))
-                dataflows_tmp["Output Dataset IDs"].append(f",\n".join(map(str, child_ids)))
+            dataflows_tmp["Dataflow ID"].append(str(flow.id))
+            dataflows_tmp["Source Dataset IDs"].append(",\n".join(map(str, source_ids)))
+            dataflows_tmp["Output Dataset IDs"].append(",\n".join(map(str, output_ids)))
 
         dataflows_df = pd.DataFrame(dataflows_tmp)
-
-        # Merge Source Dataset IDs and Output Dataset IDs into a single when Dataflow ID is the same
-        dataflows_df = dataflows_df.groupby("Dataflow ID").agg({
-            "Source Dataset IDs": lambda x: x.str.cat(sep=",\n"),
-            "Output Dataset IDs": lambda x: x.str.cat(sep=",\n")
-        }).reset_index()
-
         logger.info(f"✅ Collected {len(dataflows_df)} dataflows")
         return dataflows_df
 
@@ -613,19 +585,358 @@ class DomoHandler:
             return {"datasource": "", "columns": [], "rows": []}
 
 
-def export_datasets_to_spreadsheet(spreadsheet_id: str, sheet_name: str = "Datasets", 
+def _condense_sccs(source_map):
+    """
+    Collapse every cycle in the output→sources graph to a single node (Tarjan's
+    strongly-connected-components), so the lineage can be treated as a DAG.
+
+    Domo lets a dataset feed back into its own upstream, so the raw graph can
+    contain cycles. Collapsing each strongly connected component to one node
+    yields an acyclic "condensation" that depth/ordering algorithms can run on
+    without looping forever.
+
+    Returns a dict with:
+        nodes        : list of every output id (the keys of source_map)
+        scc_id       : {node -> component index}
+        scc_members  : {component index -> [member nodes]}
+        comp_sources : {component index -> set(predecessor component indices)}  (cross edges only)
+        comp_succ    : {component index -> set(successor component indices)}    (cross edges only)
+        num_comps    : number of components
+    """
+    import sys
+
+    nodes = list(source_map)
+    # Edges only to nodes that are themselves outputs; datasources are leaves.
+    adj = {n: [s for s in source_map[n] if s in source_map] for n in nodes}
+
+    sys.setrecursionlimit(max(10000, len(nodes) * 4 + 1000))
+
+    # --- Tarjan: strongly connected components ---
+    index, low, on_stack, stack, scc_id, counter = {}, {}, set(), [], {}, [0]
+    # scc_members[i] = list of all nodes in SCC i (component ids assigned in completion order)
+    scc_members: dict[int, list] = {}
+
+    def strongconnect(v):
+        index[v] = low[v] = counter[0]; counter[0] += 1
+        stack.append(v); on_stack.add(v)
+        for w in adj[v]:
+            if w not in index:
+                strongconnect(w); low[v] = min(low[v], low[w])
+            elif w in on_stack:
+                low[v] = min(low[v], index[w])
+        if low[v] == index[v]:
+            cid = len(scc_members)
+            members = []
+            while True:
+                w = stack.pop(); on_stack.discard(w)
+                scc_id[w] = cid
+                members.append(w)
+                if w == v:
+                    break
+            scc_members[cid] = members
+
+    for v in nodes:
+        if v not in index:
+            strongconnect(v)
+
+    num_comps = len(scc_members)
+
+    # --- Cross-component edges only (intra-cycle edges add no layer) ---
+    comp_sources = {i: set() for i in range(num_comps)}  # predecessors (upstream)
+    comp_succ = {i: set() for i in range(num_comps)}      # successors (dependents)
+    for n in nodes:
+        ci = scc_id[n]
+        for s in adj[n]:
+            cs = scc_id[s]
+            if cs != ci:
+                comp_sources[ci].add(cs)
+                comp_succ[cs].add(ci)
+
+    return {
+        "nodes": nodes,
+        "scc_id": scc_id,
+        "scc_members": scc_members,
+        "comp_sources": comp_sources,
+        "comp_succ": comp_succ,
+        "num_comps": num_comps,
+    }
+
+
+def _compute_lineage_depths(source_map):
+    """
+    Depth = how many dataflow layers feed each dataset, over the output→sources map.
+
+        - a pure datasource (never an output of a dataflow) → 0
+        - a dataset whose inputs are all datasources         → 1
+        - otherwise → 1 + max(depth of its immediate sources)
+
+    Cycles are collapsed to a single node (see _condense_sccs) and the longest
+    path is computed over the acyclic condensation, so every dataset in a cycle
+    shares one consistent depth and edges inside the cycle add no layer.
+
+    Returns:
+        depths:    {output_dataset_id: depth}
+        cycle_map: {output_dataset_id: [other_members]} for nodes in cycles (SCC size > 1).
+                   Nodes not in a cycle are absent from this dict.
+    """
+    scc = _condense_sccs(source_map)
+    scc_id, comp_sources, scc_members = scc["scc_id"], scc["comp_sources"], scc["scc_members"]
+
+    # --- Longest path over the acyclic condensation ---
+    comp_depth = {}
+
+    def cd(i):
+        if i not in comp_depth:
+            comp_depth[i] = 1 + max((cd(j) for j in comp_sources[i]), default=0)
+        return comp_depth[i]
+
+    depths = {n: cd(scc_id[n]) for n in scc["nodes"]}
+
+    # cycle_map: for each node in a non-trivial SCC, list the *other* members.
+    cycle_map: dict[str, list[str]] = {}
+    for members in scc_members.values():
+        if len(members) > 1:
+            for m in members:
+                cycle_map[m] = [x for x in members if x != m]
+
+    return depths, cycle_map
+
+
+def _compute_migration_order(expanded_df, source_map, cost_by_id):
+    """
+    Assign a 1-based "Migration Order" to every output dataset using
+    critical-path-priority list scheduling: migrate the highest-value chain first.
+
+    Priority of each dataset = its *downstream weighted reach* (the classic
+    "b-level" in list scheduling): its own Cost plus the costliest chain of
+    everything that depends on it. Completing a high-priority dataset unlocks the
+    most expensive downstream work, so it is scheduled earliest — which front-loads
+    the biggest savings.
+
+    Scheduling rules:
+      • Dependencies respected: a dataset is never ordered before any upstream
+        dataset it derives from (Kahn topological order).
+      • Cycles (SCCs) collapse to one unit and share a single order number.
+      • Among datasets *ready* at a step, the one(s) on the costliest downstream
+        path go first; cheap dead-end branches are deferred to higher numbers
+        even when they could technically run earlier.
+      • Datasets ready with the exact same priority share an order number.
+
+    Args:
+        expanded_df : DataFrame with at least an "Output Dataset ID" column.
+        source_map  : {output_id -> [immediate source ids]} (datasources excluded as leaves).
+        cost_by_id  : {output_id -> float cost}; missing/blank treated as 0.
+
+    Returns:
+        expanded_df with an int "Migration Order" column added.
+    """
+    scc = _condense_sccs(source_map)
+    scc_id = scc["scc_id"]
+    scc_members = scc["scc_members"]
+    comp_sources = scc["comp_sources"]   # predecessors (upstream)
+    comp_succ = scc["comp_succ"]          # successors (dependents)
+    num_comps = scc["num_comps"]
+
+    def _cost(node):
+        try:
+            return float(str(cost_by_id.get(node, 0) or 0).replace(",", ""))
+        except (TypeError, ValueError):
+            return 0.0
+
+    # Cost of a component = sum of its members' costs.
+    comp_cost = {i: sum(_cost(m) for m in members) for i, members in scc_members.items()}
+
+    # Downstream weighted longest path (b-level) over the acyclic condensation.
+    down = {}
+
+    def b_level(i):
+        if i not in down:
+            down[i] = comp_cost[i] + max((b_level(j) for j in comp_succ[i]), default=0.0)
+        return down[i]
+
+    for i in range(num_comps):
+        b_level(i)
+
+    # Round so float noise never splits genuine ties (or merges real differences).
+    priority = {i: round(down[i], 9) for i in range(num_comps)}
+
+    # Kahn list-scheduling: each step admits the ready component(s) of highest
+    # priority (exact ties batched); their dependents unlock for later steps.
+    remaining_preds = {i: len(comp_sources[i]) for i in range(num_comps)}
+    ready = [i for i in range(num_comps) if remaining_preds[i] == 0]
+    order_of_comp = {}
+    step = 0
+
+    while ready:
+        top = max(priority[i] for i in ready)
+        batch = [i for i in ready if priority[i] == top]
+        batch_set = set(batch)
+        step += 1
+        for i in batch:
+            order_of_comp[i] = step
+        next_ready = [i for i in ready if i not in batch_set]
+        for i in batch:
+            for j in comp_succ[i]:
+                remaining_preds[j] -= 1
+                if remaining_preds[j] == 0:
+                    next_ready.append(j)
+        ready = next_ready
+
+    order_by_id = {n: order_of_comp[scc_id[n]] for n in scc["nodes"]}
+    expanded_df["Migration Order"] = (
+        expanded_df["Output Dataset ID"].map(order_by_id).fillna(0).astype(int)
+    )
+    return expanded_df
+
+
+def _col_a1(idx0: int) -> str:
+    """0-based column index → A1 letter (0→A, 25→Z, 26→AA)."""
+    s, n = "", idx0
+    while True:
+        s = chr(ord("A") + n % 26) + s
+        n = n // 26 - 1
+        if n < 0:
+            break
+    return s
+
+
+def _align_columns_to_existing_header(gsheets_client, spreadsheet_id, sheet_name, headers, data_rows):
+    """
+    Reorder outgoing columns to match the header already present in the sheet,
+    so an existing layout is never scrambled by the fixed write order. New
+    columns we produce that aren't in the sheet yet are appended at the end
+    (schema evolution is allowed).
+
+    Returns (ordered_headers, ordered_rows). If the sheet has no header yet, the
+    inputs are returned unchanged. Raises ValueError if the sheet contains a
+    column we do NOT produce — clearing+rewriting would drop its data — so the
+    caller MUST call this BEFORE clearing to abort without destroying data.
+    """
+    try:
+        existing = gsheets_client.read_range(spreadsheet_id, f"{sheet_name}!1:1")
+    except Exception:
+        existing = []
+    existing_header = [str(h).strip() for h in (existing[0] if existing else []) if str(h).strip()]
+    if not existing_header:
+        return headers, data_rows  # fresh sheet → keep our default order
+
+    new_set, old_set = set(headers), set(existing_header)
+    unknown = sorted(old_set - new_set)  # in sheet but not produced → would be lost
+    if unknown:
+        raise ValueError(
+            f"Header mismatch in '{sheet_name}'. The sheet has column(s) this export "
+            f"does not produce: {unknown}. Aborting WITHOUT clearing to avoid losing "
+            f"their data. Remove those columns or update the export, then retry."
+        )
+
+    # Keep the sheet's column order for shared columns, then append any new ones.
+    ordered_headers = existing_header + [h for h in headers if h not in old_set]
+    index_by_name = {name: i for i, name in enumerate(headers)}
+    order = [index_by_name[name] for name in ordered_headers]
+    ordered_rows = [[row[i] for i in order] for row in data_rows]
+    return ordered_headers, ordered_rows
+
+
+def _write_owned_columns_by_key(gsheets_client, spreadsheet_id, sheet_name,
+                                df, owned, key_col) -> int:
+    """
+    Write ONLY the ``owned`` columns of ``df`` to ``sheet_name``, leaving every
+    other column in the tab untouched (never cleared, never written).
+
+    Existing row order is preserved (keyed by ``key_col``) so unowned columns
+    stay aligned with their row; rows whose key is new are appended last. Owned
+    columns are written grouped into contiguous A1 runs (one API call per run).
+
+    This is the safe alternative to clearing the whole sheet: a curated column a
+    user added (or another tool's column) can never be destroyed by this export.
+
+    Returns the number of data rows written.
+    """
+    try:
+        existing_values = gsheets_client.read_range(spreadsheet_id, f"{sheet_name}!A1:Z100000")
+    except Exception:  # noqa: BLE001
+        existing_values = []
+    existing_header = [str(h).strip() for h in existing_values[0]] if existing_values else []
+
+    # Preserve the sheet's existing row order (by key); append brand-new keys last.
+    existing_order: list[str] = []
+    if existing_header and key_col in existing_header:
+        k_idx = existing_header.index(key_col)
+        for r in existing_values[1:]:
+            if len(r) > k_idx and str(r[k_idx]).strip():
+                existing_order.append(str(r[k_idx]).strip())
+
+    new_ids = df[key_col].astype(str).str.strip().tolist()
+    new_set, existing_set = set(new_ids), set(existing_order)
+    ordered_ids = [i for i in existing_order if i in new_set] + [i for i in new_ids if i not in existing_set]
+    removed = [i for i in existing_order if i not in new_set]
+    added = [i for i in new_ids if i not in existing_set]
+    if existing_order and (removed or added):
+        preserved_now = [h for h in existing_header if h not in owned]
+        logger.warning(
+            f"⚠️  Row set changed since last write (+{len(added)} / -{len(removed)}). "
+            f"Unowned columns ({preserved_now or '(none)'}) are kept by row position, so rows "
+            f"at/after the first change may no longer line up — review them after this run."
+        )
+    df = (
+        df.assign(_key=df[key_col].astype(str).str.strip())
+        .set_index("_key").reindex(ordered_ids).reset_index(drop=True)
+    )
+
+    # Owned columns keep their current positions; new owned columns append at end.
+    final_header = list(existing_header)
+    for c in owned:
+        if c not in final_header:
+            final_header.append(c)
+    owned_positions = [i for i, h in enumerate(final_header) if h in owned]
+
+    runs: list[list[int]] = []
+    for idx in owned_positions:
+        if runs and idx == runs[-1][-1] + 1:
+            runs[-1].append(idx)
+        else:
+            runs.append([idx])
+
+    n_rows = len(df)
+    preserved = [h for h in final_header if h not in owned]
+    logger.info(f"📝 Writing {n_rows} rows across {len(owned_positions)} owned column(s); "
+                f"preserving untouched: {preserved or '(none)'}")
+
+    if not existing_values:
+        logger.info(f"📄 Sheet '{sheet_name}' doesn't exist, creating it...")
+        try:
+            gsheets_client.create_sheet(spreadsheet_id, sheet_name)
+        except Exception:  # noqa: BLE001
+            pass
+
+    for run in runs:
+        start, end = run[0], run[-1]
+        cols = [final_header[i] for i in run]
+        block = [cols]
+        for _, row in df.iterrows():
+            block.append(["" if pd.isna(row.get(c)) else str(row.get(c, "")) for c in cols])
+        gsheets_client.clear_range(
+            spreadsheet_id, f"{sheet_name}!{_col_a1(start)}1:{_col_a1(end)}100000")
+        gsheets_client.write_range(
+            spreadsheet_id, f"{sheet_name}!{_col_a1(start)}1", block)
+    return n_rows
+
+
+def export_datasets_to_spreadsheet(spreadsheet_id: str, sheet_name: str = None,
                                  credentials_path: str = None) -> bool:
     """
     Export all datasets from Domo to Google Sheets.
-    
+
     Args:
         spreadsheet_id (str): Google Sheets spreadsheet ID
-        sheet_name (str): Name of the sheet tab (default: "Datasets")
+        sheet_name (str): Destination tab (default: DATASETS_SHEET_NAME env or "Datasets")
         credentials_path (str): Path to Google Sheets credentials file
-        
+
     Returns:
         bool: True if export successful, False otherwise
     """
+    if sheet_name is None:
+        sheet_name = os.getenv("DATASETS_SHEET_NAME", "Datasets")
     if not credentials_path:
         credentials_path = os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE")
     
@@ -659,10 +970,11 @@ def export_datasets_to_spreadsheet(spreadsheet_id: str, sheet_name: str = "Datas
         # Initialize Google Sheets client
         gsheets_client = GoogleSheets(credentials_path=credentials_path, scopes=READ_WRITE_SCOPES)
         
-        # Prepare data for export
-        headers = ['Dataset ID', 'Name', 'Description', 'Created', 'Last Updated', 'Row Count', 'Column Count', 'Owner']
-        data_rows = []
-        
+        # Columns this export OWNS. Anything else in the tab (e.g. '# Cards',
+        # QA columns) is left completely untouched — never cleared, never written.
+        OWNED = ['Dataset ID', 'Name', 'Type', 'Description', 'Created',
+                 'Last Updated', 'Row Count', 'Column Count', 'Owner']
+        records = []
         for dataset in datasets:
             # Convert datetime objects to strings to avoid JSON serialization issues
             created_date = dataset['created']
@@ -670,50 +982,523 @@ def export_datasets_to_spreadsheet(spreadsheet_id: str, sheet_name: str = "Datas
                 created_date = created_date.strftime('%Y-%m-%d %H:%M:%S')
             elif created_date is None:
                 created_date = ''
-            
+
             last_updated = dataset['last_updated']
             if hasattr(last_updated, 'strftime'):
                 last_updated = last_updated.strftime('%Y-%m-%d %H:%M:%S')
             elif last_updated is None:
                 last_updated = ''
-            
-            row = [
-                str(dataset['id']),
-                str(dataset['name']),
-                str(dataset['description']),
-                str(created_date),
-                str(last_updated),
-                int(dataset['row_count']),
-                int(dataset['column_count']),
-                str(dataset['owner'])
-            ]
-            data_rows.append(row)
-        
-        # Combine headers and data
-        all_data = [headers] + data_rows
-        
-        # Write to Google Sheets
-        logger.info(f"📝 Writing {len(data_rows)} datasets to spreadsheet...")
-        
-        # First, try to clear the existing sheet if it exists
-        try:
-            # Read a small range to check if sheet exists
-            existing_data = gsheets_client.read_range(spreadsheet_id, f"{sheet_name}!A1:A1")
-            if existing_data:
-                logger.info(f"📄 Sheet '{sheet_name}' exists, clearing content...")
-                # Clear the sheet by writing empty data to a large range
-                gsheets_client.write_range(spreadsheet_id, f"{sheet_name}!A1:Z10000", [])
-        except Exception:
-            logger.info(f"📄 Sheet '{sheet_name}' doesn't exist, will be created automatically")
-        
-        # Write the new data
-        gsheets_client.write_range(spreadsheet_id, f"{sheet_name}!A1", all_data)
-        
-        logger.info(f"✅ Successfully exported {len(data_rows)} datasets to {sheet_name}")
-        logger.info(f"📊 Columns: {', '.join(headers)}")
-        
+
+            records.append({
+                'Dataset ID': str(dataset['id']),
+                'Name': str(dataset['name']),
+                'Type': str(dataset.get('type', '')),
+                'Description': str(dataset['description']),
+                'Created': str(created_date),
+                'Last Updated': str(last_updated),
+                'Row Count': int(dataset['row_count']),
+                'Column Count': int(dataset['column_count']),
+                'Owner': str(dataset['owner']),
+            })
+        datasets_df = pd.DataFrame(records, columns=OWNED)
+
+        # Write ONLY the owned columns, preserving any other column (e.g. '# Cards')
+        # and the existing row order keyed by Dataset ID.
+        n = _write_owned_columns_by_key(
+            gsheets_client, spreadsheet_id, sheet_name, datasets_df, OWNED, 'Dataset ID')
+
+        logger.info(f"✅ Successfully exported {n} datasets to {sheet_name}")
+        logger.info(f"📊 Owned columns: {', '.join(OWNED)}")
+
         return True
-        
+
     except Exception as e:
         logger.error(f"❌ Failed to export datasets to spreadsheet: {e}")
-        return False 
+        return False
+
+
+def export_dataflows_to_spreadsheet(spreadsheet_id: str, sheet_name: str = None,
+                                    credentials_path: str = None,
+                                    datasets_sheet_name: str = None) -> bool:
+    """
+    Build the dataflow lineage table and write it to Google Sheets.
+
+    Reads the dataset IDs from the "All Datasets" tab, crawls Domo lineage for
+    each one, then writes one row per Output Dataset ID to the "All Dataflows"
+    tab with the columns:
+        • Output Dataset ID
+        • Dataflow ID
+        • Source Dataset IDs       (immediate sources)
+        • All Source Dataset IDs   (full recursive lineage)
+
+    Args:
+        spreadsheet_id (str): Google Sheets spreadsheet ID
+        sheet_name (str): Destination tab (default: ALL_DATAFLOWS_SHEET_NAME env or "All Dataflows")
+        credentials_path (str): Path to Google Sheets credentials file
+        datasets_sheet_name (str): Source tab with dataset IDs (default: DATASETS_SHEET_NAME env or "All Datasets")
+
+    Returns:
+        bool: True if export successful, False otherwise
+    """
+    if sheet_name is None:
+        sheet_name = os.getenv("ALL_DATAFLOWS_SHEET_NAME", "All Dataflows")
+    if datasets_sheet_name is None:
+        datasets_sheet_name = os.getenv("DATASETS_SHEET_NAME", "All Datasets")
+
+    if not credentials_path:
+        credentials_path = os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE")
+    if not credentials_path:
+        logger.error("❌ No Google Sheets credentials provided")
+        return False
+    if not os.path.exists(credentials_path):
+        logger.error(f"❌ Google Sheets credentials file not found: {credentials_path}")
+        return False
+
+    try:
+        # Imported here to avoid circular imports.
+        from .gsheets import GoogleSheets, READ_WRITE_SCOPES
+        from .lineage import collect_all_sources, parse_sources
+
+        gsheets_client = GoogleSheets(credentials_path=credentials_path, scopes=READ_WRITE_SCOPES)
+
+        # 1) Read the seed dataset IDs from the "All Datasets" tab.
+        logger.info(f"📖 Reading dataset IDs from '{datasets_sheet_name}' tab...")
+        datasets_df = gsheets_client.read_to_dataframe(
+            spreadsheet_id=spreadsheet_id,
+            range_name=f"{datasets_sheet_name}!A:Z",
+            header=True,
+        )
+        if datasets_df is None or len(datasets_df) == 0:
+            logger.error(f"❌ No data found in '{datasets_sheet_name}' tab")
+            return False
+
+        id_column = next((c for c in ["Dataset ID", "dataset_id", "DatasetID", "ID", "id"]
+                          if c in datasets_df.columns), None)
+        if not id_column:
+            logger.error(f"❌ 'Dataset ID' column not found in '{datasets_sheet_name}' tab")
+            logger.info(f"📋 Available columns: {list(datasets_df.columns)}")
+            return False
+
+        dataset_ids = [str(v).strip() for v in datasets_df[id_column].dropna().tolist() if str(v).strip()]
+        if not dataset_ids:
+            logger.error("❌ No dataset IDs to crawl")
+            return False
+        logger.info(f"📊 Crawling lineage for {len(dataset_ids)} datasets...")
+
+        # 2) Crawl Domo lineage.
+        domo_handler = DomoHandler()
+        if not domo_handler.setup_auth():
+            logger.error("❌ Failed to authenticate with Domo")
+            return False
+
+        dataflows_df = domo_handler.get_all_dataflows(dataset_ids)
+        if dataflows_df is None or dataflows_df.empty:
+            logger.warning("⚠️  No dataflows found for the given datasets")
+            return False
+
+        # 3) Expand to one row per Output Dataset ID (dedup the source IDs).
+        expanded_rows = []
+        for _, row in dataflows_df.iterrows():
+            dataflow_id = row["Dataflow ID"]
+            source_ids = sorted(set(parse_sources(row.get("Source Dataset IDs"))))
+            source_ids_str = ",\n".join(source_ids)
+            for output_id in dict.fromkeys(parse_sources(row.get("Output Dataset IDs"))):
+                expanded_rows.append({
+                    "Output Dataset ID": output_id,
+                    "Dataflow ID": dataflow_id,
+                    "Source Dataset IDs": source_ids_str,
+                })
+
+        if not expanded_rows:
+            logger.warning("⚠️  No output datasets resolved from dataflows")
+            return False
+
+        expanded_df = pd.DataFrame(expanded_rows)
+
+        # 4) Compute the full recursive lineage per Output Dataset ID. A dataset
+        #    can be produced by more than one dataflow, so union their sources.
+        source_map: dict[str, list[str]] = {}
+        for _, row in expanded_df.iterrows():
+            out_id = row["Output Dataset ID"]
+            bucket = source_map.setdefault(out_id, [])
+            for src in parse_sources(row["Source Dataset IDs"]):
+                if src not in bucket:
+                    bucket.append(src)
+
+        expanded_df["All Source Dataset IDs"] = (
+            expanded_df["Output Dataset ID"]
+            .apply(lambda out: collect_all_sources(out, source_map))
+            .apply(lambda lst: ",\n".join(lst))
+        )
+
+        # Depth = number of dataflow layers feeding each output dataset.
+        depths, cycle_map = _compute_lineage_depths(source_map)
+        expanded_df["Depth"] = expanded_df["Output Dataset ID"].map(depths).fillna(0).astype(int)
+
+        # Notes column — surface cycle membership and other useful diagnostics.
+        def _build_note(row):
+            out_id = row["Output Dataset ID"]
+            notes = []
+
+            if out_id in cycle_map:
+                partners = cycle_map[out_id]
+                partner_list = ", ".join(partners)
+                notes.append(
+                    f"CYCLE ({len(partners) + 1} nodes): this dataset is part of a "
+                    f"circular dependency with {partner_list}. "
+                    f"Depth is estimated via SCC condensation (not a strict layer count)."
+                )
+
+            depth = int(row["Depth"])
+            direct_sources = [s for s in parse_sources(row["Source Dataset IDs"]) if s]
+            all_sources = [s for s in parse_sources(row["All Source Dataset IDs"]) if s]
+            transitive = [s for s in all_sources if s not in direct_sources]
+
+            if depth >= 5:
+                notes.append(
+                    f"DEEP CHAIN (depth {depth}): {len(all_sources)} total upstream datasets "
+                    f"({len(direct_sources)} direct, {len(transitive)} transitive)."
+                )
+            elif transitive:
+                notes.append(
+                    f"{len(all_sources)} total upstream datasets "
+                    f"({len(direct_sources)} direct, {len(transitive)} transitive)."
+                )
+
+            return " | ".join(notes)
+
+        expanded_df["Notes"] = expanded_df.apply(_build_note, axis=1)
+
+        # Columns this export OWNS. Anything else in the tab (Cost, or any column
+        # you add) is left completely untouched — never cleared, never written.
+        OWNED = ["Output Dataset ID", "Dataflow ID", "Source Dataset IDs",
+                 "All Source Dataset IDs", "Depth", "Notes", "Migration Order"]
+
+        # Read the current sheet once: its header, its row order (to keep
+        # untouched columns aligned), and the Cost values (read-only, to compute
+        # the migration order — we do NOT write Cost back).
+        try:
+            existing_values = gsheets_client.read_range(spreadsheet_id, f"{sheet_name}!A1:Z100000")
+        except Exception:
+            existing_values = []
+        existing_header = [str(h).strip() for h in existing_values[0]] if existing_values else []
+
+        cost_by_id: dict[str, str] = {}
+        existing_order: list[str] = []
+        if existing_header and "Output Dataset ID" in existing_header:
+            oid_idx = existing_header.index("Output Dataset ID")
+            cost_idx = existing_header.index("Cost") if "Cost" in existing_header else None
+            for r in existing_values[1:]:
+                if len(r) <= oid_idx or not str(r[oid_idx]).strip():
+                    continue
+                oid = str(r[oid_idx]).strip()
+                existing_order.append(oid)
+                if cost_idx is not None and len(r) > cost_idx:
+                    cost_by_id[oid] = str(r[cost_idx]).strip()
+        logger.info(f"💲 Read {len(cost_by_id)} Cost value(s) for ordering — the Cost column will NOT be modified")
+
+        # Migration Order = critical-path-priority schedule (highest-cost chain first).
+        expanded_df = _compute_migration_order(expanded_df, source_map, cost_by_id)
+
+        # Keep the sheet's existing row order so untouched columns (e.g. Cost)
+        # stay aligned with their dataset; brand-new datasets are appended last.
+        new_ids = expanded_df["Output Dataset ID"].astype(str).str.strip().tolist()
+        new_set, existing_set = set(new_ids), set(existing_order)
+        ordered_ids = [i for i in existing_order if i in new_set] + [i for i in new_ids if i not in existing_set]
+        removed = [i for i in existing_order if i not in new_set]
+        added = [i for i in new_ids if i not in existing_set]
+        if existing_order and (removed or added):
+            logger.warning(
+                f"⚠️  Dataset set changed since last write (+{len(added)} / -{len(removed)}). "
+                f"Untouched columns like 'Cost' are kept by row position, so rows at/after the "
+                f"first change may no longer line up — review the 'Cost' column after this run."
+            )
+        expanded_df = (
+            expanded_df.assign(_oid=expanded_df["Output Dataset ID"].astype(str).str.strip())
+            .set_index("_oid").reindex(ordered_ids).reset_index(drop=True)
+        )
+
+        # 5) Write ONLY the owned columns, each into its current position, so the
+        #    Cost column (and any other) is preserved byte-for-byte.
+        final_header = list(existing_header)
+        for c in OWNED:
+            if c not in final_header:
+                final_header.append(c)
+        owned_positions = [i for i, h in enumerate(final_header) if h in OWNED]
+
+        # Group owned column indices into contiguous runs (one write per run).
+        runs: list[list[int]] = []
+        for idx in owned_positions:
+            if runs and idx == runs[-1][-1] + 1:
+                runs[-1].append(idx)
+            else:
+                runs.append([idx])
+
+        n_rows = len(expanded_df)
+        preserved = [h for h in final_header if h not in OWNED]
+        logger.info(f"📝 Writing {n_rows} rows across {len(owned_positions)} owned column(s); "
+                    f"preserving untouched: {preserved or '(none)'}")
+
+        if not existing_values:
+            logger.info(f"📄 Sheet '{sheet_name}' doesn't exist, creating it...")
+            try:
+                gsheets_client.create_sheet(spreadsheet_id, sheet_name)
+            except Exception:
+                pass
+
+        for run in runs:
+            start, end = run[0], run[-1]
+            cols = [final_header[i] for i in run]
+            block = [cols]
+            for _, row in expanded_df.iterrows():
+                block.append(["" if pd.isna(row.get(c)) else str(row.get(c, "")) for c in cols])
+            gsheets_client.clear_range(
+                spreadsheet_id, f"{sheet_name}!{_col_a1(start)}1:{_col_a1(end)}100000")
+            gsheets_client.write_range(
+                spreadsheet_id, f"{sheet_name}!{_col_a1(start)}1", block)
+
+        logger.info(f"✅ Exported {n_rows} dataflow rows to '{sheet_name}' (Cost column left untouched)")
+        logger.info(f"📊 Owned columns: {', '.join(c for c in final_header if c in OWNED)}")
+        return True
+
+    except Exception as e:
+        logger.error(f"❌ Failed to export dataflows to spreadsheet: {e}")
+        return False
+
+
+def _count_cards_per_dataset(auth_client, page_size: int = 2000) -> dict:
+    """
+    Count how many Domo cards reference each dataset.
+
+    Uses the unified search API, which returns every card with its
+    ``dataSourceIds`` attached — so the whole instance is covered in a handful
+    of paginated calls instead of one request per dataset.
+
+    Returns:
+        dict mapping dataset_id -> card count (datasets with no cards are absent).
+    """
+    from collections import Counter
+    from domo_utils.api import get_search_api
+    from domo_utils.models.search import EntityType
+
+    search_api = get_search_api(auth_client)
+    counts: "Counter[str]" = Counter()
+    offset, total = 0, 0
+    while True:
+        resp = search_api.search(entities=[EntityType.CARD], limit=page_size, offset=offset)
+        objs = resp.model_dump().get("search_objects") or []
+        if not objs:
+            break
+        for o in objs:
+            total += 1
+            for dsid in (o.get("dataSourceIds") or []):
+                if dsid:
+                    counts[str(dsid)] += 1
+        offset += len(objs)
+        if len(objs) < page_size:
+            break
+    logger.info("🃏 Scanned %s cards across %s dataset(s) with at least one card",
+                total, len(counts))
+    return dict(counts)
+
+
+def _list_cards_per_dataset(auth_client, page_size: int = 2000) -> list:
+    """
+    List every Domo card together with each dataset it references.
+
+    Uses the same unified search API as :func:`_count_cards_per_dataset`, but
+    instead of discarding each card it emits one record per (card, dataset)
+    pair — a card that reads N datasets produces N rows. Dataset names are taken
+    from the card's ``dataSubscriptions`` when present (no extra API calls).
+
+    Returns:
+        list of dicts, each with keys: dataset_id, dataset_name, card_id,
+        card_title, card_type, chart_type, owner. Cards with no dataset are
+        skipped (they can't be tied to a dataset row).
+    """
+    from domo_utils.api import get_search_api
+    from domo_utils.models.search import EntityType
+
+    search_api = get_search_api(auth_client)
+    rows: list = []
+    offset, total = 0, 0
+    while True:
+        resp = search_api.search(entities=[EntityType.CARD], limit=page_size, offset=offset)
+        objs = resp.model_dump().get("search_objects") or []
+        if not objs:
+            break
+        for o in objs:
+            total += 1
+            # Map dataSourceId -> dataSourceName from the card's subscriptions.
+            names = {str(s.get("dataSourceId")): s.get("dataSourceName")
+                     for s in (o.get("dataSubscriptions") or []) if s.get("dataSourceId")}
+            for dsid in (o.get("dataSourceIds") or []):
+                if not dsid:
+                    continue
+                rows.append({
+                    "dataset_id": str(dsid),
+                    "dataset_name": names.get(str(dsid), ""),
+                    "card_id": str(o.get("databaseId") or ""),
+                    "card_title": o.get("title") or "",
+                    "card_type": o.get("cardType") or "",
+                    "chart_type": o.get("chartType") or "",
+                    "owner": o.get("ownedByName") or "",
+                })
+        offset += len(objs)
+        if len(objs) < page_size:
+            break
+    logger.info("🃏 Scanned %s cards → %s (card, dataset) pair(s)", total, len(rows))
+    return rows
+
+
+def list_cards_to_spreadsheet(spreadsheet_id: str, sheet_name: str = None,
+                              credentials_path: str = None) -> bool:
+    """
+    Export every Domo card and the dataset(s) it uses to a dedicated tab.
+
+    Scans all cards in the instance via the Domo search API and writes one row
+    per (card, dataset) pair to ``sheet_name`` (default: "Cards per Dataset").
+    This tab is fully owned by this command — it is cleared and rewritten in
+    full on every run, so do not add hand-curated columns to it.
+
+    Args:
+        spreadsheet_id (str): Google Sheets spreadsheet ID
+        sheet_name (str): Target tab (default: CARDS_SHEET_NAME env or "Cards per Dataset")
+        credentials_path (str): Path to Google Sheets credentials file
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if sheet_name is None:
+        sheet_name = os.getenv("CARDS_SHEET_NAME", "Cards per Dataset")
+    if not credentials_path:
+        credentials_path = os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE")
+    if not credentials_path or not os.path.exists(credentials_path):
+        logger.error("❌ Google Sheets credentials file not found: %s", credentials_path)
+        return False
+
+    try:
+        from .common import get_env_config
+        from .gsheets import GoogleSheets, READ_WRITE_SCOPES
+
+        # 1) Authenticate to Domo and list every (card, dataset) pair.
+        handler = DomoHandler()
+        if not handler.setup_auth():
+            logger.error("❌ Failed to authenticate with Domo")
+            return False
+        pairs = _list_cards_per_dataset(handler.auth_client)
+
+        # Build a card URL from the instance, e.g. https://<instance>.domo.com/kpis/details/<id>
+        instance = (get_env_config().get("DOMO_INSTANCE") or "").strip()
+        base_url = f"https://{instance}.domo.com/kpis/details/" if instance else ""
+
+        # 2) Sort by dataset then card so the tab reads naturally.
+        pairs.sort(key=lambda r: (r["dataset_id"], r["card_title"].lower()))
+
+        header = ["Dataset ID", "Dataset Name", "Card ID", "Card Title",
+                  "Card Type", "Chart Type", "Owner", "Card URL"]
+        block = [header]
+        for r in pairs:
+            block.append([
+                r["dataset_id"], r["dataset_name"], r["card_id"], r["card_title"],
+                r["card_type"], r["chart_type"], r["owner"],
+                f"{base_url}{r['card_id']}" if base_url and r["card_id"] else "",
+            ])
+
+        # 3) Fully own the tab: create if missing, then clear + write everything.
+        gsheets_client = GoogleSheets(credentials_path=credentials_path, scopes=READ_WRITE_SCOPES)
+        try:
+            gsheets_client.create_sheet(spreadsheet_id, sheet_name)
+        except Exception:  # noqa: BLE001 — already exists
+            pass
+        gsheets_client.clear_range(spreadsheet_id, f"{sheet_name}!A1:Z100000")
+        gsheets_client.write_range(spreadsheet_id, f"{sheet_name}!A1", block)
+        logger.info("✅ Wrote %s (card, dataset) row(s) to '%s'", len(pairs), sheet_name)
+        return True
+
+    except Exception as e:  # noqa: BLE001
+        logger.error("❌ Failed to list cards to spreadsheet: %s", e)
+        return False
+
+
+def count_cards_to_spreadsheet(spreadsheet_id: str, sheet_name: str = None,
+                               credentials_path: str = None) -> bool:
+    """
+    Count Domo cards per dataset and write a "# Cards" column to the datasets tab.
+
+    Reads the dataset IDs from the datasets tab, counts cards per dataset via the
+    Domo search API, then writes ONLY the "# Cards" column (creating it at the end
+    of the header if absent). Every other column is left untouched and row order
+    is preserved, so the count stays aligned with each dataset.
+
+    Args:
+        spreadsheet_id (str): Google Sheets spreadsheet ID
+        sheet_name (str): Datasets tab (default: DATASETS_SHEET_NAME env or "All Datasets")
+        credentials_path (str): Path to Google Sheets credentials file
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if sheet_name is None:
+        sheet_name = os.getenv("DATASETS_SHEET_NAME", "All Datasets")
+    if not credentials_path:
+        credentials_path = os.getenv("GOOGLE_SHEETS_CREDENTIALS_FILE")
+    if not credentials_path or not os.path.exists(credentials_path):
+        logger.error("❌ Google Sheets credentials file not found: %s", credentials_path)
+        return False
+
+    try:
+        from .gsheets import GoogleSheets, READ_WRITE_SCOPES
+
+        # 1) Authenticate to Domo and count cards per dataset.
+        handler = DomoHandler()
+        if not handler.setup_auth():
+            logger.error("❌ Failed to authenticate with Domo")
+            return False
+        counts = _count_cards_per_dataset(handler.auth_client)
+
+        # 2) Read the datasets tab and locate the Dataset ID column.
+        gsheets_client = GoogleSheets(credentials_path=credentials_path, scopes=READ_WRITE_SCOPES)
+        rows = gsheets_client.read_range(spreadsheet_id, f"{sheet_name}!A1:Z100000")
+        if not rows:
+            logger.error("❌ No data found in '%s' tab", sheet_name)
+            return False
+        header = [str(h).strip() for h in rows[0]]
+        oid_idx = next((header.index(c) for c in ["Dataset ID", "dataset_id", "DatasetID", "ID", "id"]
+                        if c in header), None)
+        if oid_idx is None:
+            logger.error("❌ 'Dataset ID' column not found in '%s' tab. Columns: %s",
+                         sheet_name, header)
+            return False
+
+        # 3) Locate (or append) the "# Cards" column.
+        if "# Cards" in header:
+            cards_idx = header.index("# Cards")
+        else:
+            cards_idx = len(header)
+            logger.info("➕ '# Cards' column not present; creating it at column %s",
+                        _col_a1(cards_idx))
+        cards_col = _col_a1(cards_idx)
+
+        # 4) Build the single column in existing row order (count, or 0 if none).
+        column = [["# Cards"]]
+        matched = 0
+        for r in rows[1:]:
+            oid = str(r[oid_idx]).strip() if len(r) > oid_idx else ""
+            if oid:
+                column.append([counts.get(oid, 0)])
+                matched += 1
+            else:
+                column.append([""])
+
+        # 5) Write ONLY that column; everything else stays byte-for-byte.
+        logger.info("📝 Writing '# Cards' to column %s for %s dataset(s); "
+                    "all other columns left untouched", cards_col, matched)
+        gsheets_client.clear_range(spreadsheet_id, f"{sheet_name}!{cards_col}1:{cards_col}100000")
+        gsheets_client.write_range(spreadsheet_id, f"{sheet_name}!{cards_col}1", column)
+        logger.info("✅ Card counts written to '%s' (column %s)", sheet_name, cards_col)
+        return True
+
+    except Exception as e:  # noqa: BLE001
+        logger.error("❌ Failed to count cards to spreadsheet: %s", e)
+        return False

@@ -5,7 +5,7 @@ from tools.utils.gsheets import GoogleSheets
 from dotenv import load_dotenv
 
 # Load environment variables from .env file if you have one
-load_dotenv()
+load_dotenv(override=True)
 
 # Configure logging to see tool messages
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')

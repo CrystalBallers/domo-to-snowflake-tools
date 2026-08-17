@@ -1,0 +1,33 @@
+# Keep the build context small and free of secrets / local artifacts.
+# NOTE: argo-utils-cli/ is intentionally NOT ignored — it is installed in the image.
+.git
+.venv
+venv
+__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+tests/coverage_html
+tests/coverage.xml
+.coverage
+
+# Secrets & local config (mounted at runtime instead)
+.env
+.env.*
+secrets/*
+!secrets/.gitkeep
+credentials.json
+*.json
+!sources_auto.yml
+
+# Generated output
+results/
+
+# Real client workbooks (never bake into the image)
+*.xlsx
+!templates/*.xlsx
+
+# argo-utils-cli's own git/venv clutter
+argo-utils-cli/.git
+argo-utils-cli/.venv
+argo-utils-cli/uv.lock

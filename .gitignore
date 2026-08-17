@@ -106,3 +106,7 @@ lineage.json
 
 # Large CSV files
 dataflows_encontrados*.csv
+# Real client workbooks contain live data and must never be committed.
+# The synthetic, client-data-free template under templates/ is the only allowed .xlsx.
+*.xlsx
+!templates/*.xlsx

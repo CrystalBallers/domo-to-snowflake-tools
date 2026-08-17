@@ -7,7 +7,9 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.join(current_dir, '..', '..')
 sys.path.insert(0, project_root)
 
-from tools.get_all_stg_files import get_stg_files_data
+from tools.get_all_stg_files import (
+    get_stg_files_data, OUTPUT_NAME_COLUMN, STATUS_COLUMN, DEPLOYED_STATUS,
+)
 
 def sanitize(name):
     """
@@ -22,31 +24,32 @@ def sanitize(name):
 def generate_sources_from_spreadsheet(database, schema, output_file='sources_auto.yml'):
     """
     Genera un archivo 'sources.yml' usando los datos del Google Sheets.
-    Lee la columna 'Name' para obtener los nombres de las tablas.
+    Lee la columna 'Output Name' para obtener los nombres de las tablas.
     """
     print(f"📊 Reading Google Sheets data...")
-    
+
     # Get data from Google Sheets (same as generate-stg command)
     df, gsheets, spreadsheet_id = get_stg_files_data()
-    
+
     if df is None or df.empty:
         print("❌ No data found in Google Sheets")
         return False
-    
-    # Filter out rows where Check is True (already processed)
-    df_filtered = df[df['Check'] != True].copy()
-    
+
+    # Filter out rows already marked Deployed.
+    status_norm = df[STATUS_COLUMN].astype(str).str.strip().str.lower()
+    df_filtered = df[status_norm != DEPLOYED_STATUS.lower()].copy()
+
     if df_filtered.empty:
-        print("✅ All tables already have Check = True, no sources to generate")
+        print("✅ All models are already 'Deployed', no sources to generate")
         return True
-    
+
     print(f"📋 Found {len(df_filtered)} tables to include in sources.yml")
-    
-    # Extract table names from Name column
-    table_names = df_filtered['Name'].dropna().tolist()
+
+    # Extract table names from the Output Name column
+    table_names = df_filtered[OUTPUT_NAME_COLUMN].dropna().tolist()
     
     if not table_names:
-        print("❌ No table names found in 'Name' column")
+        print("❌ No table names found in 'Output Name' column")
         return False
     
     # Generate the sources file
